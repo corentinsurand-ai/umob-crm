@@ -554,7 +554,7 @@ function Modale({
   // une société ne peut pas être un contact — on va chercher SES propres
   // dirigeants personnes physiques (ex. Nicolas Bourbao, gérant d’ADAVEN). Le
   // rôle mentionne la société intermédiaire : info réelle INSEE, zéro invention.
-  const depuisGouv = async (r: Record<string, unknown>): Promise<(typeof ANNUAIRE_DEMO)[number]> => {
+  const depuisGouv = async (r: Record<string, unknown>): Promise<{ fiche: (typeof ANNUAIRE_DEMO)[number]; soeurs: SocieteSimple[] }> => {
     const siege = (r.siege || {}) as Record<string, any>;
     const enseigne = String(siege.nom_commercial || (Array.isArray(siege.liste_enseignes) ? siege.liste_enseignes[0] : "") || "");
     const ville = siege.libelle_commune ? capitaliser(String(siege.libelle_commune)) : "";
@@ -593,16 +593,59 @@ function Modale({
         contacts = contacts.concat(dm).slice(0, 3);
       } catch { /* réseau indisponible : on garde les personnes physiques déjà trouvées */ }
     }
+    // ── Sociétés sœurs du dirigeant résolu ──────────────────────────────────────────
+    // Si un dirigeant personne physique a été identifié (directement OU via une
+    // société holding résolue), on cherche ses AUTRES sociétés : le même gérant
+    // de plusieurs restaurants = 1 contact, N liens entreprises. Liste limitée
+    // (≤ 5) et seulement les sociétés ACTIVES ; la société en cours de création
+        // est exclue ; cases DÉCOCHÉES par défaut (créer une entreprise = opt-in).
+    let societesSoeurs: SocieteSimple[] = [];
+    if (contacts.length > 0) {
+      const dir = contacts[0];
+      try {
+        const repS = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(dir.prenom + " " + dir.nom) + "&personne_physique=true&per_page=15");
+        if (repS.ok) {
+          const jsS = (await repS.json()) as { results?: Record<string, unknown>[] };
+          const liste = (jsS.results || []).filter((x) => x.etat_administratif === "A" && String(x.siren) !== String(r.siren));
+          const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
+          societesSoeurs = liste
+            .filter((x) => {
+              const nomX = String(x.nom_complet || "").trim().toLowerCase();
+              return !dejaConnues.includes(nomX);
+            })
+            .slice(0, 5)
+            .map((x) => {
+              const sx = x as Record<string, any>;
+              const sg = (sx.siege || {}) as Record<string, any>;
+              const vx = sg.libelle_commune ? capitaliser(String(sg.libelle_commune)) : "";
+              const enseigneX = String(sg.nom_commercial || (Array.isArray(sg.liste_enseignes) ? sg.liste_enseignes[0] : "") || "");
+              return {
+                siren: String(sx.siren || ""),
+                nom: String(sx.nom_complet || ""),
+                nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
+                ville: vx,
+                secteur: SECTION_SECTEUR[String(sx.section_activite_principale || "")] || "",
+                site: "", tel: "", franchiseur: "", modeLivraison: "",
+                activite: NAF_ACTIVITE[String(sx.activite_principale || "")] || "",
+                sources: ["INSEE · API Recherche d’entreprises"],
+              };
+            });
+        }
+      } catch { /* réseau indisponible : pas de sociétés sœurs, ce n’est pas bloquant */ }
+    }
     return {
-      siren: String(r.siren || ""), tel: "", telAffiche: "",
-      nom: String(r.nom_complet || r.nom_raison_sociale || ""),
-      nomCommercial: enseigne && ville ? enseigne + " — " + ville : enseigne,
-      ville,
-      secteur: SECTION_SECTEUR[String(r.section_activite_principale || "")] || "",
-      site: "", franchiseur: "", modeLivraison: "",
-      activite: NAF_ACTIVITE[naf] || "",
-      sources: ["INSEE · API Recherche d’entreprises"],
-      contactsTrouves: contacts,
+      fiche: {
+        siren: String(r.siren || ""), tel: "", telAffiche: "",
+        nom: String(r.nom_complet || r.nom_raison_sociale || ""),
+        nomCommercial: enseigne && ville ? enseigne + " — " + ville : enseigne,
+        ville,
+        secteur: SECTION_SECTEUR[String(r.section_activite_principale || "")] || "",
+        site: "", franchiseur: "", modeLivraison: "",
+        activite: NAF_ACTIVITE[naf] || "",
+        sources: ["INSEE · API Recherche d’entreprises"],
+        contactsTrouves: contacts,
+      },
+      soeurs: societesSoeurs,
     };
   };
   const rienTrouve = () => {
@@ -642,7 +685,11 @@ function Modale({
       const actifs = resultats.filter((r) => r.etat_administratif === "A");
       const r = (actifs.length ? actifs : resultats)[0];
       if (r) {
-        appliquer(await depuisGouv(r));
+                const { fiche, soeurs } = await depuisGouv(r);
+        appliquer(fiche);
+        if (soeurs.length > 0) {
+          setSocietesProposees((prev) => prev.concat(soeurs.map((s) => ({ ...s, coche: false }))));
+        }
       } else {
         const f = annuaireLocal(q);
         if (f) appliquer(f);
