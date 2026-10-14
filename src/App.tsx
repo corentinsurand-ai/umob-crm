@@ -13,12 +13,27 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 //   entreprises (ex. Pierre Piron, gérant de 15 Domino's = 1 contact, 15 liens)
 // Entreprise ←(entrepriseId)─ Deal    : un deal est rattaché à une entreprise…
 // Contact    ←(contactId)─── Deal    : …et à un contact précis de cette entreprise
+// ── Un CONTRAT Locam individuel (source : lignes du Sheet « Infos Service
+// Client », regroupées par n° de contrat — une ligne du Sheet = un scooter,
+// donc un contrat peut couvrir plusieurs immatriculations). Un client à 2
+// contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRES,
+// au lieu de la période fusionnée min/max qui ne correspondait à aucun
+// contrat réel. ──
+interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
   // ── Contrat & flotte (source : Sheet « Infos Service Client » / Locam) ──
   // Renseignés pour les SOCIÉTÉS CLIENTES : pack choisi, période du contrat,
   // nombre de véhicules, n° de contrat Locam, immatriculations. Comme tous les
   // champs auto-remplis : modifiables, et vides si la source ne sait rien.
   pack: string; dateDebut: string; dateFin: string; nbVehicules: string; contratLocam: string; immatriculations: string;
+  // ── Modèle(s) de scooter U'mob loué(s) par le client (Infinity Pro /
+  // Compact Pro / Daily Pro). Source auto : colonne « Libellé Produit client »
+  // du Sheet « Infos Service Client » ; sélection manuelle sinon (jamais
+  // d'invention, cases toujours modifiables). ──
+  modeles: string[];
+  // ── Contrats individuels (un bloc par contrat Locam). Les anciennes fiches
+  // agrégées (pack/dates uniques) sont migrées en 1 contrat à l'ouverture. ──
+  contrats: ContratLigne[];
   // ── Risque SAV (source : colonnes Statut_risque_client / Impayes /
   // Procedure_collective du Sheet « Infos Service Client »). Vide = aucun
   // risque signalé. Comme le statut, il reste corrigeable à la main. ──
@@ -39,7 +54,7 @@ const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\
 // client. C’est la source officielle des clients : si le Sheet connaît la
 // société, elle EST cliente. Échec réseau → liste vide, aucun blocage, et JAMAIS
 // de champ contrat rempli sans donnée du Sheet (règle anti-invention). ──
-interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string }
+interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string; modeles: string[]; lignes: ContratLigne[] }
 // Mini-parseur CSV gérant les champs entre guillemets (virgules incluses).
 const parserCSV = (txt: string): string[][] => {
   const lignes: string[][] = []; let cur: string[] = []; let f = ""; let q = false;
@@ -61,7 +76,7 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
     const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
     const col = (n: string) => tete.findIndex((h) => h === n.toLowerCase());
     const cCode = col("Code client"), cNom = col("Nom client"), cVille = col("Ville"),
-      cPack = col("Libellé contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
+      cPack = col("Libellé contrat"), cProd = tete.findIndex((h) => h.includes("libellé produit")), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
       cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Statut_risque_client"),
       cImp = col("Impayes"), cProc = col("Procedure_collective_Radiation");
     if (cCode < 0 || cNom < 0) return { clients: [], lectureOk: false }; /* page d’erreur Google 200 ou colonnes absentes */
@@ -73,9 +88,11 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
     for (const l of lignes.slice(1)) {
       const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
       const code = g(cCode); if (!code) continue;
-      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "" }; idx.set(code, c); clients.push(c); }
+      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "", modeles: [], lignes: [] }; idx.set(code, c); clients.push(c); }
       const c = idx.get(code)!;
       const p = g(cPack); if (p && !c.packs.includes(p)) c.packs = c.packs ? c.packs + " · " + p : p;
+      const pr = modeleDepuis(g(cProd)); if (pr && !c.modeles.includes(pr)) c.modeles.push(pr);
+      c.lignes.push({ pack: g(cPack), modele: pr, num: g(cNum), dateDebut: g(cDd), dateFin: g(cDf), immats: g(cImm), etat: g(cEtat) });
       const n = g(cNum); if (n && !c.contrats.includes(n)) c.contrats = c.contrats ? c.contrats + ", " + n : n;
       const im = g(cImm); if (im && !c.immats.includes(im)) c.immats = c.immats ? c.immats + ", " + im : im;
       const kd = cleDate(g(cDd)); if (!Number.isNaN(kd) && (prem.get(code) === undefined || kd < prem.get(code)!)) { prem.set(code, kd); c.dateDebut = fmtDate(kd); }
@@ -85,6 +102,24 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
     }
     for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
+    // ── Regroupement par CONTRAT (n° Locam) : plusieurs lignes du Sheet
+    // partagent le même n° (une ligne par scooter). ──
+    for (const c of clients) {
+      const groupes = new Map<string, ContratLigne>();
+      for (const l of c.lignes) {
+        const cle = (l.num || "").trim() || "#" + l.pack + "|" + l.dateDebut;
+        const ex = groupes.get(cle);
+        if (!ex) groupes.set(cle, { ...l });
+        else {
+          if (l.immats && !(ex.immats || "").includes(l.immats)) ex.immats = ex.immats ? ex.immats + ", " + l.immats : l.immats;
+          if (l.modele && !(ex.modele || "").includes(l.modele)) ex.modele = ex.modele ? ex.modele + " · " + l.modele : l.modele;
+          if (!ex.dateDebut && l.dateDebut) ex.dateDebut = l.dateDebut;
+          if (!ex.dateFin && l.dateFin) ex.dateFin = l.dateFin;
+          if (!ex.etat && l.etat) ex.etat = l.etat;
+        }
+      }
+      c.lignes = Array.from(groupes.values());
+    }
     return { clients, lectureOk: true };
   } catch { return { clients: [], lectureOk: false }; /* réseau indisponible : pas de blocage, aucune invention */ }
 };
@@ -135,6 +170,42 @@ const franchiseurDepuis = (enseigne: string): string => {
   const e = norme(enseigne);
   const t = FRANCHISEURS.find(([k]) => e.includes(k));
   return t ? t[1] : "";
+};
+
+// ── Modèles de scooters U'mob : valeurs proposées à la sélection, à la
+// création d'entreprise comme à l'édition. modeleDepuis() traduit un libellé
+// du Sheet (« INFINITY PRO », « COMPACT PRO », « DAILY PRO »…) vers la valeur
+// normalisée du CRM ; libellé inconnu → vide (jamais de guess). ──
+const MODELES_SCOOTER = ["Infinity Pro", "Compact Pro", "Daily Pro"];
+const MODELE_DEPUIS: [string, string][] = [
+  ["infinitypro", "Infinity Pro"], ["compactpro", "Compact Pro"], ["dailypro", "Daily Pro"],
+];
+const modeleDepuis = (p: string): string => {
+  const n = norme(p);
+  const t = MODELE_DEPUIS.find(([k]) => n.includes(k));
+  return t ? t[1] : "";
+};
+// ── Fusion des contrats individuels vers les champs agrégés historiques
+// (pack, période globale min/max, n° Locam, immatriculations, nb véhicules) :
+// la fiche garde ses compteurs de synthèse, mais la VÉRITÉ vit dans
+// `contrats` — un bloc par contrat avec ses propres dates. ──
+const fusionnerContrats = (cs: ContratLigne[]): { pack: string; dateDebut: string; dateFin: string; nbVehicules: string; contratLocam: string; immatriculations: string } => {
+  const v = cs || [];
+  const uniq = (arr: string[]) => Array.from(new Set(arr.map((s) => s.trim()).filter(Boolean)));
+  const cleDate = (d: string) => { const p = d.trim().split("/").map(Number); return p.length === 3 ? p[2] * 10000 + p[1] * 100 + p[0] : NaN; };
+  const p2 = (n: number) => (n < 10 ? "0" : "") + n;
+  const fmt = (k: number) => p2(k % 100) + "/" + p2(Math.floor(k / 100) % 100) + "/" + Math.floor(k / 10000);
+  const debuts = v.map((c) => cleDate(c.dateDebut)).filter((n) => !Number.isNaN(n));
+  const fins = v.map((c) => cleDate(c.dateFin)).filter((n) => !Number.isNaN(n));
+  const immatsUniques = uniq(v.flatMap((c) => (c.immats || "").split(",")));
+  return {
+    pack: uniq(v.map((c) => c.pack)).join(" · "),
+    contratLocam: uniq(v.map((c) => c.num)).join(", "),
+    dateDebut: debuts.length ? fmt(Math.min(...debuts)) : "",
+    dateFin: fins.length ? fmt(Math.max(...fins)) : "",
+    immatriculations: immatsUniques.join(", "),
+    nbVehicules: immatsUniques.length ? String(immatsUniques.length) : "",
+  };
 };
 
 // ── Types d'activités façon HubSpot ──
@@ -345,7 +416,9 @@ function normaliser(s: Etat): Etat {
       pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "",
       // Migration « Risque » : champ absent des vieilles sauvegardes → vide.
       risque: "",
+      modeles: [],
       ...x,
+      contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: x.contratLocam || "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
       activites: x.activites || [],
     })),
     // Migration contacts : l'ancien champ unique `entrepriseId` devient un
@@ -507,7 +580,7 @@ type ContactSimple = { prenom: string; nom: string; role: string; email: string;
 type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; dejaClient?: string; proprietaire?: string };
 
 // Modèles vierges servant de point de départ en mode création.
-const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "" };
+const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "", modeles: [], contrats: [] };
 const CTC_VIDE: Contact = { id: "", prenom: "", nom: "", role: "", email: "", tel: "", entrepriseIds: [], activites: [] };
 const DEAL_VIDE: Deal = { id: "", nom: "", entrepriseId: "", contactId: "", montant: 0, etape: "À qualifier", action: "", echeance: "", notes: "", fait: false, activites: [] };
 
@@ -809,13 +882,22 @@ function Modale({
   // ── Recherche réelle : SIREN (9 chiffres) ou nom (≥ 3 caractères) ->
   // API Recherche d’entreprises. Téléphone -> annuaire local. Repli sur
   // l’annuaire local en cas d’échec ou de résultat vide.
+  // Repli annuaire local : consulter le Sheet AUSSI ici (le chemin API gouv
+  // le fait déjà) — sinon un client du Sheet créé via l'annuaire arrive sans
+  // contrats ni modèles.
+  const remplirDepuisSheet = (f: { nom: string; nomCommercial: string; ville: string }) => {
+    chargerClientsSheet().then(({ clients }) => {
+      const cliS = trouverClientSheet(clients, f.nom, (f.nomCommercial.split(" — ")[0] || f.nomCommercial), f.ville);
+      if (cliS) setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+    });
+  };
   const enrichir = async () => {
     let q = qRecherche.replace(/\D/g, "");
     if (q.length === 11 && q.startsWith("33")) q = "0" + q.slice(2);
     const qt = qRecherche.trim();
     if (q.length >= 10 && q.startsWith("0")) {
       const f = annuaireLocal(q);
-      if (f) appliquer(f);
+      if (f) { appliquer(f); remplirDepuisSheet(f); }
       else rienTrouve();
       return;
     }
@@ -839,7 +921,7 @@ function Modale({
         // l’utilisateur vérifie avant d’enregistrer ; sans match, tout reste vide).
         const cliS = trouverClientSheet(clientsSheet, fiche.nom, (fiche.nomCommercial.split(" — ")[0] || fiche.nomCommercial), fiche.ville);
         if (cliS) {
-          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
         }
         // Sheet illisible : partage retiré ou Google bloque l’accès anonyme.
         // On le DIT au lieu de laisser croire qu’aucune société n’est cliente.
@@ -849,12 +931,12 @@ function Modale({
         }
       } else {
         const f = annuaireLocal(q);
-        if (f) appliquer(f);
+        if (f) { appliquer(f); remplirDepuisSheet(f); }
         else rienTrouve();
       }
     } catch {
       const f = annuaireLocal(q);
-      if (f) appliquer(f);
+      if (f) { appliquer(f); remplirDepuisSheet(f); }
       else {
         rienTrouve();
         setMsgRecherche({ ok: false, texte: "⚠️ Recherche en ligne indisponible (erreur réseau) et absente de l’annuaire local — remplissez la fiche manuellement." });
@@ -1088,19 +1170,49 @@ function Modale({
               {/* ── Contrat & flotte : renseignés pour les clients (source :
                   Sheet « Infos Service Client » / contrats Locam). Éditables
                   à la main, comme tous les champs du CRM. ── */}
-              <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Contrat & flotte (Locam)</div>
-              <div><label className={label}>Pack choisi</label>
-                <input className={champ} value={ent.pack} onChange={(e) => setEnt({ ...ent, pack: e.target.value })} placeholder="ex. Modèle Confort + 48" /></div>
-              <div><label className={label}>N° contrat Locam</label>
-                <input className={champ} value={ent.contratLocam} onChange={(e) => setEnt({ ...ent, contratLocam: e.target.value })} placeholder="ex. CO01559" /></div>
-              <div><label className={label}>Date début contrat</label>
-                <input className={champ} value={ent.dateDebut} onChange={(e) => setEnt({ ...ent, dateDebut: e.target.value })} placeholder="ex. 15/03/2024" /></div>
-              <div><label className={label}>Date fin contrat</label>
-                <input className={champ} value={ent.dateFin} onChange={(e) => setEnt({ ...ent, dateFin: e.target.value })} placeholder="ex. 05/04/2028" /></div>
-              <div><label className={label}>Nb véhicules</label>
-                <input className={champ} value={ent.nbVehicules} onChange={(e) => setEnt({ ...ent, nbVehicules: e.target.value })} placeholder="ex. 2" /></div>
-              <div><label className={label}>Immatriculations</label>
-                <input className={champ} value={ent.immatriculations} onChange={(e) => setEnt({ ...ent, immatriculations: e.target.value })} placeholder="ex. GQ-591-NL, GQ-692-NL" /></div>
+              <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Modèles de scooter (U'mob)</div>
+              <div className="col-span-2"><label className={label}>Modèle(s) loué(s) par ce client</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {MODELES_SCOOTER.map((m) => {
+                    const on = (ent.modeles || []).includes(m);
+                    return (
+                      <button key={m} type="button" onClick={() => setEnt((x) => ({ ...x, modeles: on ? (x.modeles || []).filter((y) => y !== m) : [...(x.modeles || []), m] }))}
+                        className={"rounded-lg px-2.5 py-1.5 text-[12px] font-bold transition " + (on ? "bg-emerald-500 text-white shadow-sm" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}>
+                        {on ? "✓ " : ""}{m}
+                      </button>
+                    );
+                  })}
+                  {(ent.modeles || []).filter((m) => !MODELES_SCOOTER.includes(m)).map((m) => (
+                    <button key={m} type="button" onClick={() => setEnt((x) => ({ ...x, modeles: (x.modeles || []).filter((y) => y !== m) }))}
+                      className="rounded-lg bg-emerald-500 px-2.5 py-1.5 text-[12px] font-bold text-white shadow-sm">✓ {m}</button>
+                  ))}
+                </div>
+                <div className="mt-1 text-[10.5px] text-slate-400">Pré-cochés automatiquement si le client figure dans le Sheet « Infos Service Client » (colonne Libellé Produit client) — sinon sélection manuelle.</div>
+              </div>
+              <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Contrat & flotte (Locam) — un bloc par contrat</div>
+              {(ent.contrats || []).map((k, i) => (
+                <div key={i} className="col-span-2 rounded-xl border border-slate-200 bg-slate-50/60 p-2">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-[11px] font-black text-slate-500">Contrat {i + 1}{k.num ? " — " + k.num : ""}{k.etat ? " · " + k.etat : ""}</span>
+                    <button type="button" onClick={() => setEnt((x) => ({ ...x, contrats: (x.contrats || []).filter((_, j) => j !== i) }))}
+                      className="text-[11px] font-bold text-red-400 hover:underline">✕ Retirer</button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><label className={label}>Pack</label>
+                      <input className={champ} value={k.pack} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, pack: e.target.value } : k2) }))} placeholder="ex. Modèle Confort + 48" /></div>
+                    <div><label className={label}>N° Locam</label>
+                      <input className={champ} value={k.num} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, num: e.target.value } : k2) }))} placeholder="ex. CO01559" /></div>
+                    <div><label className={label}>Début</label>
+                      <input className={champ} value={k.dateDebut} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, dateDebut: e.target.value } : k2) }))} placeholder="ex. 15/03/2024" /></div>
+                    <div><label className={label}>Fin</label>
+                      <input className={champ} value={k.dateFin} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, dateFin: e.target.value } : k2) }))} placeholder="ex. 05/04/2028" /></div>
+                    <div className="col-span-2"><label className={label}>Immatriculations</label>
+                      <input className={champ} value={k.immats} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, immats: e.target.value } : k2) }))} placeholder="ex. GQ-591-NL, GQ-692-NL" /></div>
+                  </div>
+                </div>
+              ))}
+              <button type="button" onClick={() => setEnt((x) => ({ ...x, contrats: [...(x.contrats || []), { pack: "", modele: "", num: "", dateDebut: "", dateFin: "", immats: "", etat: "" }] }))}
+                className="col-span-2 rounded-lg border border-dashed border-slate-300 py-1.5 text-[12px] font-bold text-cyan-600 hover:bg-cyan-50">+ Ajouter un contrat</button>
               <div><label className={label}>Risque (source SAV)</label>
                 <ChampSelect valeur={ent.risque} options={OPTIONS_RISQUE} onChange={(v) => setEnt({ ...ent, risque: v })} /></div>
               <div className="col-span-2"><label className={label}>Notes</label>
@@ -1141,7 +1253,7 @@ function Modale({
               {/* Fallback "Sans nom" pour ne jamais créer d'entreprise sans titre.
                   En création, on transmet aussi les contacts cochés ET les
                   autres sociétés du dirigeant cochées (3e et 4e arguments). */}
-              <button onClick={() => onSauver(cible, { ...ent, nom: ent.nom.trim() || "Sans nom" },
+              <button onClick={() => onSauver(cible, { ...ent, ...fusionnerContrats(ent.contrats), nom: ent.nom.trim() || "Sans nom" },
                 nouveau ? contactsProposes.filter((x) => x.coche) : undefined,
                 nouveau ? societesProposees.filter((x) => x.coche) : undefined)}
                 className="flex-1 rounded-xl py-2.5 text-[13px] font-black text-white" style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
@@ -1369,15 +1481,44 @@ function genererResumeIA(nom: string, events: { date: string; texte: string; typ
   return { texte, sentiment, couleurSentiment, sources: events.length };
 }
 
+/* ---- « Posez une question » façon Breeze HubSpot : l'utilisateur interroge
+   la fiche en langage naturel. La réponse est une RECHERCHE PAR PERTINENCE
+   calculée localement sur les FAITS de la fiche (propriétés, contrats,
+   contacts, deals, activités). Sans correspondance, on le DIT honnêtement
+   (jamais d'invention). Prochaine étape : brancher l'API Mistral avec ce
+   même contexte de faits. */
+const MOTS_VIDES = new Set(["le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "est", "sont", "que", "qui", "quoi", "quand", "quel", "quelle", "quels", "quelles", "combien", "dans", "sur", "pour", "avec", "sans", "ce", "cet", "cette", "ces", "son", "sa", "ses", "au", "aux", "en", "il", "elle", "on", "nous", "vous", "je", "tu", "se", "par", "plus", "tout", "tous", "peut", "fais", "fait", "chez"]);
+const motsUtiles = (s: string): string[] =>
+  norme(s).split(/[\s,;]+/).map((m) => m.trim()).filter((m) => m.length > 2 && !MOTS_VIDES.has(m));
+const repondreLocalement = (question: string, faits: string[]): { reponse: string; trouve: boolean } => {
+  const mots = motsUtiles(question);
+  if (!mots.length) return { reponse: "Pose ta question pour que je cherche dans la fiche.", trouve: false };
+  const scores = faits.map((f) => {
+    const nf = norme(f);
+    return mots.reduce((s, m) => s + (nf.includes(m) ? 1 : 0), 0);
+  });
+  const iMeilleur = scores.indexOf(Math.max(...scores));
+  if (scores[iMeilleur] === 0) return { reponse: "Je n'ai rien trouvé sur ce sujet dans cette fiche — les données du CRM restent la source de vérité.", trouve: false };
+  return { reponse: faits[iMeilleur], trouve: true };
+};
+
 /* Carte affichée en bas de la colonne droite des fiches Entreprise/Contact :
    badge IA, date de génération + nombre de sources, paragraphe synthétisé
    et ligne « Sentiment ». */
-function ResumeIA({ nom, events, prochaine }: {
+function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
   nom: string;
   events: { date: string; texte: string; type?: TypeActivite }[];
   prochaine?: { nom: string; action: string; echeance: string } | null;
+  faits: string[];
+  suggestions?: string[];
 }) {
   const r = genererResumeIA(nom, events, prochaine);
+  const [q, setQ] = useState("");
+  const [rep, setRep] = useState<{ reponse: string; trouve: boolean } | null>(null);
+  const poser = (question: string) => {
+    setQ(question);
+    setRep(repondreLocalement(question, faits));
+  };
   // Date du jour au format long français, comme « Généré le 14 octobre 2026 ».
   const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
   return (
@@ -1390,6 +1531,34 @@ function ResumeIA({ nom, events, prochaine }: {
       <div className="mt-2 flex items-center gap-1.5 rounded-xl bg-slate-50 px-2 py-1.5">
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: r.couleurSentiment }} />
         <span className="text-[11px] font-bold text-slate-500">Sentiment : <span style={{ color: r.couleurSentiment }}>{r.sentiment}</span></span>
+      </div>
+      {/* Zone « Posez une question » façon Breeze HubSpot : réponse cherchée
+          localement dans les faits de la fiche (branchement Mistral à venir). */}
+      <div className="mt-2.5 border-t border-slate-100 pt-2.5">
+        <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Posez une question sur cette fiche</div>
+        <div className="flex gap-1.5">
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep(repondreLocalement(q, faits)); }}
+            placeholder="ex. Quand se termine le contrat ?"
+            className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
+          <button type="button" onClick={() => { if (q.trim()) setRep(repondreLocalement(q, faits)); }}
+            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white"
+            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Demander</button>
+        </div>
+        {(suggestions || []).length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {(suggestions || []).map((s) => (
+              <button key={s} type="button" onClick={() => poser(s)}
+                className="rounded-full border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-500 hover:border-cyan-300 hover:text-cyan-600">{s}</button>
+            ))}
+          </div>
+        )}
+        {rep && (
+          <div className={"mt-2 rounded-xl px-2.5 py-2 text-[12px] leading-relaxed " + (rep.trouve ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-700")}>
+            <span className="mr-1">✨</span>{rep.reponse}
+          </div>
+        )}
+        <div className="mt-1.5 text-[9.5px] text-slate-300">Réponse calculée à partir de la fiche — les données du CRM restent la source de vérité.</div>
       </div>
     </CarteFiche>
   );
@@ -1667,7 +1836,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 Chaque ligne est éditable sur place (même mécanisme inline
                 que le panneau À propos). Source des données auto : Sheet
                 « Infos Service Client » (packs, dates, véhicules, Locam). */}
-            {(e.pack || e.contratLocam || e.nbVehicules || e.immatriculations || e.risque) && (
+            {(e.pack || e.contratLocam || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length) || (e.contrats && e.contrats.length)) && (
               <CarteFiche titre="🛵 Contrat & flotte">
                 <div className="space-y-2">
                   {e.risque && (
@@ -1677,17 +1846,31 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                       <span className="ml-auto text-[10px] font-medium text-red-400">source SAV</span>
                     </div>
                   )}
+                  {(e.modeles || []).length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Modèles</span>
+                      {e.modeles.map((m) => (
+                        <span key={m} className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11.5px] font-bold text-emerald-700">🛵 {m}</span>
+                      ))}
+                    </div>
+                  )}
                   <PropTexte label="Pack choisi" valeur={e.pack} onChange={(v) => onModifie({ pack: v })} />
-                  <PropTexte label="N° contrat Locam" valeur={e.contratLocam} onChange={(v) => onModifie({ contratLocam: v })} />
+                  {(e.contrats || []).map((k, i) => (
+                    <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-2">
+                      <div className="mb-1 text-[11px] font-black text-slate-500">Contrat {i + 1}{k.num ? " — " + k.num : ""}{k.etat ? " · " + k.etat : ""}</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <PropTexte label="Pack" valeur={k.pack} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
+                        <PropTexte label="N° Locam" valeur={k.num} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, num: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
+                        <PropTexte label="Début" valeur={k.dateDebut} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateDebut: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
+                        <PropTexte label="Fin" valeur={k.dateFin} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateFin: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
+                        <div className="col-span-2"><PropTexte label="Immatriculations" valeur={k.immats} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, immats: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} /></div>
+                      </div>
+                    </div>
+                  ))}
                   <div className="flex gap-3">
-                    <div className="min-w-0 flex-1"><PropTexte label="Début" valeur={e.dateDebut} onChange={(v) => onModifie({ dateDebut: v })} /></div>
-                    <div className="min-w-0 flex-1"><PropTexte label="Fin" valeur={e.dateFin} onChange={(v) => onModifie({ dateFin: v })} /></div>
-                  </div>
-                  <div className="flex gap-3">
-                    <div className="min-w-0 flex-1"><PropTexte label="Véhicules" valeur={e.nbVehicules} onChange={(v) => onModifie({ nbVehicules: v })} /></div>
+                    <div className="min-w-0 flex-1"><Prop label="Véhicules" valeur={e.nbVehicules} /></div>
                     <div className="min-w-0 flex-1"><PropSelect label="Risque" valeur={e.risque} options={OPTIONS_RISQUE} onChange={(v) => onModifie({ risque: v })} /></div>
                   </div>
-                  <PropTexte label="Immatriculations" valeur={e.immatriculations} onChange={(v) => onModifie({ immatriculations: v })} />
                 </div>
               </CarteFiche>
             )}
@@ -1736,9 +1919,29 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             </div>
           </CarteFiche>
 
-            {/* Résumé auto en bas de la colonne droite (comme HubSpot). */}
-            {/* Résumé « IA » en bas de la colonne droite (comme Breeze HubSpot). */}
-            <ResumeIA nom={e.nom} events={events} prochaine={prochaine} />
+            {/* Résumé « IA » + zone de questions en bas de la colonne droite. */}
+            <ResumeIA nom={e.nom} events={events} prochaine={prochaine}
+              faits={[
+                e.statut ? e.nom + " a le statut « " + e.statut + " »." : "",
+                e.ville ? e.nom + " est situé à " + e.ville + "." : "",
+                e.tel ? "Le téléphone de " + e.nom + " est le " + e.tel + "." : "",
+                e.secteur ? "Secteur : " + e.secteur + "." : "",
+                e.activite ? "Activité : " + e.activite + "." : "",
+                e.franchiseur ? "Franchiseur : " + e.franchiseur + "." : "",
+                e.modeLivraison ? "Mode de livraison : " + e.modeLivraison + "." : "",
+                e.risque ? "⚠️ Risque signalé : " + e.risque + "." : "",
+                (e.modeles || []).length > 0 ? e.nom + " loue des scooters " + e.modeles.join(" et ") + "." : "",
+                (e.contrats || []).length > 0 ? e.nom + " a " + e.contrats.length + (e.contrats.length > 1 ? " contrats" : " contrat") + " Locam." : "",
+                ...(e.contrats || []).map((k) => "Contrat " + k.num + " (" + k.pack + ") : du " + k.dateDebut + " au " + k.dateFin + (k.immats ? ", immatriculations " + k.immats : "") + "."),
+                e.dateDebut && e.dateFin ? "La période totale des contrats va du " + e.dateDebut + " au " + e.dateFin + "." : "",
+                e.contratLocam ? "Numéros de contrat Locam : " + e.contratLocam + "." : "",
+                e.nbVehicules ? e.nom + " exploite " + e.nbVehicules + " véhicule(s)." : "",
+                e.immatriculations ? "Immatriculations de la flotte : " + e.immatriculations + "." : "",
+                ...etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).map((x) => x.prenom + " " + x.nom + (x.role ? " (" + x.role + ")" : "") + " est un contact de " + e.nom + (x.tel ? " — tél. " + x.tel : "") + (x.email ? " — email " + x.email : "") + "."),
+                ...etat.deals.filter((d) => d.entrepriseId === e.id).map((d) => "Deal « " + d.nom + " » : " + d.montant + " k€, étape « " + d.etape + " »" + (d.action ? ", prochaine action : " + d.action + (d.echeance ? " (le " + d.echeance + ")" : "") : "") + "."),
+                ...events.map((ev) => META_ACT[ev.type || "note"].libelle + " du " + ev.date + " : " + ev.texte + "."),
+              ].filter(Boolean)}
+              suggestions={["Quand se termine le contrat ?", "Quels modèles loue ce client ?", "Qui sont les contacts ?", "Où se situe l'entreprise ?", "Quelle est la dernière activité ?"]} />
           </div>
         </div>
       </div>
@@ -1874,8 +2077,15 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }:
             </div>
           </CarteFiche>
 
-            {/* Résumé « IA » en bas de la colonne droite (comme Breeze HubSpot). */}
-            <ResumeIA nom={`${c.prenom} ${c.nom}`} events={events} prochaine={prochaine} />
+            {/* Résumé « IA » + zone de questions en bas de la colonne droite. */}
+            <ResumeIA nom={c.prenom + " " + c.nom} events={events} prochaine={prochaine}
+              faits={[
+                c.prenom + " " + c.nom + (c.role ? " est " + c.role : "") + (c.email ? " — email " + c.email : "") + (c.tel ? " — tél. " + c.tel : "") + ".",
+                ...etat.entreprises.filter((x) => (c.entrepriseIds || []).includes(x.id)).map((x) => c.prenom + " " + c.nom + " est rattaché à " + x.nom + (x.ville ? " (" + x.ville + ")" : "") + ", statut « " + x.statut + " »" + (x.tel ? " — tél. " + x.tel : "") + "."),
+                ...etat.deals.filter((d) => d.contactId === c.id).map((d) => "Deal « " + d.nom + " » : " + d.montant + " k€, étape « " + d.etape + " »" + (d.action ? ", prochaine action : " + d.action : "") + "."),
+                ...events.map((ev) => META_ACT[ev.type || "note"].libelle + " du " + ev.date + " : " + ev.texte + "."),
+              ].filter(Boolean)}
+              suggestions={["Quelles sont ses entreprises ?", "Quel est son email ?", "Quelle est la dernière activité ?"]} />
           </div>
         </div>
       </div>
@@ -2363,7 +2573,7 @@ export default function App() {
           nom: g.nom, nomCommercial: g.nomCommercial, secteur: g.secteur, ville: g.ville,
           site: g.site, tel: g.tel, franchiseur: g.franchiseur, modeLivraison: g.modeLivraison,
           activite: g.activite, statut: "Suspect", notes: "", activites: [],
-          pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "",
+          pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "", modeles: [], contrats: [],
         }));
         nouvellesSocietes.forEach((ns) => rattacher(ns.id));
         return {
