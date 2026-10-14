@@ -1489,7 +1489,7 @@ function genererResumeIA(nom: string, events: { date: string; texte: string; typ
    mÃªme contexte de faits. */
 const MOTS_VIDES = new Set(["le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "est", "sont", "que", "qui", "quoi", "quand", "quel", "quelle", "quels", "quelles", "combien", "dans", "sur", "pour", "avec", "sans", "ce", "cet", "cette", "ces", "son", "sa", "ses", "au", "aux", "en", "il", "elle", "on", "nous", "vous", "je", "tu", "se", "par", "plus", "tout", "tous", "peut", "fais", "fait", "chez"]);
 const motsUtiles = (s: string): string[] =>
-  s.split(/[\s,;:!?.']+|[’]/).map((m) => norme(m)).filter((m) => m.length > 2 && !MOTS_VIDES.has(m));
+  s.split(/[\s,;:!?.'+]|[\u2019]/).map((m) => norme(m)).filter((m) => m.length > 2 && !MOTS_VIDES.has(m));
 const repondreLocalement = (question: string, faits: string[]): { reponse: string; trouve: boolean } => {
   const mots = motsUtiles(question);
   if (!mots.length) return { reponse: "Pose ta question pour que je cherche dans la fiche.", trouve: false };
@@ -1514,10 +1514,10 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
 }) {
   const r = genererResumeIA(nom, events, prochaine);
   const [q, setQ] = useState("");
-  const [rep, setRep] = useState<{ reponse: string; trouve: boolean } | null>(null);
+  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string } | null>(null);
   const poser = (question: string) => {
     setQ(question);
-    setRep(repondreLocalement(question, faits));
+    setRep({ ...repondreLocalement(question, faits), qPosee: question });
   };
   // Date du jour au format long franÃ§ais, comme Â« GÃ©nÃ©rÃ© le 14 octobre 2026 Â».
   const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
@@ -1538,10 +1538,10 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Posez une question sur cette fiche</div>
         <div className="flex gap-1.5">
           <input value={q} onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep(repondreLocalement(q, faits)); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
             placeholder="ex. Quand se termine le contrat ?"
             className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
-          <button type="button" onClick={() => { if (q.trim()) setRep(repondreLocalement(q, faits)); }}
+          <button type="button" onClick={() => { if (q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
             className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white"
             style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Demander</button>
         </div>
@@ -1555,7 +1555,7 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         )}
         {rep && (
           <div className={"mt-2 rounded-xl px-2.5 py-2 text-[12px] leading-relaxed " + (rep.trouve ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-700")}>
-            <span className="mr-1">â¨</span>{rep.reponse}
+            <span className="mr-1">â¨</span>{rep.qPosee ? <span className="font-black text-slate-400">{"\u00ab " + rep.qPosee + " \u00bb \u2014 "}</span> : null}{rep.reponse}
           </div>
         )}
         <div className="mt-1.5 text-[9.5px] text-slate-300">RÃ©ponse calculÃ©e Ã  partir de la fiche â les donnÃ©es du CRM restent la source de vÃ©ritÃ©.</div>
