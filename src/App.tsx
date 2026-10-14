@@ -1516,11 +1516,38 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
 }) {
   const r = genererResumeIA(nom, events, prochaine);
   const [q, setQ] = useState("");
-  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string } | null>(null);
-  const poser = (question: string) => {
-    setQ(question);
-    setRep({ ...repondreLocalement(question, faits), qPosee: question });
+  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string; ia: boolean } | null>(null);
+  const [encours, setEncours] = useState(false);
+  // Clé API Mistral : variable d’environnement VITE_MISTRAL_API_KEY (Vercel, type
+  // Config). Absente (développement local, canvas) → repli sur le moteur local,
+  // aucune panne possible.
+  const CLE = ((import.meta as any).env || {}).VITE_MISTRAL_API_KEY || "";
+  const demander = async (question: string) => {
+    if (!question.trim()) return;
+    // Réponse locale immédiate : le bouton réagit instantanément, même sans clé.
+    setRep({ ...repondreLocalement(question, faits), qPosee: question, ia: false });
+    if (!CLE) return;
+    setEncours(true);
+    try {
+      const repIA = await fetch("https://api.mistral.ai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + CLE },
+        body: JSON.stringify({
+          model: "mistral-small-latest",
+          temperature: 0.2,
+          max_tokens: 300,
+          messages: [
+            { role: "system", content: "Tu es l’assistant du CRM U’mob. Réponds en français, en 1 à 3 phrases, UNIQUEMENT à partir des FAITS de la fiche fournis ci-dessous. Si l’information n’y figure pas, dis honnêtement qu’elle n’est pas renseignée. N’invente jamais rien." },
+            { role: "user", content: "FAITS SUR LA FICHE :\n- " + faits.join("\n- ") + "\n\nQUESTION : " + question },
+          ],
+        }),
+      }).then((x) => x.json());
+      const texte = (repIA?.choices?.[0]?.message?.content || "").trim();
+      if (texte) setRep({ reponse: texte, trouve: true, qPosee: question, ia: true });
+    } catch { /* réseau indisponible : on garde la réponse locale affichée */ }
+    setEncours(false);
   };
+  const poser = (question: string) => { setQ(question); demander(question); };
   // Date du jour au format long français, comme « Généré le 14 octobre 2026 ».
   const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
   return (
@@ -1534,18 +1561,18 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: r.couleurSentiment }} />
         <span className="text-[11px] font-bold text-slate-500">Sentiment : <span style={{ color: r.couleurSentiment }}>{r.sentiment}</span></span>
       </div>
-      {/* Zone « Posez une question » façon Breeze HubSpot : réponse cherchée
-          localement dans les faits de la fiche (branchement Mistral à venir). */}
+      {/* Zone « Posez une question » : réponse locale instantanée, puis réponse
+          Mistral (si clé VITE_MISTRAL_API_KEY configurée) qui remplace la locale. */}
       <div className="mt-2.5 border-t border-slate-100 pt-2.5">
         <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Posez une question sur cette fiche</div>
         <div className="flex gap-1.5">
           <input value={q} onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
+            onKeyDown={(e) => { if (e.key === "Enter") demander(q); }}
             placeholder="ex. Quand se termine le contrat ?"
             className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
-          <button type="button" onClick={() => { if (q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
-            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white"
-            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Demander</button>
+          <button type="button" disabled={encours} onClick={() => demander(q)}
+            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white disabled:opacity-50"
+            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>{encours ? "…" : "Demander"}</button>
         </div>
         {(suggestions || []).length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
@@ -1557,10 +1584,11 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         )}
         {rep && (
           <div className={"mt-2 rounded-xl px-2.5 py-2 text-[12px] leading-relaxed " + (rep.trouve ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-700")}>
-            <span className="mr-1">✨</span>{rep.qPosee ? <span className="font-black text-slate-400">{`« ${rep.qPosee} » — `}</span> : null}{rep.reponse}
+            <span className="mr-1">✨</span>{rep.qPosee ? <span className="font-black text-slate-400">{"« " + rep.qPosee + " » — "}</span> : null}{rep.reponse}
+            {rep.ia && <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-600">Mistral AI</span>}
           </div>
         )}
-        <div className="mt-1.5 text-[9.5px] text-slate-300">Réponse calculée à partir de la fiche — les données du CRM restent la source de vérité.</div>
+        <div className="mt-1.5 text-[9.5px] text-slate-300">{CLE ? "Réponses assistées par Mistral AI à partir des données de la fiche." : "Réponse calculée à partir de la fiche — les données du CRM restent la source de vérité."}</div>
       </div>
     </CarteFiche>
   );
