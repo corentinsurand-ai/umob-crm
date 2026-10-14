@@ -29,6 +29,10 @@ interface Contact { id: string; prenom: string; nom: string; role: string; email
 // même téléphone (chiffres uniquement), ou même prénom+nom → c'est la MÊME
 // personne (ex. gérant de plusieurs franchises : on RATTACHE, on ne duplique jamais).
 const normTel = (t: string) => t.replace(/\D/g, "");
+// Normalisation de libellé pour comparer deux noms/enseignes : minuscules,
+// sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
+// en base sous un autre nom légal).
+const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 // (b accepte un Contact OU un ContactSimple de l'annuaire : seuls ces 4 champs comptent)
 const memePersonne = (a: { prenom: string; nom: string; email: string; tel: string }, b: { prenom: string; nom: string; email: string; tel: string }) =>
   (a.email && b.email && a.email.toLowerCase() === b.email.toLowerCase()) ||
@@ -403,7 +407,7 @@ type ContactSimple = { prenom: string; nom: string; role: string; email: string;
 // « SocieteSimple » = une AUTRE société du même dirigeant, suggérée à la
 // création (ex. le 2e Domino's de M. Piron). Même principe que les contacts :
 // une case à cocher pour accepter ou refuser chaque création.
-type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string };
+type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; dejaClient?: string };
 
 // Modèles vierges servant de point de départ en mode création.
 const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "" };
@@ -621,8 +625,21 @@ function Modale({
           const sg = (sx.siege || {}) as Record<string, any>;
           const vx = sg.libelle_commune ? capitaliser(String(sg.libelle_commune)) : "";
           const enseigneX = String(sg.nom_commercial || (Array.isArray(sg.liste_enseignes) ? sg.liste_enseignes[0] : "") || "");
+          // ── Déjà client ? On signale les suggestions correspondant à une fiche
+          // CLIENT existante (les clients réels du Sheet ont été importés dans la base).
+          // Reconnaissance prudente, règle anti-invention : même enseigne ET même
+          // ville que la fiche client (le nom légal peut différer) ; dans le doute,
+          // pas de badge.
+          const cli = etat.entreprises.find((e) => {
+            if (e.statut !== "Client" || !enseigneX) return false;
+            const ensFiche = (e.nomCommercial.split(" — ")[0] || e.nomCommercial).trim();
+            const vA = norme(e.ville), vB = norme(vx);
+            return norme(ensFiche) === norme(enseigneX) && vA !== "" &&
+              (vA === vB || (vA.length >= 4 && vB.length >= 4 && (vA.startsWith(vB) || vB.startsWith(vA))));
+          });
           societesSoeurs.push({
             siren: String(sx.siren || ""),
+            dejaClient: cli ? cli.nomCommercial : "",
             nom: String(sx.nom_complet || ""),
             nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
             ville: vx,
@@ -868,7 +885,7 @@ function Modale({
                     </button>
                   </div>
                   <div className="mt-1 text-[10px] text-cyan-600">
-                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune.
+                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune. Les suggestions marquées « Déjà client » existent déjà en base (clients réels importés du Sheet) — inutile de les recréer.
                   </div>
                   <div className="mt-2 space-y-1.5">
                     {societesProposees.map((g, i) => (
@@ -882,6 +899,7 @@ function Modale({
                           <span className="block text-[12px] font-bold text-slate-800">
                             {g.nom}
                             {g.ville && <span className="ml-1.5 font-medium text-slate-500">— {g.ville}</span>}
+                            {g.dejaClient && <span className="ml-1.5 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-black text-emerald-700">Déjà client : {g.dejaClient}</span>}
                           </span>
                           {(g.nomCommercial || g.activite || g.tel) && (
                             <span className="block text-[11px] text-slate-500">
