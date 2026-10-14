@@ -33,6 +33,77 @@ const normTel = (t: string) => t.replace(/\D/g, "");
 // sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
 // en base sous un autre nom légal).
 const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+// ── Sheet « Infos Service Client » (Google Sheet partagé « lien », lu EN DIRECT
+// par le navigateur au moment de la création via l’export CSV public — même mécanisme
+// que l’API gouv, aucune clé API). Une ligne = un CONTRAT ; on agrège par code
+// client. C’est la source officielle des clients : si le Sheet connaît la
+// société, elle EST cliente. Échec réseau → liste vide, aucun blocage, et JAMAIS
+// de champ contrat rempli sans donnée du Sheet (règle anti-invention). ──
+interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string }
+// Mini-parseur CSV gérant les champs entre guillemets (virgules incluses).
+const parserCSV = (txt: string): string[][] => {
+  const lignes: string[][] = []; let cur: string[] = []; let f = ""; let q = false;
+  const GL = String.fromCharCode(34);
+  for (let i = 0; i < txt.length; i++) { const ch = txt[i];
+    if (q) { if (ch === GL) { if (txt[i + 1] === GL) { f += GL; i++; } else q = false; } else f += ch; }
+    else if (ch === GL) q = true;
+    else if (ch === ",") { cur.push(f); f = ""; }
+    else if (ch === "\n") { cur.push(f); lignes.push(cur); cur = []; f = ""; }
+    else if (ch !== "\r") f += ch; }
+  if (f !== "" || cur.length) { cur.push(f); lignes.push(cur); }
+  return lignes;
+};
+const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
+  try {
+    const rep = await fetch("https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUJbjhUoiof7FZCk/gviz/tq?tqx=out:csv");
+    if (!rep.ok) return [];
+    const lignes = parserCSV(await rep.text());
+    const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
+    const col = (n: string) => tete.findIndex((h) => h === n.toLowerCase());
+    const cCode = col("Code client"), cNom = col("Nom client"), cVille = col("Ville"),
+      cPack = col("Libellé contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
+      cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Statut_risque_client"),
+      cImp = col("Impayes"), cProc = col("Procedure_collective_Radiation");
+    if (cCode < 0 || cNom < 0) return [];
+    const clients: ClientSheet[] = []; const idx = new Map<string, ClientSheet>();
+    const prem = new Map<string, number>(); const der = new Map<string, number>();
+    const cleDate = (d: string) => { const p = d.trim().split("/").map(Number); return p.length === 3 ? p[2] * 10000 + p[1] * 100 + p[0] : NaN; };
+    const p2 = (n: number) => (n < 10 ? "0" : "") + n;
+    const fmtDate = (k: number) => p2(k % 100) + "/" + p2(Math.floor(k / 100) % 100) + "/" + Math.floor(k / 10000);
+    for (const l of lignes.slice(1)) {
+      const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
+      const code = g(cCode); if (!code) continue;
+      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "" }; idx.set(code, c); clients.push(c); }
+      const c = idx.get(code)!;
+      const p = g(cPack); if (p && !c.packs.includes(p)) c.packs = c.packs ? c.packs + " · " + p : p;
+      const n = g(cNum); if (n && !c.contrats.includes(n)) c.contrats = c.contrats ? c.contrats + ", " + n : n;
+      const im = g(cImm); if (im && !c.immats.includes(im)) c.immats = c.immats ? c.immats + ", " + im : im;
+      const kd = cleDate(g(cDd)); if (!Number.isNaN(kd) && (prem.get(code) === undefined || kd < prem.get(code)!)) { prem.set(code, kd); c.dateDebut = fmtDate(kd); }
+      const kf = cleDate(g(cDf)); if (!Number.isNaN(kf) && (der.get(code) === undefined || kf > der.get(code)!)) { der.set(code, kf); c.dateFin = fmtDate(kf); }
+      const rq = g(cRq); if (rq && !c.risque) c.risque = rq;
+      else if (!c.risque && g(cImp).toLowerCase() === "true") c.risque = "Impayé";
+      else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
+    }
+    for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
+    return clients;
+  } catch { return []; /* réseau indisponible : pas de blocage, aucune invention */ }
+};
+// Reconnaissance prudente d’un client du Sheet (règle anti-invention : noms
+// normalisés comparés strictement, ville tolérante aux arrondissements ; dans le
+// doute on ne marque PAS). Le « Nom client » du Sheet peut être du type
+// « GAF (BOITE A PIZZA ANNEMASSE) » : on compare nom légal, base et parenthèse.
+const trouverClientSheet = (clients: ClientSheet[], nomLegal: string, enseigne: string, ville: string): ClientSheet | undefined =>
+  clients.find((c) => {
+    const base = c.nom.split(" (")[0].trim();
+    const paren = (c.nom.match(/\(([^)]*)\)/) || [])[1] || "";
+    const nL = norme(nomLegal), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville);
+    const villesOK = v === "" || vC === "" || v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v)));
+    return villesOK && ((
+      nL !== "" && (nL === norme(base) || nL === norme(c.nom))
+    ) || (
+      ens !== "" && ens.length >= 5 && (ens === norme(base) || ens === norme(paren) || norme(c.nom).includes(ens))
+    ));
+  });
 // (b accepte un Contact OU un ContactSimple de l'annuaire : seuls ces 4 champs comptent)
 const memePersonne = (a: { prenom: string; nom: string; email: string; tel: string }, b: { prenom: string; nom: string; email: string; tel: string }) =>
   (a.email && b.email && a.email.toLowerCase() === b.email.toLowerCase()) ||
@@ -558,7 +629,7 @@ function Modale({
   // une société ne peut pas être un contact — on va chercher SES propres
   // dirigeants personnes physiques (ex. Nicolas Bourbao, gérant d’ADAVEN). Le
   // rôle mentionne la société intermédiaire : info réelle INSEE, zéro invention.
-  const depuisGouv = async (r: Record<string, unknown>): Promise<{ fiche: (typeof ANNUAIRE_DEMO)[number]; soeurs: SocieteSimple[] }> => {
+  const depuisGouv = async (r: Record<string, unknown>, clientsSheet: ClientSheet[]): Promise<{ fiche: (typeof ANNUAIRE_DEMO)[number]; soeurs: SocieteSimple[] }> => {
     const siege = (r.siege || {}) as Record<string, any>;
     const enseigne = String(siege.nom_commercial || (Array.isArray(siege.liste_enseignes) ? siege.liste_enseignes[0] : "") || "");
     const ville = siege.libelle_commune ? capitaliser(String(siege.libelle_commune)) : "";
@@ -637,9 +708,12 @@ function Modale({
             return norme(ensFiche) === norme(enseigneX) && vA !== "" &&
               (vA === vB || (vA.length >= 4 && vB.length >= 4 && (vA.startsWith(vB) || vB.startsWith(vA))));
           });
+          // ── Le Sheet « Infos Service Client » est interrogé EN DIRECT : si la
+          // société sœur y figure, elle est cliente → badge vert à la création.
+          const sh = trouverClientSheet(clientsSheet, String(sx.nom_complet || ""), enseigneX, vx);
           societesSoeurs.push({
             siren: String(sx.siren || ""),
-            dejaClient: cli ? cli.nomCommercial : "",
+            dejaClient: cli ? cli.nomCommercial : (sh ? sh.nom : ""),
             nom: String(sx.nom_complet || ""),
             nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
             ville: vx,
@@ -712,8 +786,17 @@ function Modale({
       const actifs = resultats.filter((r) => r.etat_administratif === "A");
       const r = (actifs.length ? actifs : resultats)[0];
       if (r) {
-                const { fiche, soeurs } = await depuisGouv(r);
+                const clientsSheet = await chargerClientsSheet();
+        const { fiche, soeurs } = await depuisGouv(r, clientsSheet);
         appliquer(fiche);
+        // ── Sheet en direct : si la société cherchée est CLIENTE, on coche
+        // « Client » et on pré-remplit les champs contrat & flotte depuis le
+        // Sheet (données réelles de la source officielle — rien d’inventé,
+        // l’utilisateur vérifie avant d’enregistrer ; sans match, tout reste vide).
+        const cliS = trouverClientSheet(clientsSheet, fiche.nom, (fiche.nomCommercial.split(" — ")[0] || fiche.nomCommercial), fiche.ville);
+        if (cliS) {
+          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+        }
         if (soeurs.length > 0) {
           setSocietesProposees((prev) => prev.concat(soeurs.map((s) => ({ ...s, coche: false }))));
         }
@@ -885,7 +968,7 @@ function Modale({
                     </button>
                   </div>
                   <div className="mt-1 text-[10px] text-cyan-600">
-                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune. Les suggestions marquées « Déjà client » existent déjà en base (clients réels importés du Sheet) — inutile de les recréer.
+                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune. Les suggestions marquées « Déjà client » existent déjà en base (clients du Sheet « Infos Service Client », interrogé en direct) — inutile de les recréer.
                   </div>
                   <div className="mt-2 space-y-1.5">
                     {societesProposees.map((g, i) => (
