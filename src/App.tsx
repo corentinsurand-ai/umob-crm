@@ -676,6 +676,10 @@ function Modale({
     // Bourbao/­ADAVEN/­NOUR BREIZH : les sociétés du gérant réel sont portées par la
     // holding, donc seule la recherche par personne morale les remonte.
     let societesSoeurs: SocieteSimple[] = [];
+    // Un PANIER par dirigeant interrogé + déduplication globale par SIREN :
+    // on entrelacera les paniers à la fin (cf. fusion ci-dessous).
+    const paniers: SocieteSimple[][] = [];
+    const vus = new Set<string>();
     const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
     const sectionRef = String(r.section_activite_principale || "");
     const ajouterSoeurs = async (terme: string, physique: boolean) => {
@@ -688,11 +692,12 @@ function Modale({
           String(x.siren) !== String(r.siren) &&
           (sectionRef === "" || String((x as Record<string, any>).section_activite_principale || "") === sectionRef)
         );
+        const panier: SocieteSimple[] = [];
         for (const x of liste) {
           const sx = x as Record<string, any>;
           const nomX = String(sx.nom_complet || "").trim().toLowerCase();
           if (dejaConnues.includes(nomX)) continue;
-          if (societesSoeurs.some((s) => s.siren === String(sx.siren))) continue;
+          if (vus.has(String(sx.siren))) continue;
           const sg = (sx.siege || {}) as Record<string, any>;
           const vx = sg.libelle_commune ? capitaliser(String(sg.libelle_commune)) : "";
           const enseigneX = String(sg.nom_commercial || (Array.isArray(sg.liste_enseignes) ? sg.liste_enseignes[0] : "") || "");
@@ -711,7 +716,7 @@ function Modale({
           // ── Le Sheet « Infos Service Client » est interrogé EN DIRECT : si la
           // société sœur y figure, elle est cliente → badge vert à la création.
           const sh = trouverClientSheet(clientsSheet, String(sx.nom_complet || ""), enseigneX, vx);
-          societesSoeurs.push({
+          panier.push({
             siren: String(sx.siren || ""),
             dejaClient: cli ? cli.nomCommercial : (sh ? sh.nom : ""),
             nom: String(sx.nom_complet || ""),
@@ -722,7 +727,9 @@ function Modale({
             activite: NAF_ACTIVITE[String(sx.activite_principale || "")] || "",
             sources: ["INSEE · API Recherche d’entreprises"],
           });
+          vus.add(String(sx.siren));
         }
+        paniers.push(panier);
       } catch { /* réseau indisponible : on garde ce qui est déjà collecté */ }
     };
     // (1) personnes physiques identifiées (max 2, sinon trop d’appels)
@@ -733,7 +740,17 @@ function Modale({
     for (const mm of morales.slice(0, 1)) {
       await ajouterSoeurs(String(mm.denomination || ""), false);
     }
-    societesSoeurs = societesSoeurs.slice(0, 6);
+    // ── Fusion des paniers EN ENTRERELAÇANT les dirigeants : sans ça, un gros
+    // portefeuille (ex. les 8 Domino’s de Chbihi) remplit la limite et cache
+    // complètement les autres (ex. ceux de Bourbao, portés par la holding
+    // ADAVEN). On alterne 1 pour 1 entre les paniers, limite globale 9.
+    let tour = 0;
+    while (societesSoeurs.length < 9 && paniers.some((p) => p.length > 0)) {
+      const panier = paniers[tour % paniers.length];
+      if (panier.length > 0) societesSoeurs.push(panier.shift()!);
+      tour++;
+      if (tour > 300) break; // garde-fou
+    }
     return {
       fiche: {
         siren: String(r.siren || ""), tel: "", telAffiche: "",
