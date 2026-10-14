@@ -593,56 +593,56 @@ function Modale({
         contacts = contacts.concat(dm).slice(0, 3);
       } catch { /* réseau indisponible : on garde les personnes physiques déjà trouvées */ }
     }
-    // ── Sociétés sœurs du dirigeant résolu ──────────────────────────────────────────
-    // Si un dirigeant personne physique a été identifié (directement OU via une
-    // société holding résolue), on cherche ses AUTRES sociétés : le même gérant
-    // de plusieurs restaurants = 1 contact, N liens entreprises. Liste limitée
-    // (≤ 5) et seulement les sociétés ACTIVES ; la société en cours de création
-        // est exclue ; cases DÉCOCHÉES par défaut (créer une entreprise = opt-in).
+    // ── Sociétés sœurs — TOUS les dirigeants identifiés ────────────────────────
+    // On cherche les autres sociétés de CHAQUE dirigeant identifié : (1) les
+    // personnes physiques (ex. les autres Domino’s de Chbihi) ; (2) le DIRIGEANT
+    // PERSONNE MORALE lui-même (ex. ADAVEN) — ses sociétés sont celles où ADAVEN
+    // est dirigeant : NB1, ONES 22, LANTREGOR (Domino’s Pizza), ARMORYC… Le cas
+    // Bourbao/­ADAVEN/­NOUR BREIZH : les sociétés du gérant réel sont portées par la
+    // holding, donc seule la recherche par personne morale les remonte.
     let societesSoeurs: SocieteSimple[] = [];
-    if (contacts.length > 0) {
-      const dir = contacts[0];
+    const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
+    const sectionRef = String(r.section_activite_principale || "");
+    const ajouterSoeurs = async (terme: string, physique: boolean) => {
       try {
-        const repS = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(dir.prenom + " " + dir.nom) + "&personne_physique=true&per_page=15");
-        if (repS.ok) {
-          const jsS = (await repS.json()) as { results?: Record<string, unknown>[] };
-          // Filtre secteur : ne proposer QUE les sociétés du MÊME domaine que la
-          // société en cours de création (même section NAF, ex. 56 = restauration).
-          // Les holdings, sociétés électriques, immo’ du gérant ne sont pas des
-          // prospects U’mob — règle « même NAF » de la 11e itération, appliquée
-          // aussi aux sociétés sœurs venues de l’INSEE (jamais d’assimilation hasardeuse).
-          const sectionRef = String(r.section_activite_principale || "");
-          const liste = (jsS.results || []).filter((x) =>
-            x.etat_administratif === "A" &&
-            String(x.siren) !== String(r.siren) &&
-            (sectionRef === "" || String((x as Record<string, any>).section_activite_principale || "") === sectionRef)
-          );
-          const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
-          societesSoeurs = liste
-            .filter((x) => {
-              const nomX = String(x.nom_complet || "").trim().toLowerCase();
-              return !dejaConnues.includes(nomX);
-            })
-            .slice(0, 5)
-            .map((x) => {
-              const sx = x as Record<string, any>;
-              const sg = (sx.siege || {}) as Record<string, any>;
-              const vx = sg.libelle_commune ? capitaliser(String(sg.libelle_commune)) : "";
-              const enseigneX = String(sg.nom_commercial || (Array.isArray(sg.liste_enseignes) ? sg.liste_enseignes[0] : "") || "");
-              return {
-                siren: String(sx.siren || ""),
-                nom: String(sx.nom_complet || ""),
-                nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
-                ville: vx,
-                secteur: SECTION_SECTEUR[String(sx.section_activite_principale || "")] || "",
-                site: "", tel: "", franchiseur: "", modeLivraison: "",
-                activite: NAF_ACTIVITE[String(sx.activite_principale || "")] || "",
-                sources: ["INSEE · API Recherche d’entreprises"],
-              };
-            });
+        const repS = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(terme) + (physique ? "&personne_physique=true" : "&personne_morale=true") + "&per_page=15");
+        if (!repS.ok) return;
+        const jsS = (await repS.json()) as { results?: Record<string, unknown>[] };
+        const liste = (jsS.results || []).filter((x) =>
+          x.etat_administratif === "A" &&
+          String(x.siren) !== String(r.siren) &&
+          (sectionRef === "" || String((x as Record<string, any>).section_activite_principale || "") === sectionRef)
+        );
+        for (const x of liste) {
+          const sx = x as Record<string, any>;
+          const nomX = String(sx.nom_complet || "").trim().toLowerCase();
+          if (dejaConnues.includes(nomX)) continue;
+          if (societesSoeurs.some((s) => s.siren === String(sx.siren))) continue;
+          const sg = (sx.siege || {}) as Record<string, any>;
+          const vx = sg.libelle_commune ? capitaliser(String(sg.libelle_commune)) : "";
+          const enseigneX = String(sg.nom_commercial || (Array.isArray(sg.liste_enseignes) ? sg.liste_enseignes[0] : "") || "");
+          societesSoeurs.push({
+            siren: String(sx.siren || ""),
+            nom: String(sx.nom_complet || ""),
+            nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
+            ville: vx,
+            secteur: SECTION_SECTEUR[String(sx.section_activite_principale || "")] || "",
+            site: "", tel: "", franchiseur: "", modeLivraison: "",
+            activite: NAF_ACTIVITE[String(sx.activite_principale || "")] || "",
+            sources: ["INSEE · API Recherche d’entreprises"],
+          });
         }
-      } catch { /* réseau indisponible : pas de sociétés sœurs, ce n’est pas bloquant */ }
+      } catch { /* réseau indisponible : on garde ce qui est déjà collecté */ }
+    };
+    // (1) personnes physiques identifiées (max 2, sinon trop d’appels)
+    for (const c of contacts.slice(0, 2)) {
+      await ajouterSoeurs(c.prenom + " " + c.nom, true);
     }
+    // (2) dirigeants personnes morales (les holdings — ex. ADAVEN : max 1)
+    for (const mm of morales.slice(0, 1)) {
+      await ajouterSoeurs(String(mm.denomination || ""), false);
+    }
+    societesSoeurs = societesSoeurs.slice(0, 6);
     return {
       fiche: {
         siren: String(r.siren || ""), tel: "", telAffiche: "",
