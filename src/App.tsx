@@ -550,25 +550,49 @@ function Modale({
     s.toLowerCase().replace(/(^|[\s'’-])(.)/g, (m, a, b) => a + b.toUpperCase());
   // Convertit un résultat de l’API gouv en fiche compilée. Champs inconnus de
   // l’INSEE (téléphone, site, franchiseur, mode de livraison) : VIDES.
-  const depuisGouv = (r: Record<string, unknown>): (typeof ANNUAIRE_DEMO)[number] => {
+  // Dirigeants PERSONNES MORALES (ex. une holding comme ADAVEN, Président de SAS) :
+  // une société ne peut pas être un contact — on va chercher SES propres
+  // dirigeants personnes physiques (ex. Nicolas Bourbao, gérant d’ADAVEN). Le
+  // rôle mentionne la société intermédiaire : info réelle INSEE, zéro invention.
+  const depuisGouv = async (r: Record<string, unknown>): Promise<(typeof ANNUAIRE_DEMO)[number]> => {
     const siege = (r.siege || {}) as Record<string, any>;
     const enseigne = String(siege.nom_commercial || (Array.isArray(siege.liste_enseignes) ? siege.liste_enseignes[0] : "") || "");
     const ville = siege.libelle_commune ? capitaliser(String(siege.libelle_commune)) : "";
     const naf = String(r.activite_principale || "");
-    const contacts = ((r.dirigeants as unknown[]) || [])
+    const estPhysique = (d: unknown) => {
+      const dd = d as Record<string, any>;
+      return dd && dd.type_dirigeant === "personne physique" && dd.nom && dd.prenoms;
+    };
+    const enContact = (d: unknown, suffixeRole = "") => {
+      const dd = d as Record<string, any>;
+      return {
+        prenom: String(dd.prenoms || "").split(" ")[0],
+        nom: String(dd.nom || "").replace(/\s*\(.*\)\s*/g, "").trim(),
+        role: String(dd.qualite || "") + suffixeRole, email: "", tel: "",
+      };
+    };
+    const dirs = (r.dirigeants as unknown[]) || [];
+    let contacts = dirs.filter(estPhysique).slice(0, 3).map((d) => enContact(d));
+    // Résolution des dirigeants personnes morales (1 niveau, max 2 sociétés).
+    const morales = dirs
       .filter((d) => {
         const dd = d as Record<string, any>;
-        return dd && dd.type_dirigeant === "personne physique" && dd.nom && dd.prenoms;
+        return dd && dd.type_dirigeant === "personne morale" && dd.siren;
       })
-      .slice(0, 3)
-      .map((d) => {
-        const dd = d as Record<string, any>;
-        return {
-          prenom: String(dd.prenoms || "").split(" ")[0],
-          nom: String(dd.nom || "").replace(/\s*\(.*\)\s*/g, "").trim(),
-          role: String(dd.qualite || ""), email: "", tel: "",
-        };
-      });
+      .slice(0, 2);
+    for (const m of morales) {
+      const mm = m as Record<string, any>;
+      try {
+        const rep = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(String(mm.siren)) + "&per_page=1");
+        if (!rep.ok) continue;
+        const js = (await rep.json()) as { results?: Record<string, unknown>[] };
+        const rm = (js.results || [])[0];
+        if (!rm) continue;
+        const dm = ((rm.dirigeants as unknown[]) || []).filter(estPhysique).slice(0, 1)
+          .map((d) => enContact(d, " · via " + String(mm.denomination || mm.siren)));
+        contacts = contacts.concat(dm).slice(0, 3);
+      } catch { /* réseau indisponible : on garde les personnes physiques déjà trouvées */ }
+    }
     return {
       siren: String(r.siren || ""), tel: "", telAffiche: "",
       nom: String(r.nom_complet || r.nom_raison_sociale || ""),
@@ -618,7 +642,7 @@ function Modale({
       const actifs = resultats.filter((r) => r.etat_administratif === "A");
       const r = (actifs.length ? actifs : resultats)[0];
       if (r) {
-        appliquer(depuisGouv(r));
+        appliquer(await depuisGouv(r));
       } else {
         const f = annuaireLocal(q);
         if (f) appliquer(f);
