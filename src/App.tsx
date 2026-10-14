@@ -1493,9 +1493,11 @@ const motsUtiles = (s: string): string[] =>
 const repondreLocalement = (question: string, faits: string[]): { reponse: string; trouve: boolean } => {
   const mots = motsUtiles(question);
   if (!mots.length) return { reponse: "Pose ta question pour que je cherche dans la fiche.", trouve: false };
-  const scores = faits.map((f) => {
-    const nf = norme(f);
-    return mots.reduce((s, m) => s + (nf.includes(m) ? 1 : 0), 0);
+  const nfs = faits.map((f) => norme(f));
+  const poids = (m: string) => 1 / Math.log2(2 + nfs.filter((nf) => nf.includes(m)).length);
+  const scores = faits.map((_, i) => {
+    const gagnes = mots.filter((m) => nfs[i].includes(m));
+    return gagnes.reduce((s, m) => s + poids(m), 0) + gagnes.length * 0.001;
   });
   const iMeilleur = scores.indexOf(Math.max(...scores));
   if (scores[iMeilleur] === 0) return { reponse: "Je n'ai rien trouvé sur ce sujet dans cette fiche — les données du CRM restent la source de vérité.", trouve: false };
@@ -1930,15 +1932,18 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 e.franchiseur ? "Franchiseur : " + e.franchiseur + "." : "",
                 e.modeLivraison ? "Mode de livraison : " + e.modeLivraison + "." : "",
                 e.risque ? "⚠️ Risque signalé : " + e.risque + "." : "",
-                (e.modeles || []).length > 0 ? e.nom + " loue des scooters " + e.modeles.join(" et ") + "." : "",
+                (e.modeles || []).length > 0 ? e.nom + " loue les modèles de scooter " + e.modeles.join(" et ") + "." : "",
                 (e.contrats || []).length > 0 ? e.nom + " a " + e.contrats.length + (e.contrats.length > 1 ? " contrats" : " contrat") + " Locam." : "",
+                ...(e.contrats || []).map((k) => "Le contrat " + k.num + " se termine le " + k.dateFin + "."),
                 ...(e.contrats || []).map((k) => "Contrat " + k.num + " (" + k.pack + ") : du " + k.dateDebut + " au " + k.dateFin + (k.immats ? ", immatriculations " + k.immats : "") + "."),
                 e.dateDebut && e.dateFin ? "La période totale des contrats va du " + e.dateDebut + " au " + e.dateFin + "." : "",
                 e.contratLocam ? "Numéros de contrat Locam : " + e.contratLocam + "." : "",
                 e.nbVehicules ? e.nom + " exploite " + e.nbVehicules + " véhicule(s)." : "",
                 e.immatriculations ? "Immatriculations de la flotte : " + e.immatriculations + "." : "",
+                (etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).length > 0 ? "Les contacts de " + e.nom + " sont : " + etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).map((x) => x.prenom + " " + x.nom).join(", ") + "." : ""),
                 ...etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).map((x) => x.prenom + " " + x.nom + (x.role ? " (" + x.role + ")" : "") + " est un contact de " + e.nom + (x.tel ? " — tél. " + x.tel : "") + (x.email ? " — email " + x.email : "") + "."),
                 ...etat.deals.filter((d) => d.entrepriseId === e.id).map((d) => "Deal « " + d.nom + " » : " + d.montant + " k€, étape « " + d.etape + " »" + (d.action ? ", prochaine action : " + d.action + (d.echeance ? " (le " + d.echeance + ")" : "") : "") + "."),
+                (events.length > 0 ? "Dernière activité : " + events[0].texte + "." : ""),
                 ...events.map((ev) => META_ACT[ev.type || "note"].libelle + " du " + ev.date + " : " + ev.texte + "."),
               ].filter(Boolean)}
               suggestions={["Quand se termine le contrat ?", "Quels modèles loue ce client ?", "Qui sont les contacts ?", "Où se situe l'entreprise ?", "Quelle est la dernière activité ?"]} />
