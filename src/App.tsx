@@ -122,6 +122,21 @@ const clesContact = (ct: { prenom: string; nom: string; role: string }): string[
   return l.filter(Boolean);
 };
 
+// ── Franchiseurs connus : si l’enseigne INSEE contient une de ces marques,
+// le champ « Franchiseur » prend la valeur normalisée du menu déroulant. Ce n’est
+// PAS de l’invention : l’enseigne vient de l’INSEE, et la marque du réseau est un
+// fait public. Enseigne sans marque connue → champ vide (jamais de guess). ──
+const FRANCHISEURS: [string, string][] = [
+  ["dominospizza", "Domino's Pizza"], ["pizzahut", "Pizza Hut"], ["sushishop", "Sushi Shop"],
+  ["boiteapizza", "La Boîte à Pizza"], ["eatsushi", "Eat Sushi"], ["pizzatime", "Pizza Time"],
+  ["misterpizza", "Mister Pizza"], ["classcroute", "Class'Croute"], ["tuttipizza", "Tutti Pizza"],
+];
+const franchiseurDepuis = (enseigne: string): string => {
+  const e = norme(enseigne);
+  const t = FRANCHISEURS.find(([k]) => e.includes(k));
+  return t ? t[1] : "";
+};
+
 // ── Types d'activités façon HubSpot ──
 // "etape" est un type interne : il trace les mouvements de deals dans le pipeline
 // (généré automatiquement, jamais saisi à la main par l'utilisateur).
@@ -735,7 +750,7 @@ function Modale({
             nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
             ville: vx,
             secteur: SECTION_SECTEUR[String(sx.section_activite_principale || "")] || "",
-            site: "", tel: "", franchiseur: "", modeLivraison: "",
+            site: "", tel: "", franchiseur: franchiseurDepuis(enseigneX), modeLivraison: "",
             activite: NAF_ACTIVITE[String(sx.activite_principale || "")] || "",
             sources: ["INSEE · API Recherche d’entreprises"],
           });
@@ -770,7 +785,7 @@ function Modale({
         nomCommercial: enseigne && ville ? enseigne + " — " + ville : enseigne,
         ville,
         secteur: SECTION_SECTEUR[String(r.section_activite_principale || "")] || "",
-        site: "", franchiseur: "", modeLivraison: "",
+        site: "", franchiseur: franchiseurDepuis(enseigne), modeLivraison: "",
         activite: NAF_ACTIVITE[naf] || "",
         sources: ["INSEE · API Recherche d’entreprises"],
         contactsTrouves: contacts,
