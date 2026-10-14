@@ -110,6 +110,17 @@ const memePersonne = (a: { prenom: string; nom: string; email: string; tel: stri
   (a.tel && b.tel && normTel(a.tel) === normTel(b.tel)) ||
   (a.prenom.trim().toLowerCase() === b.prenom.trim().toLowerCase() &&
     a.nom.trim().toLowerCase() === b.nom.trim().toLowerCase());
+// Clés « propriétaire » d’un contact proposé : son prénom+nom normalisé, et si
+// son rôle mentionne une holding (« Gérant · via ADAVEN »), la holding aussi.
+// Sert à retirer de la liste les sociétés suggérées quand on DÉCOCHE leur dirigeant
+// (les sociétés de Bourbao sont collectées via la holding ADAVEN : décocher
+// Bourbao les retire, décocher Chbihi retire les siennes).
+const clesContact = (ct: { prenom: string; nom: string; role: string }): string[] => {
+  const l = [norme(ct.prenom + " " + ct.nom)];
+  const m = ct.role.match(/via\s+(.+)$/i);
+  if (m) l.push(norme(m[1].trim()));
+  return l.filter(Boolean);
+};
 
 // ── Types d'activités façon HubSpot ──
 // "etape" est un type interne : il trace les mouvements de deals dans le pipeline
@@ -478,7 +489,7 @@ type ContactSimple = { prenom: string; nom: string; role: string; email: string;
 // « SocieteSimple » = une AUTRE société du même dirigeant, suggérée à la
 // création (ex. le 2e Domino's de M. Piron). Même principe que les contacts :
 // une case à cocher pour accepter ou refuser chaque création.
-type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; dejaClient?: string };
+type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; dejaClient?: string; proprietaire?: string };
 
 // Modèles vierges servant de point de départ en mode création.
 const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "" };
@@ -682,7 +693,7 @@ function Modale({
     const vus = new Set<string>();
     const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
     const sectionRef = String(r.section_activite_principale || "");
-    const ajouterSoeurs = async (terme: string, physique: boolean) => {
+    const ajouterSoeurs = async (terme: string, physique: boolean, proprio: string) => {
       try {
         const repS = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(terme) + (physique ? "&personne_physique=true" : "&personne_morale=true") + "&per_page=15");
         if (!repS.ok) return;
@@ -719,6 +730,7 @@ function Modale({
           panier.push({
             siren: String(sx.siren || ""),
             dejaClient: cli ? cli.nomCommercial : (sh ? sh.nom : ""),
+            proprietaire: norme(proprio),
             nom: String(sx.nom_complet || ""),
             nomCommercial: enseigneX && vx ? enseigneX + " — " + vx : enseigneX,
             ville: vx,
@@ -734,11 +746,11 @@ function Modale({
     };
     // (1) personnes physiques identifiées (max 2, sinon trop d’appels)
     for (const c of contacts.slice(0, 2)) {
-      await ajouterSoeurs(c.prenom + " " + c.nom, true);
+      await ajouterSoeurs(c.prenom + " " + c.nom, true, c.prenom + " " + c.nom);
     }
     // (2) dirigeants personnes morales (les holdings — ex. ADAVEN : max 1)
     for (const mm of morales.slice(0, 1)) {
-      await ajouterSoeurs(String(mm.denomination || ""), false);
+      await ajouterSoeurs(String(mm.denomination || ""), false, String(mm.denomination || mm.siren));
     }
     // ── Fusion des paniers EN ENTRERELAÇANT les dirigeants : sans ça, un gros
     // portefeuille (ex. les 8 Domino’s de Chbihi) remplit la limite et cache
@@ -919,7 +931,10 @@ function Modale({
                     <button
                       onClick={() => {
                         const toutCoche = contactsProposes.every((x) => x.coche);
-                        setContactsProposes(contactsProposes.map((x) => ({ ...x, coche: !toutCoche })));
+                        const apres = contactsProposes.map((x) => ({ ...x, coche: !toutCoche }));
+                        setContactsProposes(apres);
+                        const cles = apres.filter((x) => x.coche).flatMap(clesContact);
+                        setSocietesProposees((prev) => prev.filter((g) => !g.proprietaire || cles.includes(g.proprietaire)));
                       }}
                       className="text-[11px] font-bold text-emerald-700 underline hover:text-emerald-900">
                       {contactsProposes.every((x) => x.coche) ? "Tout décocher" : "Tout cocher"}
@@ -937,7 +952,14 @@ function Modale({
                         <input
                           type="checkbox"
                           checked={ct.coche}
-                          onChange={() => setContactsProposes(contactsProposes.map((x, j) => (j === i ? { ...x, coche: !x.coche } : x)))}
+                          onChange={() => {
+                          const apres = contactsProposes.map((x, j) => (j === i ? { ...x, coche: !x.coche } : x));
+                          setContactsProposes(apres);
+                          // Décocher un dirigeant retire AUSSI ses sociétés suggérées
+                          // (les siennes + celles collectées via sa holding).
+                          const cles = apres.filter((x) => x.coche).flatMap(clesContact);
+                          setSocietesProposees((prev) => prev.filter((g) => !g.proprietaire || cles.includes(g.proprietaire)));
+                        }}
                           className="mt-0.5 h-4 w-4 accent-emerald-600" />
                         <span className="min-w-0 flex-1">
                           <span className="block text-[12px] font-bold text-slate-800">
@@ -985,7 +1007,7 @@ function Modale({
                     </button>
                   </div>
                   <div className="mt-1 text-[10px] text-cyan-600">
-                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune. Les suggestions marquées « Déjà client » existent déjà en base (clients du Sheet « Infos Service Client », interrogé en direct) — inutile de les recréer.
+                    Décochées par défaut : coche uniquement celles que tu veux ajouter au CRM maintenant. Le dirigeant sera rattaché à chacune. Les suggestions marquées « Déjà client » existent déjà en base (clients du Sheet « Infos Service Client », interrogé en direct) — inutile de les recréer. Décocher un dirigeant ci-dessus retire aussi ses sociétés de cette liste.
                   </div>
                   <div className="mt-2 space-y-1.5">
                     {societesProposees.map((g, i) => (
