@@ -53,10 +53,10 @@ const parserCSV = (txt: string): string[][] => {
   if (f !== "" || cur.length) { cur.push(f); lignes.push(cur); }
   return lignes;
 };
-const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
+const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureOk: boolean }> => {
   try {
     const rep = await fetch("https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUJbjhUoiof7FZCk/gviz/tq?tqx=out:csv");
-    if (!rep.ok) return [];
+    if (!rep.ok) return { clients: [], lectureOk: false };
     const lignes = parserCSV(await rep.text());
     const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
     const col = (n: string) => tete.findIndex((h) => h === n.toLowerCase());
@@ -64,7 +64,7 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
       cPack = col("Libellé contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
       cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Statut_risque_client"),
       cImp = col("Impayes"), cProc = col("Procedure_collective_Radiation");
-    if (cCode < 0 || cNom < 0) return [];
+    if (cCode < 0 || cNom < 0) return { clients: [], lectureOk: false }; /* page d’erreur Google 200 ou colonnes absentes */
     const clients: ClientSheet[] = []; const idx = new Map<string, ClientSheet>();
     const prem = new Map<string, number>(); const der = new Map<string, number>();
     const cleDate = (d: string) => { const p = d.trim().split("/").map(Number); return p.length === 3 ? p[2] * 10000 + p[1] * 100 + p[0] : NaN; };
@@ -85,8 +85,8 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
     }
     for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
-    return clients;
-  } catch { return []; /* réseau indisponible : pas de blocage, aucune invention */ }
+    return { clients, lectureOk: true };
+  } catch { return { clients: [], lectureOk: false }; /* réseau indisponible : pas de blocage, aucune invention */ }
 };
 // Reconnaissance prudente d’un client du Sheet (règle anti-invention : noms
 // normalisés comparés strictement, ville tolérante aux arrondissements ; dans le
@@ -96,10 +96,10 @@ const trouverClientSheet = (clients: ClientSheet[], nomLegal: string, enseigne: 
   clients.find((c) => {
     const base = c.nom.split(" (")[0].trim();
     const paren = (c.nom.match(/\(([^)]*)\)/) || [])[1] || "";
-    const nL = norme(nomLegal), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville);
+    const nL = norme(nomLegal), baseL = norme(nomLegal.split(" (")[0].trim()), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville); // l’INSEE renvoie le nom complet avec l’enseigne entre parenthèses : on compare aussi la base seule
     const villesOK = v === "" || vC === "" || v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v)));
     return villesOK && ((
-      nL !== "" && (nL === norme(base) || nL === norme(c.nom))
+      (baseL !== "" && (baseL === norme(base) || baseL === norme(c.nom))) || (nL !== "" && (nL === norme(base) || nL === norme(c.nom)))
     ) || (
       ens !== "" && ens.length >= 5 && (ens === norme(base) || ens === norme(paren) || norme(c.nom).includes(ens))
     ));
@@ -815,7 +815,7 @@ function Modale({
       const actifs = resultats.filter((r) => r.etat_administratif === "A");
       const r = (actifs.length ? actifs : resultats)[0];
       if (r) {
-                const clientsSheet = await chargerClientsSheet();
+                const { clients: clientsSheet, lectureOk: sheetOk } = await chargerClientsSheet();
         const { fiche, soeurs } = await depuisGouv(r, clientsSheet);
         appliquer(fiche);
         // ── Sheet en direct : si la société cherchée est CLIENTE, on coche
@@ -826,6 +826,9 @@ function Modale({
         if (cliS) {
           setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
         }
+        // Sheet illisible : partage retiré ou Google bloque l’accès anonyme.
+        // On le DIT au lieu de laisser croire qu’aucune société n’est cliente.
+        if (!sheetOk) setMsgRecherche((m) => m ? { ...m, texte: m.texte + " ⚠️ Sheet « Infos Service Client » illisible — badges « Déjà client » et contrat auto indisponibles — vérifier le partage « lien »." } : m);
         if (soeurs.length > 0) {
           setSocietesProposees((prev) => prev.concat(soeurs.map((s) => ({ ...s, coche: false }))));
         }
