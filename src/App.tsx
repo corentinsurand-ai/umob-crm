@@ -16,7 +16,7 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // ── Un CONTRAT Locam individuel (source : lignes du Sheet « Infos Service
 // Client », regroupées par n° de contrat — une ligne du Sheet = un scooter,
 // donc un contrat peut couvrir plusieurs immatriculations). Un client à 2
-// contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRES,
+// contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRE,
 // au lieu de la période fusionnée min/max qui ne correspondait à aucun
 // contrat réel. ──
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
@@ -27,8 +27,8 @@ interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: 
   // champs auto-remplis : modifiables, et vides si la source ne sait rien.
   pack: string; dateDebut: string; dateFin: string; nbVehicules: string; contratLocam: string; immatriculations: string;
   // ── Modèle(s) de scooter U'mob loué(s) par le client (Infinity Pro /
-  // Compact Pro / Daily Pro). Source auto : colonne « Libellé Produit client »
-  // du Sheet « Infos Service Client » ; sélection manuelle sinon (jamais
+  // Compact Pro / Daily Pro). Source auto : colonne « Libellé Produit » du
+  // Sheet « Infos Service Client » ; sélection manuelle sinon (jamais
   // d'invention, cases toujours modifiables). ──
   modeles: string[];
   // ── Contrats individuels (un bloc par contrat Locam). Les anciennes fiches
@@ -38,12 +38,32 @@ interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: 
   // Procedure_collective du Sheet « Infos Service Client »). Vide = aucun
   // risque signalé. Comme le statut, il reste corrigeable à la main. ──
   risque: string; }
-interface Contact { id: string; prenom: string; nom: string; role: string; email: string; tel: string; entrepriseIds: string[]; activites: Activite[] }
+// Les activités ne vivent QUE sur les entreprises : un contact n'a plus sa
+// propre liste d'activités (elles sont portées par ses entreprises, avec un
+// lien `contactId` pour les retrouver).
+interface Contact { id: string; prenom: string; nom: string; role: string; email: string; tel: string; entrepriseIds: string[] }
 
 // Reconnaissance d'une personne déjà en base (anti-doublons) : même email,
 // même téléphone (chiffres uniquement), ou même prénom+nom → c'est la MÊME
 // personne (ex. gérant de plusieurs franchises : on RATTACHE, on ne duplique jamais).
 const normTel = (t: string) => t.replace(/\D/g, "");
+// Recherche téléphone « SOUPLE » : les formats ne sont jamais les bons dans la
+// vraie vie (espaces, points, tirets, +33, 0 initial…). On ne garde que les
+// chiffres et on équivalise le préfixe international 33 ↔ 0 national :
+// « 04 78 22 10 87 », « 04.78.22.10.87 », « 0478221087 » et « +33478221087 »
+// sont donc tous interchangeables, côté numéro stocké ET côté recherche tapée.
+const normeTelRecherche = (t: string): string => {
+  const d = (t || "").replace(/\D/g, "");
+  return d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d;
+};
+// Le critère lui-même est normalisé pareil : taper « 04 78 » ou « 04.78 » ou
+// « 478 » revient au même. Moins de 2 chiffres → pas de recherche téléphonique
+// (évite les faux positifs sur une requête textuelle comme « pizza »).
+const telCorrespond = (q: string, tel: string): boolean => {
+  const qd = normeTelRecherche(q);
+  if (qd.length < 2) return false;
+  return normeTelRecherche(tel).includes(qd);
+};
 // Normalisation de libellé pour comparer deux noms/enseignes : minuscules,
 // sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
 // en base sous un autre nom légal).
@@ -167,7 +187,7 @@ const FRANCHISEURS: [string, string][] = [
   ["misterpizza", "Mister Pizza"], ["classcroute", "Class'Croute"], ["tuttipizza", "Tutti Pizza"],
 ];
 const franchiseurDepuis = (enseigne: string): string => {
-  const e = norme(enseigne);
+  const e = norme(norme(enseigne));
   const t = FRANCHISEURS.find(([k]) => e.includes(k));
   return t ? t[1] : "";
 };
@@ -213,7 +233,13 @@ const fusionnerContrats = (cs: ContratLigne[]): { pack: string; dateDebut: strin
 // (généré automatiquement, jamais saisi à la main par l'utilisateur).
 // Les autres types sont consignés manuellement depuis le composer des fiches.
 type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape";
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string }
+// dateISO : date de RÉALISATION réelle (jj/mm/aaaa), enregistrée automatiquement
+// à la création et modifiable au moment de la saisie (rattrapage d'une activité
+// passée). `date` garde le libellé court historique ("auj.", "15/10") pour la
+// compatibilité des anciennes activités.
+// `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
+// un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -226,7 +252,9 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
   etape: { icone: "➜", libelle: "Étape du deal", couleur: "#4f9ee8" },
 };
 
-interface Deal { id: string; nom: string; entrepriseId: string; contactId: string; montant: number; etape: Etape; action: string; echeance: string; notes: string; fait: boolean; activites: Activite[] }
+// Même chose pour le deal : plus de liste d'activités propre. Les « étapes »
+// horodatées sont journalisées sur l'entreprise avec un lien `dealId`.
+interface Deal { id: string; nom: string; entrepriseId: string; contactId: string; montant: number; etape: Etape; action: string; echeance: string; notes: string; fait: boolean }
 
 // L'état global de l'application : la base de données entière tient dans cet objet.
 interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[] }
@@ -247,10 +275,10 @@ const couleurEtape = (e: Etape) => ETAPES.find((x) => x.nom === e)!.couleur;
 // dès l'ouverture (un appel consigné, un e-mail, une réunion, une tâche avec échéance…).
 const SEED: Etat = {
   entreprises: [
-    { id: "e1", statut: "Client", nom: "Rotisserie du Rhône", nomCommercial: "Rotisserie du Rhône — Lyon 7e", secteur: "Restauration", ville: "Lyon 7e", site: "rotisserie-du-rhone.fr", tel: "04 72 11 02 44", franchiseur: "Indépendant", modeLivraison: "Scooter électrique", activite: "Restauration traditionnelle", notes: "Contrat annuel signé. 3 scooters livrés le 20/10.", activites: [{ date: "auj.", texte: "Point de livraison confirmé avec Julien — créneau 8h-10h.", type: "note" }] },
-    { id: "e2", statut: "Client", nom: "Poké Bowl Express", nomCommercial: "Poké Bowl Express — Lyon 3e", secteur: "Restauration", ville: "Lyon 3e", site: "pokebowl-express.fr", tel: "04 78 22 10 87", franchiseur: "Indépendant", modeLivraison: "Scooter électrique", activite: "Restauration rapide", notes: "2 scooters + abonnement maintenance." },
-    { id: "e3", statut: "Prospect", nom: "Bières & Burgers", nomCommercial: "Bières & Burgers — Villeurbanne", secteur: "Restauration", ville: "Villeurbanne", site: "bieres-et-burgers.fr", tel: "04 72 55 71 03", franchiseur: "Burger King", modeLivraison: "Mixte", activite: "Restauration rapide", notes: "Chaîne en expansion, levier flotte 4 scooters.", activites: [{ date: "12/10", texte: "Visite du 2e restaurant — très intéressé par le levier flotte.", type: "reunion" }] },
-    { id: "e4", statut: "Prospect", nom: "Fleurs Martin & Fils", nomCommercial: "Fleurs Martin & Fils — Lyon 6e", secteur: "Commerce floral", ville: "Lyon 6e", site: "martin-fleurs.fr", tel: "04 72 39 18 66", franchiseur: "Indépendant", modeLivraison: "Vélo électrique", activite: "Commerce floral", notes: "Livraisons matinales, besoin de 2 scooters." },
+    { id: "e1", statut: "Client", nom: "Rotisserie du Rhône", nomCommercial: "Rotisserie du Rhône — Lyon 7e", secteur: "Restauration", ville: "Lyon 7e", site: "rotisserie-du-rhone.fr", tel: "04 72 11 02 44", franchiseur: "Indépendant", modeLivraison: "Scooter électrique", activite: "Restauration traditionnelle", notes: "Contrat annuel signé. 3 scooters livrés le 20/10.", activites: [{ date: "auj.", texte: "Point de livraison confirmé avec Julien — créneau 8h-10h.", type: "note" }, { date: "auj.", texte: "Appel 6 min : souhaite la maintenance incluse dans le contrat annuel.", type: "appel", contactId: "c1" }, { date: "12/10", texte: "Étape : Négociation → Gagné", type: "etape", dealId: "d1" }] },
+    { id: "e2", statut: "Client", nom: "Poké Bowl Express", nomCommercial: "Poké Bowl Express — Lyon 3e", secteur: "Restauration", ville: "Lyon 3e", site: "pokebowl-express.fr", tel: "04 78 22 10 87", franchiseur: "Indépendant", modeLivraison: "Scooter électrique", activite: "Restauration rapide", notes: "2 scooters + abonnement maintenance.", activites: [{ date: "08/10", texte: "Proposition envoyée : abonnement 2 scooters + maintenance", type: "email", contactId: "c2" }, { date: "08/10", texte: "Étape : Proposition envoyée → Gagné", type: "etape", dealId: "d2" }] },
+    { id: "e3", statut: "Prospect", nom: "Bières & Burgers", nomCommercial: "Bières & Burgers — Villeurbanne", secteur: "Restauration", ville: "Villeurbanne", site: "bieres-et-burgers.fr", tel: "04 72 55 71 03", franchiseur: "Burger King", modeLivraison: "Mixte", activite: "Restauration rapide", notes: "Chaîne en expansion, levier flotte 4 scooters.", activites: [{ date: "12/10", texte: "Visite du 2e restaurant — très intéressé par le levier flotte.", type: "reunion" }, { date: "11/10", texte: "A demandé une remise sur la 4e année — à creuser en négo.", type: "appel", contactId: "c3" }, { date: "11/10", texte: "Visite effectuée", type: "note", dealId: "d3" }] },
+    { id: "e4", statut: "Prospect", nom: "Fleurs Martin & Fils", nomCommercial: "Fleurs Martin & Fils — Lyon 6e", secteur: "Commerce floral", ville: "Lyon 6e", site: "martin-fleurs.fr", tel: "04 72 39 18 66", franchiseur: "Indépendant", modeLivraison: "Vélo électrique", activite: "Commerce floral", notes: "Livraisons matinales, besoin de 2 scooters.", activites: [{ date: "10/10", texte: "Proposition envoyée par email", type: "email", dealId: "d4" }] },
     { id: "e5", statut: "Prospect", nom: "L'Atelier Pizzeria", nomCommercial: "Domino's Pizza — Lyon 1er", secteur: "Restauration", ville: "Lyon 1er", site: "atelier-pizzeria.fr", tel: "04 37 45 09 12", franchiseur: "Domino's Pizza", modeLivraison: "Scooter électrique", activite: "Restauration rapide", notes: "" },
     { id: "e6", statut: "Prospect", nom: "Café des Jacobins", nomCommercial: "Café des Jacobins — Lyon 2e", secteur: "Café / brunch", ville: "Lyon 2e", site: "jacquou.fr", tel: "04 72 60 34 21", franchiseur: "Indépendant", modeLivraison: "À pied", activite: "Restauration traditionnelle", notes: "Budget serré, périmètre à réduire.", activites: [{ date: "09/10", texte: "Préparer une proposition à périmètre réduit", type: "tache", echeance: "16/10" }] },
     { id: "e7", statut: "Suspect", nom: "Marché Bio Villeurbanne", nomCommercial: "Marché Bio — Villeurbanne", secteur: "Alimentation bio", ville: "Villeurbanne", site: "marche-bio-69.fr", tel: "—", franchiseur: "Indépendant", modeLivraison: "Cargo bike", activite: "Alimentation bio", notes: "Contact entrant via le site." },
@@ -317,11 +345,23 @@ const SEED: Etat = {
     { id: "e57", statut: "Client", nom: "AEW CANNES", nomCommercial: "Asiakeo", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "22/07/2022", dateFin: "22/08/2026", nbVehicules: "1", contratLocam: "CO00254", immatriculations: "GH-399-PH", notes: "Code client C0388 — importé du Sheet « Infos Service Client » (14/10/2026)." },
     { id: "e58", statut: "Client", nom: "NOSANTOKUNOSUSHIS", nomCommercial: "Samouraï Sushi Dijon", secteur: "Restauration", ville: "Dijon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/06/2024", dateFin: "20/07/2028", nbVehicules: "1", contratLocam: "CO01644", immatriculations: "GX-913-FZ", notes: "Code client C0392 — importé du Sheet « Infos Service Client » (14/10/2026)." },
     { id: "e59", statut: "Client", nom: "AU FOURNIL DE STEPH", nomCommercial: "Allo Pizza Sète", secteur: "Restauration", ville: "Sète", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "05/02/2026", dateFin: "04/04/2030", nbVehicules: "2", contratLocam: "CO02141", immatriculations: "HH-119-ZQ, HH-179-ZQ", notes: "Code client C0397 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    /* ══ Cas de TEST multi-contrats (données réelles du Sheet, ajoutées 14/10 pour
+       valider les blocs « un contrat = ses propres dates »). 3 contrats Locam,
+       flotte MIXTE : 4 Compact Pro (CO01749) + 2 Daily Pro (CO01748) + 1 Daily
+       Pro (CO02245). Statut risque Sheet = « Sous surve » (valeur hors menu,
+       laissée en note). ══ */
+    { id: "e60", statut: "Client", nom: "LM PIZZA PUCE", nomCommercial: "LM Pizza Puce — Lyon 4e", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "30/04/2024", dateFin: "11/10/2030", nbVehicules: "7", contratLocam: "CO01748, CO01749, CO02245", immatriculations: "GW-830-NW, GW-890-NW, GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG, HM-816-GW", modeles: ["Compact Pro", "Daily Pro"],
+      contrats: [
+        { pack: "Modèle Confort + 48", modele: "Daily Pro", num: "CO01748", dateDebut: "30/04/2024", dateFin: "10/06/2028", immats: "GW-830-NW, GW-890-NW", etat: "2" },
+        { pack: "Modèle Confort + 48", modele: "Compact Pro", num: "CO01749", dateDebut: "27/06/2024", dateFin: "26/07/2028", immats: "GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG", etat: "2" },
+        { pack: "Modèle Confort + 50", modele: "Daily Pro", num: "CO02245", dateDebut: "12/08/2026", dateFin: "11/10/2030", immats: "HM-816-GW", etat: "2" },
+      ],
+      notes: "Code client C2119 — SIREN 925301327 · 5 Place Commandant Arnaud, 69004 Lyon. ⚠️ « Sous surveillance » (source Sheet SAV). 3 contrats Locam actifs, flotte mixte Compact Pro / Daily Pro." },
   ],
   contacts: [
-    { id: "c1", prenom: "Julien", nom: "Faure", role: "Gérant", email: "j.faure@rotisserie-du-rhone.fr", tel: "06 12 44 87 21", entrepriseIds: ["e1"], activites: [{ date: "auj.", texte: "Appel 6 min : souhaite la maintenance incluse dans le contrat annuel.", type: "appel" }] },
-    { id: "c2", prenom: "Amine", nom: "Berrada", role: "Gérant", email: "amine@pokebowl-express.fr", tel: "06 45 21 33 09", entrepriseIds: ["e2"], activites: [{ date: "08/10", texte: "Proposition envoyée : abonnement 2 scooters + maintenance", type: "email" }] },
-    { id: "c3", prenom: "Charlotte", nom: "Ly", role: "Directrice exploitation", email: "c.ly@bieres-et-burgers.fr", tel: "06 88 12 54 76", entrepriseIds: ["e3"], activites: [{ date: "11/10", texte: "A demandé une remise sur la 4e année — à creuser en négo.", type: "appel" }] },
+    { id: "c1", prenom: "Julien", nom: "Faure", role: "Gérant", email: "j.faure@rotisserie-du-rhone.fr", tel: "06 12 44 87 21", entrepriseIds: ["e1"] },
+    { id: "c2", prenom: "Amine", nom: "Berrada", role: "Gérant", email: "amine@pokebowl-express.fr", tel: "06 45 21 33 09", entrepriseIds: ["e2"] },
+    { id: "c3", prenom: "Charlotte", nom: "Ly", role: "Directrice exploitation", email: "c.ly@bieres-et-burgers.fr", tel: "06 88 12 54 76", entrepriseIds: ["e3"] },
     { id: "c9", prenom: "Kevin", nom: "Dubois", role: "Responsable achats", email: "k.dubois@bieres-et-burgers.fr", tel: "06 77 34 12 98", entrepriseIds: ["e3"] },
     { id: "c4", prenom: "Marc", nom: "Martin", role: "Gérant", email: "marc@martin-fleurs.fr", tel: "06 23 76 90 12", entrepriseIds: ["e4"] },
     { id: "c5", prenom: "Sofiane", nom: "Kaci", role: "Gérant", email: "sofiane@atelier-pizzeria.fr", tel: "06 51 88 22 47", entrepriseIds: ["e5"] },
@@ -385,16 +425,17 @@ const SEED: Etat = {
     { id: "c60", prenom: "Abdelhafid", nom: "Gazzah", role: "Gérant", email: "nathalie.gazzah@gmail.com", tel: "06 76 65 04 84", entrepriseIds: ["e55"] },
     { id: "c61", prenom: "Bingfu", nom: "Peng", role: "", email: "364546783@qq.com", tel: "06 98 13 61 96", entrepriseIds: ["e56"] },
     { id: "c62", prenom: "Aline", nom: "Leblanc", role: "Manager / SAV", email: "", tel: "07 78 82 74 91", entrepriseIds: ["e57"] },
+    { id: "c63", prenom: "Gabriel", nom: "Michelini", role: "Gérant", email: "lmpizzapuce@gmail.com", tel: "06 84 54 52 36", entrepriseIds: ["e60"] },
   ],
   deals: [
-    { id: "d1", nom: "Contrat annuel — flotte 3 scooters", entrepriseId: "e1", contactId: "c1", montant: 42, etape: "Gagné", action: "Kick-off maintenance", echeance: "20/10", notes: "", fait: false, activites: [{ date: "12/10", texte: "Étape : Négociation → Gagné" }] },
-    { id: "d2", nom: "Abonnement 2 scooters", entrepriseId: "e2", contactId: "c2", montant: 31, etape: "Gagné", action: "Planifier livraison flotte", echeance: "22/10", notes: "", fait: false, activites: [{ date: "08/10", texte: "Étape : Proposition envoyée → Gagné" }] },
-    { id: "d3", nom: "Flotte 4 scooters + maintenance", entrepriseId: "e3", contactId: "c3", montant: 58, etape: "Négociation", action: "RDV négo — levier flotte 4 scooters", echeance: "15/10", notes: "Sensible au prix, envisager 10% sur la 4e année.", fait: false, activites: [{ date: "11/10", texte: "Visite effectuée" }] },
-    { id: "d4", nom: "2 scooters livraisons matinales", entrepriseId: "e4", contactId: "c4", montant: 24, etape: "Proposition envoyée", action: "Relancer la proposition (J+3)", echeance: "13/10", notes: "", fait: false, activites: [{ date: "10/10", texte: "Proposition envoyée par email" }] },
-    { id: "d5", nom: "Abonnement 1 scooter", entrepriseId: "e5", contactId: "c5", montant: 18, etape: "Proposition envoyée", action: "Attente retour devis", echeance: "17/10", notes: "", fait: false, activites: [] },
-    { id: "d6", nom: "2 scooters périmètre réduit", entrepriseId: "e6", contactId: "c6", montant: 15, etape: "Négociation", action: "Réduire le périmètre — 2 scooters", echeance: "16/10", notes: "Refuser 3 scooters pour l'instant.", fait: false, activites: [] },
-    { id: "d7", nom: "Découverte — livraison bio", entrepriseId: "e7", contactId: "c7", montant: 36, etape: "À qualifier", action: "Appel découverte à programmer", echeance: "15/10", notes: "Contact entrant via le site.", fait: false, activites: [] },
-    { id: "d8", nom: "Essai 1 scooter", entrepriseId: "e8", contactId: "c8", montant: 12, etape: "À qualifier", action: "Qualifier périmètre & budget", echeance: "18/10", notes: "", fait: false, activites: [] },
+    { id: "d1", nom: "Contrat annuel — flotte 3 scooters", entrepriseId: "e1", contactId: "c1", montant: 42, etape: "Gagné", action: "Kick-off maintenance", echeance: "20/10", notes: "", fait: false },
+    { id: "d2", nom: "Abonnement 2 scooters", entrepriseId: "e2", contactId: "c2", montant: 31, etape: "Gagné", action: "Planifier livraison flotte", echeance: "22/10", notes: "", fait: false },
+    { id: "d3", nom: "Flotte 4 scooters + maintenance", entrepriseId: "e3", contactId: "c3", montant: 58, etape: "Négociation", action: "RDV négo — levier flotte 4 scooters", echeance: "15/10", notes: "Sensible au prix, envisager 10% sur la 4e année.", fait: false },
+    { id: "d4", nom: "2 scooters livraisons matinales", entrepriseId: "e4", contactId: "c4", montant: 24, etape: "Proposition envoyée", action: "Relancer la proposition (J+3)", echeance: "13/10", notes: "", fait: false },
+    { id: "d5", nom: "Abonnement 1 scooter", entrepriseId: "e5", contactId: "c5", montant: 18, etape: "Proposition envoyée", action: "Attente retour devis", echeance: "17/10", notes: "", fait: false },
+    { id: "d6", nom: "2 scooters périmètre réduit", entrepriseId: "e6", contactId: "c6", montant: 15, etape: "Négociation", action: "Réduire le périmètre — 2 scooters", echeance: "16/10", notes: "Refuser 3 scooters pour l'instant.", fait: false },
+    { id: "d7", nom: "Découverte — livraison bio", entrepriseId: "e7", contactId: "c7", montant: 36, etape: "À qualifier", action: "Appel découverte à programmer", echeance: "15/10", notes: "Contact entrant via le site.", fait: false },
+    { id: "d8", nom: "Essai 1 scooter", entrepriseId: "e8", contactId: "c8", montant: 12, etape: "À qualifier", action: "Qualifier périmètre & budget", echeance: "18/10", notes: "", fait: false },
   ],
 };
 
@@ -407,29 +448,56 @@ const SEED: Etat = {
 // pas toutes les clés, et un enregistrement sans `activites` ferait planter
 // les .map() en aval (crash "not iterable").
 function normaliser(s: Etat): Etat {
-  return {
-    ...s,
-    entreprises: (s.entreprises || []).map((x) => ({
-      nomCommercial: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect",
-      // Migration « Contrat & flotte » : champs absents des vieilles
-      // sauvegardes → vides (jamais d'invention).
-      pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "",
-      // Migration « Risque » : champ absent des vieilles sauvegardes → vide.
-      risque: "",
-      modeles: [],
-      ...x,
-      contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: x.contratLocam || "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
-      activites: x.activites || [],
-    })),
-    // Migration contacts : l'ancien champ unique `entrepriseId` devient un
-    // TABLEAU `entrepriseIds` (un contact peut appartenir à plusieurs
-    // entreprises). Les vieux enregistrements sont convertis à la volée.
-    contacts: (s.contacts || []).map((x) => ({
-      ...x,
-      entrepriseIds: x.entrepriseIds || ((x as { entrepriseId?: string }).entrepriseId ? [(x as { entrepriseId: string }).entrepriseId] : []),
-      activites: x.activites || [],
-    })),
+  // ── 1. Structure de base : champs manquants → valeurs vides ──
+  const entreprises = (s.entreprises || []).map((x) => ({
+    nomCommercial: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect",
+    // Migration « Contrat & flotte » : champs absents des vieilles
+    // sauvegardes → vides (jamais d'invention).
+    pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "",
+    // Migration « Risque » : champ absent des vieilles sauvegardes → vide.
+    risque: "",
+    modeles: [],
+    ...x,
+    contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: x.contratLocam || "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
+    activites: (x.activites || []).slice(),
+  }));
+  // Migration contacts : l'ancien champ unique `entrepriseId` devient un
+  // TABLEAU `entrepriseIds` (un contact peut appartenir à plusieurs
+  // entreprises). Les vieux enregistrements sont convertis à la volée.
+  const contacts = (s.contacts || []).map((x) => ({
+    ...x,
+    entrepriseIds: x.entrepriseIds || ((x as { entrepriseId?: string }).entrepriseId ? [(x as { entrepriseId: string }).entrepriseId] : []),
+  }));
+  const deals = (s.deals || []).map((x) => ({ ...x }));
+
+  // ── 2. Migration « activités centralisées » : avant ce refacto, les fiches
+  // CONTACT et DEAL portaient leur propre liste `activites`. Ces activités
+  // sont DÉPLACÉES vers l'entreprise liée, avec un lien `contactId`/`dealId`
+  // pour continuer à les retrouver depuis les fiches contact et deal.
+  // Idempotent : après migration, les contacts/deals n'ont plus de `activites`,
+  // donc un second passage ne déplace rien.
+  const versEntreprise = (eid: string, a: Activite, patch: Partial<Activite>) => {
+    const e = entreprises.find((x) => x.id === eid);
+    if (e) e.activites.push({ ...a, ...patch });
   };
+  for (const c of contacts) {
+    const legacy = (c as Contact & { activites?: Activite[] }).activites;
+    if (legacy && legacy.length > 0) {
+      const eid = c.entrepriseIds && c.entrepriseIds[0];
+      if (eid) legacy.forEach((a) => versEntreprise(eid, a, { contactId: c.id }));
+    }
+  }
+  for (const d of deals) {
+    const legacy = (d as Deal & { activites?: Activite[] }).activites;
+    if (legacy && legacy.length > 0) {
+      legacy.forEach((a) => versEntreprise(d.entrepriseId, a, { dealId: d.id }));
+    }
+  }
+  // On retire ensuite la clé `activites` des contacts/deals (elle n'existe
+  // plus dans le modèle : seule l'entreprise porte des activités).
+  const contactsFinaux = contacts.map(({ activites, ...reste }: { activites?: Activite[] } & Contact) => reste);
+  const dealsFinaux = deals.map(({ activites, ...reste }: { activites?: Activite[] } & Deal) => reste);
+  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -504,6 +572,12 @@ function ChampSelect({ valeur, options, onChange }: { valeur: string; options: s
    (ex. NVL ATLAS — l'INSEE ne connaît ni son enseigne, ni son téléphone,
    ni son mode de livraison). */
 const ANNUAIRE_DEMO = [
+  // Cas de TEST multi-contrats (Corentin, 14/10) : SIREN réel de LM PIZZA PUCE —
+  // la recherche par SIREN trouve la fiche même sans réseau ; les 3 contrats
+  // viennent, eux, du Sheet en direct à la création.
+  { siren: "925301327", tel: "0684545236", telAffiche: "06 84 54 52 36", nom: "LM PIZZA PUCE", nomCommercial: "LM Pizza Puce — Lyon 4e", ville: "Lyon", secteur: "Restauration", site: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide",
+    sources: ["INSEE", "Sheet Infos Service Client"],
+    contactsTrouves: [{ prenom: "Gabriel", nom: "Michelini", role: "Gérant", email: "lmpizzapuce@gmail.com", tel: "06 84 54 52 36" }] },
   // `sources` = provenance des données ; `contactsTrouves` = contacts
   // identifiés (dirigeant INSEE, annuaires…) proposés à la création avec
   // des cases à cocher / décocher.
@@ -567,7 +641,7 @@ type Cible =
 
 // « FicheRef » = une page record à afficher (entreprise ou contact).
 // Contrairement à Cible, l'id est obligatoire : une fiche modifie via la modale.
-type FicheRef = { type: "entreprise" | "contact"; id: string };
+type FicheRef = { type: "entreprise" | "contact" | "deal"; id: string };
 
 // « ContactSimple » = contact identifié par la recherche automatique (SIREN/téléphone).
 // Format allégé : on ne crée pas encore un Contact complet, on propose juste
@@ -581,8 +655,8 @@ type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteu
 
 // Modèles vierges servant de point de départ en mode création.
 const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "", modeles: [], contrats: [] };
-const CTC_VIDE: Contact = { id: "", prenom: "", nom: "", role: "", email: "", tel: "", entrepriseIds: [], activites: [] };
-const DEAL_VIDE: Deal = { id: "", nom: "", entrepriseId: "", contactId: "", montant: 0, etape: "À qualifier", action: "", echeance: "", notes: "", fait: false, activites: [] };
+const CTC_VIDE: Contact = { id: "", prenom: "", nom: "", role: "", email: "", tel: "", entrepriseIds: [] };
+const DEAL_VIDE: Deal = { id: "", nom: "", entrepriseId: "", contactId: "", montant: 0, etape: "À qualifier", action: "", echeance: "", notes: "", fait: false };
 
 // Formulaire générique pour les 3 types d'objets. Une seule modale, un rendu
 // conditionnel par type (cible.type) : l'entreprise a son bloc, le contact le sien, etc.
@@ -1187,7 +1261,7 @@ function Modale({
                       className="rounded-lg bg-emerald-500 px-2.5 py-1.5 text-[12px] font-bold text-white shadow-sm">✓ {m}</button>
                   ))}
                 </div>
-                <div className="mt-1 text-[10.5px] text-slate-400">Pré-cochés automatiquement si le client figure dans le Sheet « Infos Service Client » (colonne Libellé Produit client) — sinon sélection manuelle.</div>
+                <div className="mt-1 text-[10.5px] text-slate-400">Pré-cochés automatiquement si le client figure dans le Sheet « Infos Service Client » (colonne Libellé Produit) — sinon sélection manuelle.</div>
               </div>
               <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Contrat & flotte (Locam) — un bloc par contrat</div>
               {(ent.contrats || []).map((k, i) => (
@@ -1236,9 +1310,9 @@ function Modale({
                   </button>
                 ))}
                 <div className="mb-1.5 mt-3 text-[11px] font-black uppercase tracking-wider text-slate-400">Deals ({dealsEntreprise(ent.id).length})</div>
-                {/* Les deals n'ont pas de page record : ils s'éditent en modale. */}
+                {/* Chaque deal ouvre sa page record (la modale se ferme). */}
                 {dealsEntreprise(ent.id).map((d) => (
-                  <button key={d.id} onClick={() => onOuvre({ type: "deal", id: d.id })}
+                  <button key={d.id} onClick={() => onOuvreFiche({ type: "deal", id: d.id })}
                     className="flex w-full items-center justify-between rounded-lg px-2 py-1 text-left hover:bg-white">
                     <span className="text-[12px] font-semibold text-slate-700">{d.nom}</span>
                     <span className="flex items-center gap-2">
@@ -1356,17 +1430,22 @@ function Modale({
               <div className="col-span-2"><label className={label}>Notes</label>
                 <textarea rows={2} className={champ + " resize-none"} value={deal.notes} onChange={(e) => setDeal({ ...deal, notes: e.target.value })} /></div>
             </div>
-            {/* Historique compact du deal : les 5 dernières activités, plus récentes d'abord. */}
-            {!nouveau && deal.activites.length > 0 && (
-              <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-3">
-                <div className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Historique</div>
-                {deal.activites.slice(-5).reverse().map((a, i) => (
-                  <div key={i} className="text-[11px] text-slate-500">
-                    <span className="font-bold text-slate-600">{a.date}</span> — {a.texte}
-                  </div>
-                ))}
-              </div>
-            )}
+            {/* Historique compact du deal : les 5 dernières activités de
+                l'entreprise liées à ce deal (lien `dealId`), plus récentes d'abord. */}
+            {!nouveau && (() => {
+              const hist = (etat.entreprises.find((x) => x.id === deal.entrepriseId)?.activites || [])
+                .filter((a) => a.dealId === deal.id).slice(-5).reverse();
+              return hist.length > 0 ? (
+                <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-3">
+                  <div className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Historique</div>
+                  {hist.map((a, i) => (
+                    <div key={i} className="text-[11px] text-slate-500">
+                      <span className="font-bold text-slate-600">{a.dateISO || a.date}</span> — {a.texte}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
+            })()}
             <div className="mt-5 flex items-center gap-2">
               <button onClick={() => onSauver(cible, { ...deal, nom: deal.nom.trim() || "Deal sans nom" })}
                 className="flex-1 rounded-xl py-2.5 text-[13px] font-black text-white" style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
@@ -1482,21 +1561,21 @@ function genererResumeIA(nom: string, events: { date: string; texte: string; typ
 }
 
 /* ---- « Posez une question » façon Breeze HubSpot : l'utilisateur interroge
-   la fiche en langage naturel. La réponse est une RECHERCHE PAR PERTINENCE
-   calculée localement sur les FAITS de la fiche (propriétés, contrats,
-   contacts, deals, activités). Sans correspondance, on le DIT honnêtement
-   (jamais d'invention). Prochaine étape : brancher l'API Mistral avec ce
-   même contexte de faits. */
+   la fiche en langage naturel. Le canvas n'a pas accès à un modèle de langage :
+   la réponse est donc une RECHERCHE PAR PERTINENCE calculée localement sur les
+   FAITS de la fiche (propriétés, contrats, contacts, deals, activités). On
+   normalise la question, on retire les mots vides, on score le recouvrement de
+   mots-clés. Sans correspondance, on le DIT honnêtement (jamais d'invention).
+   En prod, ce même emplacement sera branché sur l'API Mistral avec ce contexte. */
 const MOTS_VIDES = new Set(["le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "est", "sont", "que", "qui", "quoi", "quand", "quel", "quelle", "quels", "quelles", "combien", "dans", "sur", "pour", "avec", "sans", "ce", "cet", "cette", "ces", "son", "sa", "ses", "au", "aux", "en", "il", "elle", "on", "nous", "vous", "je", "tu", "se", "par", "plus", "tout", "tous", "peut", "fais", "fait", "chez"]);
 const motsUtiles = (s: string): string[] =>
-  s.split(/[\s,;:!?.'+]|[’]/).map((m) => norme(m)).filter((m) => m.length > 2 && !MOTS_VIDES.has(m));
+  s.split(/[\s,;:!?.']+|[’]/).map((m) => norme(m)).filter((m) => m.length > 2 && !MOTS_VIDES.has(m));
 const repondreLocalement = (question: string, faits: string[]): { reponse: string; trouve: boolean } => {
   const mots = motsUtiles(question);
   if (!mots.length) return { reponse: "Pose ta question pour que je cherche dans la fiche.", trouve: false };
-  const nfs = faits.map((f) => norme(f));
-  const poids = (m: string) => 1 / Math.log2(2 + nfs.filter((nf) => nf.includes(m)).length);
+  const poids = (m: string) => 1 / Math.log2(2 + faits.filter((f) => norme(f).includes(m)).length);
   const scores = faits.map((_, i) => {
-    const gagnes = mots.filter((m) => nfs[i].includes(m));
+    const gagnes = mots.filter((m) => norme(faits[i]).includes(m));
     return gagnes.reduce((s, m) => s + poids(m), 0) + gagnes.length * 0.001;
   });
   const iMeilleur = scores.indexOf(Math.max(...scores));
@@ -1516,38 +1595,11 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
 }) {
   const r = genererResumeIA(nom, events, prochaine);
   const [q, setQ] = useState("");
-  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string; ia: boolean } | null>(null);
-  const [encours, setEncours] = useState(false);
-  // Clé API Mistral : variable d’environnement VITE_MISTRAL_API_KEY (Vercel, type
-  // Config). Absente (développement local, canvas) → repli sur le moteur local,
-  // aucune panne possible.
-  const CLE = ((import.meta as any).env || {}).VITE_MISTRAL_API_KEY || "";
-  const demander = async (question: string) => {
-    if (!question.trim()) return;
-    // Réponse locale immédiate : le bouton réagit instantanément, même sans clé.
-    setRep({ ...repondreLocalement(question, faits), qPosee: question, ia: false });
-    if (!CLE) return;
-    setEncours(true);
-    try {
-      const repIA = await fetch("https://api.mistral.ai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + CLE },
-        body: JSON.stringify({
-          model: "mistral-small-latest",
-          temperature: 0.2,
-          max_tokens: 300,
-          messages: [
-            { role: "system", content: "Tu es l’assistant du CRM U’mob. Réponds en français, en 1 à 3 phrases, UNIQUEMENT à partir des FAITS de la fiche fournis ci-dessous. Si l’information n’y figure pas, dis honnêtement qu’elle n’est pas renseignée. N’invente jamais rien." },
-            { role: "user", content: "FAITS SUR LA FICHE :\n- " + faits.join("\n- ") + "\n\nQUESTION : " + question },
-          ],
-        }),
-      }).then((x) => x.json());
-      const texte = (repIA?.choices?.[0]?.message?.content || "").trim();
-      if (texte) setRep({ reponse: texte, trouve: true, qPosee: question, ia: true });
-    } catch { /* réseau indisponible : on garde la réponse locale affichée */ }
-    setEncours(false);
+  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string } | null>(null);
+  const poser = (question: string) => {
+    setQ(question);
+    setRep({ ...repondreLocalement(question, faits), qPosee: question });
   };
-  const poser = (question: string) => { setQ(question); demander(question); };
   // Date du jour au format long français, comme « Généré le 14 octobre 2026 ».
   const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
   return (
@@ -1561,18 +1613,18 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: r.couleurSentiment }} />
         <span className="text-[11px] font-bold text-slate-500">Sentiment : <span style={{ color: r.couleurSentiment }}>{r.sentiment}</span></span>
       </div>
-      {/* Zone « Posez une question » : réponse locale instantanée, puis réponse
-          Mistral (si clé VITE_MISTRAL_API_KEY configurée) qui remplace la locale. */}
+      {/* Zone « Posez une question » façon Breeze HubSpot : réponse cherchée
+          LOCALEMENT dans les faits de la fiche (pas de modèle dans le canvas). */}
       <div className="mt-2.5 border-t border-slate-100 pt-2.5">
         <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Posez une question sur cette fiche</div>
         <div className="flex gap-1.5">
           <input value={q} onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") demander(q); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
             placeholder="ex. Quand se termine le contrat ?"
             className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
-          <button type="button" disabled={encours} onClick={() => demander(q)}
-            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>{encours ? "…" : "Demander"}</button>
+          <button type="button" onClick={() => { if (q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
+            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white"
+            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Demander</button>
         </div>
         {(suggestions || []).length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
@@ -1585,24 +1637,26 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
         {rep && (
           <div className={"mt-2 rounded-xl px-2.5 py-2 text-[12px] leading-relaxed " + (rep.trouve ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-700")}>
             <span className="mr-1">✨</span>{rep.qPosee ? <span className="font-black text-slate-400">{"« " + rep.qPosee + " » — "}</span> : null}{rep.reponse}
-            {rep.ia && <span className="ml-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-black text-emerald-600">Mistral AI</span>}
           </div>
         )}
-        <div className="mt-1.5 text-[9.5px] text-slate-300">{CLE ? "Réponses assistées par Mistral AI à partir des données de la fiche." : "Réponse calculée à partir de la fiche — les données du CRM restent la source de vérité."}</div>
+        <div className="mt-1.5 text-[9.5px] text-slate-300">Réponses calculées localement à partir de la fiche — branchement API Mistral en production.</div>
       </div>
     </CarteFiche>
   );
 }
 
-// Transforme une date affichée ("auj.", "15/10", "2/10"…) en nombre triable :
-// "auj." est toujours en tête (9999), sinon on garde le jour du mois (int parsé).
-// Astuce simple valable parce que toutes les dates de démo sont dans le même mois.
-const valDate = (s: string) => (s === "auj." ? 9999 : parseInt(s, 10) || 0);
+// Transforme une date affichée en nombre triable : on utilise la date de
+// réalisation réelle (dateISO, jj/mm/aaaa) quand elle existe, sinon le libellé
+// court historique (« auj. » en tête, sinon jour du mois parsé).
+const valDate = (s: string, iso?: string) => {
+  if (iso) { const p = iso.split("/").map(Number); return p.length === 3 ? p[0] + p[1] * 100 + p[2] * 10000 : 0; }
+  return s === "auj." ? 9999 : parseInt(s, 10) || 0;
+};
 
 // Timeline d'activités des fiches. Chaque event peut être :
 //  - une activité de la fiche elle-même (note, appel… sans deal rattaché)
 //  - une activité d'un deal associé (porte une référence `deal` → lien cliquable)
-function Chronologie({ events, onOuvre }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void }) {
+function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[] }) {
   if (events.length === 0) {
     return (
       <div className="text-[12px] text-slate-400">
@@ -1614,9 +1668,12 @@ function Chronologie({ events, onOuvre }: { events: (Activite & { deal?: Deal })
     <div className="divide-y divide-slate-50">
       {events.map((ev, i) => {
         // Rétro-compatibilité : les anciennes activités (pré-typage) n'ont pas de
-        // `type`. On le déduit : rattachée à un deal → changement d'étape, sinon note.
-        const typeEff: TypeActivite = ev.type ?? (ev.deal ? "etape" : "note");
+        // `type` → note par défaut.
+        const typeEff: TypeActivite = ev.type ?? "note";
         const meta = META_ACT[typeEff]; // icône/couleur/libellé du type
+        // Résolution des liens de l'activité : contact lié et/ou deal lié.
+        const ct = ev.contactId ? (contacts || []).find((x) => x.id === ev.contactId) : null;
+        const dd = ev.dealId ? (deals || []).find((x) => x.id === ev.dealId) : null;
         return (
           <div key={i} className="flex items-start gap-3 py-2.5">
             {/* Pastille de l'icône : couleur du type à ~9% d'opacité (suffixe "18"). */}
@@ -1626,13 +1683,18 @@ function Chronologie({ events, onOuvre }: { events: (Activite & { deal?: Deal })
               <div className="text-[10px] font-black uppercase tracking-wider" style={{ color: meta.couleur }}>{meta.libelle}</div>
               <div className="text-[12.5px] leading-relaxed text-slate-700">{ev.texte}</div>
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                <span className="font-bold">{ev.date}</span>
+                <span className="font-bold">{ev.dateISO || ev.date}</span>
                 {/* Badge d'échéance pour les tâches et réunions planifiées. */}
                 {ev.echeance && <Badge texte={`échéance ${ev.echeance}`} couleur={meta.couleur} />}
-                {/* Lien vers le deal source de l'activité (ouvre la modale deal). */}
-                {ev.deal && (
-                  <button onClick={() => onOuvre({ type: "deal", id: ev.deal!.id })}
-                    className="truncate font-semibold text-cyan-600 hover:underline">{ev.deal.nom}</button>
+                {/* Lien vers le contact rattaché à l'activité (ouvre la modale). */}
+                {ct && (
+                  <button onClick={() => onOuvre({ type: "contact", id: ct.id })}
+                    className="truncate font-semibold text-cyan-600 hover:underline">👤 {ct.prenom} {ct.nom}</button>
+                )}
+                {/* Lien vers le deal rattaché à l'activité (ouvre la modale deal). */}
+                {(dd || ev.deal) && (
+                  <button onClick={() => onOuvre({ type: "deal", id: (dd || ev.deal!).id })}
+                    className="truncate font-semibold text-cyan-600 hover:underline">{(dd || ev.deal!).nom}</button>
                 )}
               </div>
             </div>
@@ -1657,20 +1719,33 @@ const TYPES_COMPOSER: { type: "note" | "email" | "appel" | "tache" | "reunion"; 
 // puis un mini-formulaire adapté au type choisi. Machine à états simple :
 //  - typeSel : type en cours de saisie (null = aucun formulaire ouvert)
 //  - texte / echeance : champs du formulaire, réinitialisés à chaque fermeture
-function ComposerActivites({ onAjouter }: {
-  onAjouter: (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string) => void;
+function ComposerActivites({ onAjouter, contacts, deals }: {
+  onAjouter: (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => void;
+  // Listes optionnelles de rattachement (contacts & deals de l'entreprise
+  // affichée) : quand elles sont fournies, deux petits menus permettent de
+  // lier l'activité à un contact et/ou un deal.
+  contacts?: { id: string; prenom: string; nom: string }[];
+  deals?: { id: string; nom: string }[];
 }) {
   const [typeSel, setTypeSel] = useState<(typeof TYPES_COMPOSER)[number]["type"] | null>(null);
   const [texte, setTexte] = useState("");
   const [echeance, setEcheance] = useState("");
+  // Liens optionnels de l'activité vers un contact / un deal de l'entreprise.
+  const [contactId, setContactId] = useState("");
+  const [dealId, setDealId] = useState("");
+  // Date de réalisation réelle, pré-remplie avec la date du jour (jj/mm/aaaa) :
+  // c'est L'HORODATAGE officiel de l'activité, modifiable pour rattraper une
+  // action faite hier ou avant.
+  const aujourdhui = new Date().toLocaleDateString("fr-FR");
+  const [dateRea, setDateRea] = useState(aujourdhui);
 
   // Fermeture = remise à zéro complète du formulaire.
-  const fermer = () => { setTypeSel(null); setTexte(""); setEcheance(""); };
+  const fermer = () => { setTypeSel(null); setTexte(""); setEcheance(""); setContactId(""); setDealId(""); setDateRea(aujourdhui); };
   // Validation : texte obligatoire, échéance transmise seulement si non vide.
   const ajouter = () => {
     const t = texte.trim();
     if (!t || !typeSel) return;
-    onAjouter(typeSel, t, echeance.trim() || undefined);
+    onAjouter(typeSel, t, echeance.trim() || undefined, dateRea.trim() || undefined, { contactId: contactId || undefined, dealId: dealId || undefined });
     fermer();
   };
 
@@ -1704,10 +1779,34 @@ function ComposerActivites({ onAjouter }: {
               : "Objet et conclusions de la réunion…"
             }
             className="w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
+          {/* Date de réalisation : pré-remplie avec aujourd'hui, modifiable
+              (rattrapage d'une activité réalisée plus tôt). */}
+          <input value={dateRea} onChange={(ev) => setDateRea(ev.target.value)}
+            placeholder="Date de réalisation (ex. 14/10/2026)"
+            className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
           {(typeSel === "tache" || typeSel === "reunion") && (
             <input value={echeance} onChange={(ev) => setEcheance(ev.target.value)}
               placeholder={typeSel === "tache" ? "Échéance (ex. 15/10)" : "Date de la réunion (ex. 18/10)"}
               className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
+          )}
+          {/* Rattachements optionnels : un contact et/ou un deal de l'entreprise. */}
+          {((contacts && contacts.length > 0) || (deals && deals.length > 0)) && (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {contacts && contacts.length > 0 && (
+                <select value={contactId} onChange={(ev) => setContactId(ev.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-[11.5px] font-medium text-slate-600 outline-none focus:border-cyan-500">
+                  <option value="">👤 Contact lié (optionnel)</option>
+                  {contacts.map((c) => <option key={c.id} value={c.id}>{c.prenom} {c.nom}</option>)}
+                </select>
+              )}
+              {deals && deals.length > 0 && (
+                <select value={dealId} onChange={(ev) => setDealId(ev.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-[11.5px] font-medium text-slate-600 outline-none focus:border-cyan-500">
+                  <option value="">🎯 Deal lié (optionnel)</option>
+                  {deals.map((d) => <option key={d.id} value={d.id}>{d.nom}</option>)}
+                </select>
+              )}
+            </div>
           )}
           <div className="mt-2.5 flex justify-end gap-2">
             <button onClick={fermer}
@@ -1754,7 +1853,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
   onOuvreFiche: (f: FicheRef) => void;     // navigue vers une autre page record
-  onActivite: (type: "entreprise" | "contact", id: string, activite: Activite) => void; // journalise une activité
+  onActivite: (id: string, activite: Activite) => void; // journalise une activité SUR l'entreprise
   onModifie: (patch: Partial<Entreprise>) => void; // édition directe du panneau « À propos »
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
@@ -1768,20 +1867,20 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   const deals = etat.deals.filter((d) => d.entrepriseId === e.id);
   const actifs = deals.filter((d) => d.etape !== "Gagné" && d.etape !== "Perdu");
   const pipeline = actifs.reduce((s, d) => s + d.montant, 0);
-  // Timeline = activités de l'entreprise ELLE-MÊME + activités de ses deals
-  // (on rattache le deal à chaque événement pour le lien cliquable),
+  // Timeline = les activités de l'entreprise (source unique : les activités
+  // des contacts et des deals vivent ICI, avec liens `contactId`/`dealId`),
   // triées de la plus récente à la plus ancienne.
-  const events = [
-    ...e.activites,
-    ...deals.flatMap((d) => d.activites.map((a) => ({ ...a, deal: d }))),
-  ].sort((x, y) => valDate(y.date) - valDate(x.date));
+  const events = [...e.activites].sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
   // ── Prochaine action en attente (1er deal non fermé avec une action à faire) :
   // elle alimente le résumé « IA » affiché en bas de la colonne droite. ──
   const prochaine = deals.find((d) => d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu");
 
-  // Le composer remonte son activité au parent avec la date du jour.
-  const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string) => {
-    onActivite("entreprise", e.id, { date: "auj.", texte, type, echeance });
+  // Le composer remonte son activité au parent avec la date du jour + liens.
+  const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => {
+    // dateISO = date de réalisation réelle (transmise par le composer) ; on garde
+    // aussi le libellé court cohérent (« auj. » si réalisé aujourd'hui, sinon jj/mm).
+    const estAuj = dateRea === new Date().toLocaleDateString("fr-FR");
+    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || new Date().toLocaleDateString("fr-FR"), contactId: lien?.contactId, dealId: lien?.dealId });
   };
 
   return (
@@ -1853,9 +1952,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               bandeau central de la fiche HubSpot. */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
-            <ComposerActivites onAjouter={ajouterActivite} />
+            <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
             <div className="mt-3">
-              <Chronologie events={events} onOuvre={onOuvre} />
+              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} />
             </div>
           </div>
 
@@ -1884,7 +1983,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                       ))}
                     </div>
                   )}
-                  <PropTexte label="Pack choisi" valeur={e.pack} onChange={(v) => onModifie({ pack: v })} />
                   {(e.contrats || []).map((k, i) => (
                     <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-2">
                       <div className="mb-1 text-[11px] font-black text-slate-500">Contrat {i + 1}{k.num ? " — " + k.num : ""}{k.etat ? " · " + k.etat : ""}</div>
@@ -1937,7 +2035,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             {deals.length === 0 && <div className="text-[11.5px] text-slate-400">Aucun deal en cours.</div>}
             <div className="space-y-1">
               {deals.map((d) => (
-                <button key={d.id} onClick={() => onOuvre({ type: "deal", id: d.id })}
+                <button key={d.id} onClick={() => onOuvreFiche({ type: "deal", id: d.id })}
                   className="w-full rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
                   <span className="block truncate text-[12px] font-bold text-slate-700">{d.nom}</span>
                   <span className="mt-0.5 flex items-center gap-2">
@@ -1949,7 +2047,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             </div>
           </CarteFiche>
 
-            {/* Résumé « IA » + zone de questions en bas de la colonne droite. */}
+            {/* Résumé « IA » + zone de questions en bas de la colonne droite.
+                faits = tout ce que la zone « Posez une question » peut citer :
+                propriétés, contrats, contacts, deals, activités. */}
             <ResumeIA nom={e.nom} events={events} prochaine={prochaine}
               faits={[
                 e.statut ? e.nom + " a le statut « " + e.statut + " »." : "",
@@ -1972,7 +2072,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 ...etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).map((x) => x.prenom + " " + x.nom + (x.role ? " (" + x.role + ")" : "") + " est un contact de " + e.nom + (x.tel ? " — tél. " + x.tel : "") + (x.email ? " — email " + x.email : "") + "."),
                 ...etat.deals.filter((d) => d.entrepriseId === e.id).map((d) => "Deal « " + d.nom + " » : " + d.montant + " k€, étape « " + d.etape + " »" + (d.action ? ", prochaine action : " + d.action + (d.echeance ? " (le " + d.echeance + ")" : "") : "") + "."),
                 (events.length > 0 ? "Dernière activité : " + events[0].texte + "." : ""),
-                ...events.map((ev) => META_ACT[ev.type || "note"].libelle + " du " + ev.date + " : " + ev.texte + "."),
               ].filter(Boolean)}
               suggestions={["Quand se termine le contrat ?", "Quels modèles loue ce client ?", "Qui sont les contacts ?", "Où se situe l'entreprise ?", "Quelle est la dernière activité ?"]} />
           </div>
@@ -1982,14 +2081,15 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   );
 }
 
-/* ---- Page record CONTACT : même structure que l'entreprise, mais les
-        associations sont l'entreprise (unique) + ses deals personnels. ---- */
-function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }: {
+/* ---- Page record CONTACT : même structure que l'entreprise, mais la colonne
+        Activités est en CONSULTATION SEULE — les activités vivent sur les
+        entreprises (sources uniques) et on affiche celles qui sont liées à
+        ce contact (lien `contactId`) ou à l'un de ses deals (lien `dealId`). ---- */
+function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;
   onOuvreFiche: (f: FicheRef) => void;
-  onActivite: (type: "entreprise" | "contact", id: string, activite: Activite) => void;
 }) {
   const c = etat.contacts.find((x) => x.id === id);
   // Même garde-fou que la fiche entreprise : contact supprimé → retour simple.
@@ -1997,20 +2097,17 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }:
     return <button onClick={onRetour} className="text-[12px] font-bold text-slate-400 hover:text-slate-600">← Contacts</button>;
   }
   // Agrégats : TOUTES les entreprises du contact (multi-comptes), deals portés
-  // PAR CE CONTACT (contactId), timeline de ses propres activités + deals.
+  // PAR CE CONTACT (contactId). Timeline = activités de SES entreprises qui
+  // lui sont liées (contactId) ou liées à l'un de ses deals (dealId).
   const entreprises = etat.entreprises.filter((x) => c.entrepriseIds.includes(x.id));
   const deals = etat.deals.filter((d) => d.contactId === c.id);
   const actifs = deals.filter((d) => d.etape !== "Gagné" && d.etape !== "Perdu");
-  const events = [
-    ...c.activites,
-    ...deals.flatMap((d) => d.activites.map((a) => ({ ...a, deal: d }))),
-  ].sort((x, y) => valDate(y.date) - valDate(x.date));
+  const idsDeals = new Set(deals.map((d) => d.id));
+  const events = entreprises.flatMap((en) =>
+    en.activites.filter((a) => a.contactId === c.id || (a.dealId && idsDeals.has(a.dealId)))
+  ).sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
   // Prochaine action en attente : alimente le résumé « IA » de la colonne droite.
   const prochaine = deals.find((d) => d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu");
-
-  const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string) => {
-    onActivite("contact", c.id, { date: "auj.", texte, type, echeance });
-  };
 
   return (
     <div className="space-y-4">
@@ -2060,13 +2157,14 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }:
             </CarteFiche>
           </div>
 
-          {/* Colonne centrale : Activités (composer + timeline). */}
+          {/* Colonne centrale : Activités en CONSULTATION SEULE (elles sont
+              ajoutées depuis la fiche de l'entreprise, où elles vivent). */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
-            <ComposerActivites onAjouter={ajouterActivite} />
-            <div className="mt-3">
-              <Chronologie events={events} onOuvre={onOuvre} />
+            <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-[11.5px] font-medium text-slate-400">
+              ℹ️ Les activités se consignent depuis la fiche d'une entreprise — chaque activité peut être reliée à {c.prenom}. Elles s'affichent ici automatiquement.
             </div>
+            <Chronologie events={events} onOuvre={onOuvre} contacts={[c]} deals={deals} />
           </div>
 
           {/* Colonne droite : associations puis résumé. */}
@@ -2098,7 +2196,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }:
             {deals.length === 0 && <div className="text-[11.5px] text-slate-400">Aucun deal en cours.</div>}
             <div className="space-y-1">
               {deals.map((d) => (
-                <button key={d.id} onClick={() => onOuvre({ type: "deal", id: d.id })}
+                <button key={d.id} onClick={() => onOuvreFiche({ type: "deal", id: d.id })}
                   className="w-full rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
                   <span className="block truncate text-[12px] font-bold text-slate-700">{d.nom}</span>
                   <span className="mt-0.5 flex items-center gap-2">
@@ -2126,7 +2224,596 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite }:
   );
 }
 
+/* ---- Page record DEAL : même structure que les fiches entreprise/contact —
+      « À propos » éditable en direct à gauche (montant, étape, prochaine
+      action, notes…), Activités en CONSULTATION au centre (elles vivent sur
+      l'entreprise, liées via `dealId`), associations + résumé IA à droite. ---- */
+function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
+  etat: Etat; id: string;
+  onRetour: () => void;
+  onOuvre: (c: Cible) => void;              // ouvre la modale (édition complète…)
+  onOuvreFiche: (f: FicheRef) => void;     // navigue vers une autre page record
+  onModifie: (patch: Partial<Deal>) => void; // édition directe du panneau « À propos »
+}) {
+  const d = etat.deals.find((x) => x.id === id);
+  // Garde-fou : deal supprimé pendant qu'on était sur sa fiche → retour simple.
+  if (!d) {
+    return <button onClick={onRetour} className="text-[12px] font-bold text-slate-400 hover:text-slate-600">← Deals</button>;
+  }
+  // Agrégats : entreprise porteuse, contact référent, activités liées (elles
+  // sont portées par l'entreprise avec un lien `dealId`).
+  const entreprise = etat.entreprises.find((x) => x.id === d.entrepriseId);
+  const contact = etat.contacts.find((x) => x.id === d.contactId);
+  const events = (entreprise ? entreprise.activites.filter((a) => a.dealId === d.id) : [])
+    .slice().sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
+  // Prochaine action en attente : alimente le résumé « IA » (null si faite/fermée).
+  const prochaine = d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu" ? d : null;
+
+  return (
+    <div className="space-y-4">
+      <button onClick={onRetour} className="text-[12px] font-bold text-slate-400 hover:text-slate-600">← Deals</button>
+
+      <EnteteFiche
+        initiales={d.nom.slice(0, 2).toUpperCase()}
+        nom={d.nom}
+        sous={[entreprise?.nom, contact ? contact.prenom + " " + contact.nom : "", d.montant + " k€", d.etape].filter(Boolean).join("  ·  ")}
+        boutons={
+          <button onClick={() => onOuvre({ type: "deal", id: d.id, preset: "" })}
+            className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+            ✎ Modifier
+          </button>
+        }
+      />
+
+      {/* 3 colonnes façon HubSpot, défilement horizontal si le panneau est étroit. */}
+      <div className="overflow-x-auto pb-2">
+        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4">
+          {/* Colonne gauche : À propos — tout est éditable EN DIRECT. */}
+          <div>
+            <CarteFiche titre="À propos">
+              <div className="space-y-2.5">
+              {/* L'étape change via le select ; le changement est tracé
+                  automatiquement dans l'historique (comme la modale/kanban). */}
+              <PropSelect label="Étape" valeur={d.etape} options={ETAPES.map((x) => x.nom)} onChange={(v) => onModifie({ etape: v as Etape })} />
+              {/* Montant en k€ : saisie libre convertie en nombre (virgule acceptée). */}
+              <PropTexte label="Montant (k€)" valeur={String(d.montant)} onChange={(v) => onModifie({ montant: v.trim() === "" ? 0 : Number(v.replace(",", ".")) || 0 })} />
+              <PropTexte label="Prochaine action" valeur={d.action} onChange={(v) => onModifie({ action: v })} />
+              <PropTexte label="Échéance" valeur={d.echeance} onChange={(v) => onModifie({ echeance: v })} />
+              {/* Bascule « faite / à faire » : gros bouton explicite. */}
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Prochaine action — statut</div>
+                <button onClick={() => onModifie({ fait: !d.fait })}
+                  className={"mt-0.5 rounded-lg px-2 py-1 text-[12px] font-black transition-colors " + (d.fait ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-200" : "bg-orange-100 text-orange-700 hover:bg-orange-200")}>
+                  {d.fait ? "✓ Faite" : "○ À faire"}
+                </button>
+              </div>
+              {/* Notes libres, éditables en place. */}
+              <div className="min-w-0">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Notes</div>
+                <textarea rows={3} value={d.notes} onChange={(e) => onModifie({ notes: e.target.value })}
+                  placeholder="—"
+                  className="w-full resize-none rounded-lg border border-transparent bg-transparent px-1 py-0.5 -mx-1 text-[12.5px] font-medium leading-relaxed text-slate-700 outline-none transition-colors hover:border-slate-200 hover:bg-slate-50 focus:border-cyan-500 focus:bg-white" />
+              </div>
+              </div>
+            </CarteFiche>
+          </div>
+
+          {/* Colonne centrale : Activités en CONSULTATION SEULE (elles sont
+              ajoutées depuis la fiche de l'entreprise, où elles vivent). */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
+            <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-[11.5px] font-medium text-slate-400">
+              ℹ️ Les activités se consignent depuis la fiche de l'entreprise {entreprise ? <span className="font-bold text-slate-500">{entreprise.nom}</span> : ""} — chaque activité peut être reliée à ce deal. Elles s'affichent ici automatiquement.
+            </div>
+            <Chronologie events={events} onOuvre={onOuvre} contacts={contact ? [contact] : []} deals={[d]} />
+          </div>
+
+          {/* Colonne droite : associations puis résumé. */}
+          <div className="space-y-4">
+            <CarteFiche titre="Entreprise">
+              {entreprise ? (
+                <button onClick={() => onOuvreFiche({ type: "entreprise", id: entreprise.id })}
+                  className="flex w-full items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[10px] font-black text-white"
+                    style={{ background: "linear-gradient(135deg,#0ea5e9,#14b8a6)" }}>
+                    {entreprise.nom.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-bold text-slate-700">{entreprise.nom}</span>
+                    <span className="block truncate text-[10px] text-slate-400">{entreprise.secteur} · {entreprise.ville}</span>
+                  </span>
+                </button>
+              ) : <div className="text-[11.5px] text-slate-400">Aucune entreprise rattachée.</div>}
+            </CarteFiche>
+
+            <CarteFiche titre="Contact">
+              {contact ? (
+                <button onClick={() => onOuvreFiche({ type: "contact", id: contact.id })}
+                  className="flex w-full items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-[11px] font-black text-cyan-700">
+                    {contact.prenom[0]}{contact.nom[0]}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-bold text-slate-700">{contact.prenom} {contact.nom}</span>
+                    <span className="block truncate text-[10px] text-slate-400">{contact.role}</span>
+                  </span>
+                </button>
+              ) : <div className="text-[11.5px] text-slate-400">Aucun contact référent.</div>}
+            </CarteFiche>
+
+            {/* Résumé « IA » + zone de questions. */}
+            <ResumeIA nom={d.nom} events={events} prochaine={prochaine}
+              faits={[
+                "Deal « " + d.nom + " » : " + d.montant + " k€, étape « " + d.etape + " ».",
+                entreprise ? "Deal porté par " + entreprise.nom + (entreprise.ville ? " (" + entreprise.ville + ")" : "") + ", statut « " + entreprise.statut + " »." : "",
+                contact ? "Contact référent : " + contact.prenom + " " + contact.nom + (contact.role ? " (" + contact.role + ")" : "") + (contact.tel ? " — tél. " + contact.tel : "") + (contact.email ? " — email " + contact.email : "") + "." : "",
+                d.action ? "Prochaine action : " + d.action + (d.fait ? " (faite)" : "") + (d.echeance ? " — échéance " + d.echeance : "") + "." : "",
+                ...events.map((ev) => META_ACT[ev.type || "note"].libelle + " du " + (ev.dateISO || ev.date) + " : " + ev.texte + "."),
+              ].filter(Boolean)}
+              suggestions={["Quel est le montant du deal ?", "Qui est le contact référent ?", "Quelle est la prochaine action ?", "Quelle est la dernière activité ?"]} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================== VUES ============================== */
+
+/* ---- Agenda : calendrier mensuel de tout ce qu'il faut FAIRE — tâches,
+       réunions (échéances des activités) et prochaines actions des deals.
+       Sources : activites (type tache/reunion) avec echeance + deals avec
+       action non faite et echeance. Cliquer un jour affiche le détail ;
+       cliquer un élément ouvre la fiche / le deal correspondant. ---- */
+// Parse une échéance ("16/10", "18/10/2026", "auj.") en {j, m, a} — l'année
+// manquante est celle en cours. Retourne null si incompréhensible.
+const parseEcheance = (s: string): { j: number; m: number; a: number } | null => {
+  const t = (s || "").trim();
+  if (!t || t === "auj.") return null;
+  const p = t.split("/").map(Number);
+  // ⚠️ mois 0-indexé pour matcher new Date().getMonth()
+  if (p.length === 3 && p.every((n) => !Number.isNaN(n))) return { j: p[0], m: p[1] - 1, a: p[2] };
+  if (p.length === 2 && p.every((n) => !Number.isNaN(n))) return { j: p[0], m: p[1] - 1, a: new Date().getFullYear() };
+  return null;
+};
+const MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+const JOURS_FR = ["L", "M", "M", "J", "V", "S", "D"];
+
+/* ---- Mini-calendrier de saisie de date : utilisé par le formulaire
+        « ➕ Consigner » de l'agenda (date de réalisation ET échéance de
+        l'action suivante). S'ouvre sur le mois de la valeur actuelle (ou du
+        jour), navigation ←/→, un clic sur un jour remonte « j/m/a ». ---- */
+function MiniCalendrier({ valeur, onChoisit }: { valeur: string; onChoisit: (jjmmaaaa: string) => void }) {
+  const auj = new Date();
+  const sel = valeur ? parseEcheance(valeur) : null;
+  const [mois, setMois] = useState(sel ? { a: sel.a, m: sel.m } : { a: auj.getFullYear(), m: auj.getMonth() });
+  const nbJours = new Date(mois.a, mois.m + 1, 0).getDate();
+  const decal = (new Date(mois.a, mois.m, 1).getDay() + 6) % 7;
+  const cases: (number | null)[] = Array(decal).fill(null).concat(Array.from({ length: nbJours }, (_, i) => i + 1));
+  return (
+    <div className="mt-1.5 rounded-xl border border-slate-200 bg-white p-2.5 shadow-sm">
+      <div className="mb-1.5 flex items-center justify-between">
+        <button onClick={() => setMois(mois.m === 0 ? { a: mois.a - 1, m: 11 } : { a: mois.a, m: mois.m - 1 })}
+          className="rounded-lg px-2 py-0.5 text-[13px] font-black text-slate-400 hover:bg-slate-100">←</button>
+        <span className="text-[11px] font-black capitalize text-slate-700">{MOIS_FR[mois.m]} {mois.a}</span>
+        <button onClick={() => setMois(mois.m === 11 ? { a: mois.a + 1, m: 0 } : { a: mois.a, m: mois.m + 1 })}
+          className="rounded-lg px-2 py-0.5 text-[13px] font-black text-slate-400 hover:bg-slate-100">→</button>
+      </div>
+      <div className="grid grid-cols-7 gap-0.5 text-center text-[8px] font-black uppercase text-slate-300">
+        {JOURS_FR.map((j, i) => <div key={i} className="pb-0.5">{j}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-0.5">
+        {cases.map((j, i) => j === null ? <div key={i} /> : (
+          <button key={i} onClick={() => onChoisit(`${j}/${mois.m + 1}/${mois.a}`)}
+            className={"h-6 rounded-md text-[10.5px] font-bold transition-colors " +
+              (sel && sel.j === j && sel.m === mois.m && sel.a === mois.a
+                ? "bg-cyan-500 text-white"
+                : j === auj.getDate() && mois.m === auj.getMonth() && mois.a === auj.getFullYear()
+                  ? "text-cyan-600 hover:bg-cyan-50"
+                  : "text-slate-600 hover:bg-slate-100")}>
+            {j}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cible) => void; onAjouter: (id: string, activite: Activite) => void }) {
+  const auj = new Date();
+  const [mode, setMode] = useState<"mois" | "semaine">("mois");
+  const [curseur, setCurseur] = useState({ a: auj.getFullYear(), m: auj.getMonth() }); // mois affiché
+  // Semaine affichée (mode semaine) : on garde une date de référence dans la semaine.
+  const [refSem, setRefSem] = useState(new Date(auj.getFullYear(), auj.getMonth(), auj.getDate()));
+  const [jourSel, setJourSel] = useState<{ j: number; m: number; a: number } | null>({ j: auj.getDate(), m: auj.getMonth(), a: auj.getFullYear() }); // jour sélectionné
+
+  // ── Formulaire « ➕ Consigner » : ce qui a été fait (compte-rendu horodaté,
+  //    relié à une entreprise + contact/deal optionnels), puis l'action
+  //    suivante (tâche/réunion avec échéance) qui atterrit dans l'agenda. ──
+  const [formOuvert, setFormOuvert] = useState(false);
+  const [entId, setEntId] = useState("");
+  const [ctId, setCtId] = useState("");
+  const [dlId, setDlId] = useState("");
+  const [typeFait, setTypeFait] = useState<"note" | "email" | "appel" | "tache" | "reunion">("appel");
+  const [texteFait, setTexteFait] = useState("");
+  const aujourdhui = new Date().toLocaleDateString("fr-FR");
+  const [dateFait, setDateFait] = useState(aujourdhui);
+  const [avecSuivante, setAvecSuivante] = useState(true);
+  const [typeSuivante, setTypeSuivante] = useState<"tache" | "reunion">("tache");
+  const [texteSuivante, setTexteSuivante] = useState("");
+  const [echeanceSuivante, setEcheanceSuivante] = useState("");
+  // Barre de recherche d'entreprise + mini-calendriers (date de réalisation
+  // et échéance de l'action suivante).
+  const [rechercheEnt, setRechercheEnt] = useState("");
+  const [calFaitOuvert, setCalFaitOuvert] = useState(false);
+  const [calOuvert, setCalOuvert] = useState(false);
+  // Entreprise choisie (pour l'affichage en « chip ») + résultats de recherche
+  // (nom, enseigne, ville — et TÉLÉPHONE en saisie souple).
+  const entChoisie = etat.entreprises.find((x) => x.id === entId);
+  const qEnt = rechercheEnt.toLowerCase().trim();
+  const resultatsEnt = etat.entreprises.filter((x) => !qEnt
+    || [x.nom, x.nomCommercial, x.ville].join(" ").toLowerCase().includes(qEnt)
+    || telCorrespond(qEnt, x.tel));
+  const fermerForm = () => {
+    setFormOuvert(false); setEntId(""); setCtId(""); setDlId("");
+    setTypeFait("appel"); setTexteFait(""); setDateFait(aujourdhui);
+    setAvecSuivante(true); setTypeSuivante("tache"); setTexteSuivante(""); setEcheanceSuivante("");
+    setRechercheEnt(""); setCalOuvert(false); setCalFaitOuvert(false);
+  };
+  // Listes de rattachement : contacts & deals de l'entreprise choisie.
+  const contactsEnt = entId ? etat.contacts.filter((c) => c.entrepriseIds.includes(entId)) : [];
+  const dealsEnt = entId ? etat.deals.filter((d) => d.entrepriseId === entId) : [];
+  // L'échéance de l'action suivante est pré-remplie avec le jour sélectionné
+  // dans le calendrier (pratique : « je consigne ce que j'ai fait pour X, la
+  // suite est pour le jour que je regarde »).
+  const ouvrirForm = () => {
+    setEcheanceSuivante(jourSel ? `${jourSel.j}/${jourSel.m + 1}/${jourSel.a}` : "");
+    setFormOuvert(true);
+  };
+  const validerForm = () => {
+    if (!entId || !texteFait.trim()) return;
+    const estAuj = dateFait === new Date().toLocaleDateString("fr-FR");
+    const base = { date: estAuj ? "auj." : (dateFait.slice(0, 5) || "auj."), dateISO: dateFait || aujourdhui, contactId: ctId || undefined, dealId: dlId || undefined };
+    // 1. L'activité réalisée (compte-rendu horodaté sur l'entreprise).
+    onAjouter(entId, { ...base, texte: texteFait.trim(), type: typeFait });
+    // 2. L'action suivante : tâche/réunion datée → visible dans l'agenda
+    //    dès l'enregistrement (mêmes liens contact/deal).
+    if (avecSuivante && texteSuivante.trim() && echeanceSuivante.trim()) {
+      onAjouter(entId, { ...base, texte: texteSuivante.trim(), type: typeSuivante, echeance: echeanceSuivante.trim() });
+    }
+    fermerForm();
+  };
+  const CH_FORM = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500";
+
+  // Collecte MÉMOÏSÉE de tous les « à faire » datés : tâches/réunions des
+  // activités (portées par les entreprises, liens contact/deal résolus) +
+  // prochaines actions des deals. Index par
+  // date « j/m/a » → un seul calcul par changement de `etat` (perf).
+  type EvenementAgenda = { date: { j: number; m: number; a: number }; kind: "tache" | "reunion" | "deal"; titre: string; contexte: string; lien: Cible };
+  const parJour = useMemo(() => {
+    const evts: EvenementAgenda[] = [];
+    const nomEntreprise = new Map(etat.entreprises.map((e) => [e.id, e.nom]));
+    const nomContact = new Map(etat.contacts.map((c) => [c.id, c.prenom + " " + c.nom]));
+    // Les activités ne vivent QUE sur les entreprises : la collecte parcourt
+    // uniquement leurs listes, et chaque événement résout ses liens
+    // `contactId`/`dealId` pour ouvrir directement la bonne fiche.
+    for (const e of etat.entreprises) for (const ac of e.activites) {
+      const d = parseEcheance(ac.echeance || "");
+      if (d && (ac.type === "tache" || ac.type === "reunion")) {
+        const ct = ac.contactId ? nomContact.get(ac.contactId) : null;
+        evts.push({
+          date: d, kind: ac.type, titre: ac.texte,
+          contexte: e.nom + (ct ? " · " + ct : ""),
+          lien: ac.dealId ? ({ type: "deal", id: ac.dealId, preset: "" } as Cible)
+            : ac.contactId ? ({ type: "contact", id: ac.contactId } as Cible)
+            : ({ type: "entreprise", id: e.id } as Cible),
+        });
+      }
+    }
+    for (const d of etat.deals) {
+      // Contexte = entreprise liée au deal (repli sur le nom du deal).
+      const soc = nomEntreprise.get(d.entrepriseId) || ("Deal « " + d.nom + " »");
+      const ed = parseEcheance(d.echeance);
+      if (d.action && !d.fait && ed) evts.push({ date: ed, kind: "deal", titre: d.action, contexte: soc, lien: { type: "deal", id: d.id, preset: "" } as Cible });
+    }
+    const idx = new Map<string, EvenementAgenda[]>();
+    for (const ev of evts) {
+      const cle = ev.date.j + "/" + ev.date.m + "/" + ev.date.a;
+      if (!idx.has(cle)) idx.set(cle, []);
+      idx.get(cle)!.push(ev);
+    }
+    return idx;
+  }, [etat]);
+  const duJour = (d: { j: number; m: number; a: number }) => parJour.get(d.j + "/" + d.m + "/" + d.a) || [];
+
+  const estAuj = (d: { j: number; m: number; a: number }) => d.j === auj.getDate() && d.m === auj.getMonth() && d.a === auj.getFullYear();
+  const estSel = (d: { j: number; m: number; a: number }) => jourSel && d.j === jourSel.j && d.m === jourSel.m && d.a === jourSel.a;
+  const COULEUR_KIND: Record<string, string> = { tache: "#8b5cf6", reunion: "#ef8f3c", deal: "#4f9ee8" };
+  const ICONES_KIND: Record<string, string> = { tache: "📌", reunion: "📅", deal: "🎯" };
+
+  // Rendu d’une puce d’événement (fonction simple, PAS un composant :
+  // évite le remontage de toutes les puces à chaque interaction).
+  const puce = (ev: EvenementAgenda) => (
+    <button key={ev.titre + ev.contexte} onClick={(e) => { e.stopPropagation(); onOuvre(ev.lien); }}
+      className="flex w-full items-start gap-1 rounded-md px-1 py-0.5 text-left text-[9.5px] font-bold hover:bg-white/70"
+      style={{ background: COULEUR_KIND[ev.kind] + "18", color: COULEUR_KIND[ev.kind] }}>
+      <span className="shrink-0 text-[8px] leading-3">{ICONES_KIND[ev.kind]}</span>
+      {/* Titre de l'événement + 2e ligne grise : qui / quelle entreprise */}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate leading-tight">{ev.titre}</span>
+        <span className="block truncate text-[7.5px] font-semibold leading-tight text-slate-400">{ev.contexte}</span>
+      </span>
+    </button>
+  );
+
+  const selEvenements = jourSel ? duJour(jourSel) : [];
+
+  // ── Grille du mois (mode « mois ») ──
+  const nbJours = new Date(curseur.a, curseur.m + 1, 0).getDate();
+  const decal = (new Date(curseur.a, curseur.m, 1).getDay() + 6) % 7;
+  const cases: ({ j: number } | null)[] = Array(decal).fill(null).concat(
+    Array.from({ length: nbJours }, (_, i) => ({ j: i + 1 }))
+  );
+  while (cases.length % 7 !== 0) cases.push(null);
+
+  // ── Jours de la semaine affichée (mode « semaine ») : lundi → dimanche ──
+  const lundi = new Date(refSem.getFullYear(), refSem.getMonth(), refSem.getDate() - ((refSem.getDay() + 6) % 7));
+  const joursSemaine = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(lundi.getFullYear(), lundi.getMonth(), lundi.getDate() + i);
+    return { j: d.getDate(), m: d.getMonth(), a: d.getFullYear() };
+  });
+
+  const titrePeriode = mode === "mois"
+    ? MOIS_FR[curseur.m] + " " + curseur.a
+    : joursSemaine[0].j + " " + MOIS_FR[joursSemaine[0].m] + " – " + joursSemaine[6].j + " " + MOIS_FR[joursSemaine[6].m] + " " + joursSemaine[6].a;
+  const periodePrecedente = () => mode === "mois"
+    ? setCurseur(curseur.m === 0 ? { a: curseur.a - 1, m: 11 } : { a: curseur.a, m: curseur.m - 1 })
+    : setRefSem(new Date(refSem.getFullYear(), refSem.getMonth(), refSem.getDate() - 7));
+  const periodeSuivante = () => mode === "mois"
+    ? setCurseur(curseur.m === 11 ? { a: curseur.a + 1, m: 0 } : { a: curseur.a, m: curseur.m + 1 })
+    : setRefSem(new Date(refSem.getFullYear(), refSem.getMonth(), refSem.getDate() + 7));
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        {/* En-tête : navigation période + bascule Mois/Semaine + Aujourd’hui */}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1">
+            <button onClick={periodePrecedente}
+              className="rounded-xl px-2.5 py-1 text-[13px] font-black text-slate-400 hover:bg-slate-100">←</button>
+            <div className="text-[14px] font-black capitalize text-slate-800">{titrePeriode}</div>
+            <button onClick={periodeSuivante}
+              className="rounded-xl px-2.5 py-1 text-[13px] font-black text-slate-400 hover:bg-slate-100">→</button>
+            <button onClick={() => { setCurseur({ a: auj.getFullYear(), m: auj.getMonth() }); setRefSem(new Date(auj.getFullYear(), auj.getMonth(), auj.getDate())); setJourSel({ j: auj.getDate(), m: auj.getMonth(), a: auj.getFullYear() }); }}
+              className="rounded-xl border border-slate-200 px-2 py-1 text-[10.5px] font-black text-slate-500 hover:bg-slate-50">Aujourd’hui</button>
+          </div>
+          {/* Bouton « Consigner » (ce qui a été fait + action suivante) et
+              bascule Mois/Semaine. */}
+          <div className="flex items-center gap-2">
+            <button onClick={ouvrirForm}
+              className="rounded-xl px-3 py-1.5 text-[11.5px] font-black text-white"
+              style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>➕ Consigner</button>
+            <div className="flex gap-1 rounded-xl bg-slate-100 p-0.5">
+              {(["mois", "semaine"] as const).map((m) => (
+                <button key={m} onClick={() => setMode(m)}
+                  className={"rounded-lg px-3 py-1 text-[11.5px] font-black capitalize " + (mode === m ? "bg-white text-cyan-700 shadow-sm" : "text-slate-400 hover:text-slate-600")}>{m}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {mode === "mois" ? (
+          <>
+            <div className="mb-1 grid grid-cols-7 gap-1 text-center text-[10px] font-black uppercase text-slate-400">
+              {JOURS_FR.map((j, i) => <div key={i}>{j}</div>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {cases.map((c, i) => c === null ? <div key={i} /> : (() => { const evs = duJour({ j: c.j, m: curseur.m, a: curseur.a }); return (
+                <div key={i} onClick={() => setJourSel({ j: c.j, m: curseur.m, a: curseur.a })}
+                  className={"flex h-20 cursor-pointer flex-col rounded-xl border p-1 text-left transition-colors " + (estSel({ j: c.j, m: curseur.m, a: curseur.a }) ? "border-cyan-400 bg-cyan-50" : estAuj({ j: c.j, m: curseur.m, a: curseur.a }) ? "border-slate-300 bg-slate-50" : "border-slate-100 hover:bg-slate-50")}>
+                  <span className={"text-[10.5px] font-bold " + (estAuj({ j: c.j, m: curseur.m, a: curseur.a }) ? "text-cyan-600" : "text-slate-500")}>{c.j}</span>
+                  {/* Événements visibles directement dans la case (2 max, puis +n) */}
+                  <div className="mt-0.5 flex min-w-0 flex-1 flex-col gap-0.5 overflow-hidden">
+                    {evs.slice(0, 2).map(puce)}
+                    {evs.length > 2 && (
+                      <span className="pl-1 text-[9px] font-black text-slate-400">+{evs.length - 2} autre{evs.length - 2 > 1 ? "s" : ""}</span>
+                    )}
+                  </div>
+                </div>
+              ); })())}
+            </div>
+          </>
+        ) : (
+          <>
+            {/* ── Vue semaine : 7 colonnes cliquables en entier, événements listés ── */}
+            <div className="grid grid-cols-7 gap-1">
+              {joursSemaine.map((d, i) => (
+                <div key={i} onClick={() => setJourSel(d)}
+                  className={"flex min-h-64 cursor-pointer flex-col rounded-xl border p-1.5 transition-colors " + (estSel(d) ? "border-cyan-400 bg-cyan-50 ring-2 ring-cyan-200" : estAuj(d) ? "border-slate-300 bg-slate-50 hover:border-cyan-300" : "border-slate-100 hover:border-cyan-300")}>
+                  <div className="mb-1 text-left">
+                    <span className="text-[9px] font-black uppercase text-slate-400">{JOURS_FR[i]}</span>
+                    <span className={"ml-1 text-[12px] font-black " + (estAuj(d) ? "text-cyan-600" : "text-slate-700")}>{d.j}</span>
+                  </div>
+                  <div className="flex flex-1 flex-col gap-1 overflow-y-auto">
+                    {duJour(d).map(puce)}
+                    {duJour(d).length === 0 && <span className="text-[9.5px] italic text-slate-300">—</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      {/* ── Panneau du jour sélectionné ── */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">À faire</div>
+        <div className="mb-3 text-[14px] font-black capitalize text-slate-800">
+          {jourSel ? jourSel.j + " " + MOIS_FR[jourSel.m] + " " + jourSel.a : "—"}
+          {jourSel && estAuj(jourSel) && <span className="ml-1.5 rounded-full bg-cyan-100 px-1.5 py-0.5 text-[9px] font-black text-cyan-700">aujourd’hui</span>}
+        </div>
+        {jourSel && duJour(jourSel).length === 0 && (
+          <div className="text-[12px] text-slate-400">Rien à faire ce jour-là. 🎉</div>
+        )}
+        <div className="space-y-1.5">
+          {selEvenements.map((ev, i) => (
+            <button key={i} onClick={() => onOuvre(ev.lien)}
+              className="w-full rounded-xl border border-slate-100 p-2 text-left hover:bg-slate-50">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px]">{ICONES_KIND[ev.kind]}</span>
+                <span className="truncate text-[11.5px] font-bold" style={{ color: COULEUR_KIND[ev.kind] }}>{ev.contexte}</span>
+              </div>
+              <div className="text-[12px] leading-snug text-slate-700">{ev.titre}</div>
+            </button>
+          ))}
+        </div>
+        {/* Légende des couleurs. */}
+        <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-2 text-[10px] font-bold text-slate-400">
+          <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full" style={{ background: "#8b5cf6" }} />Tâche</span>
+          <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full" style={{ background: "#ef8f3c" }} />Réunion</span>
+          <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full" style={{ background: "#4f9ee8" }} />Action deal</span>
+        </div>
+      </div>
+
+      {/* ── Overlay « Consigner une activité » : ce qui a été fait (+ liens
+          entreprise/contact/deal), puis l'action suivante qui atterrit
+          directement dans l'agenda. ── */}
+      <AnimatePresence>
+        {formOuvert && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={fermerForm}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+            <motion.div onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
+              className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+              <div className="mb-1 text-[15px] font-black text-slate-800">➕ Consigner une activité</div>
+              <div className="mb-4 text-[11.5px] text-slate-400">Ce qui a été fait, relié à un client / contact / deal — puis l'action suivante, planifiée dans l'agenda.</div>
+
+              {/* Rattachement : l'entreprise est la source unique des activités.
+                  Sélection par BARRE DE RECHERCHE (nom, enseigne, ville) puis
+                  « chip » une fois choisie. */}
+              <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">Entreprise *</div>
+              {entChoisie ? (
+                <div className="flex items-center justify-between rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2">
+                  <span className="truncate text-[12.5px] font-bold text-cyan-800">🏢 {entChoisie.nom}{entChoisie.ville ? <span className="font-medium text-cyan-500"> — {entChoisie.ville}</span> : ""}</span>
+                  <button onClick={() => { setEntId(""); setCtId(""); setDlId(""); }}
+                    className="ml-2 shrink-0 text-[12px] font-black text-cyan-400 hover:text-cyan-600">✕</button>
+                </div>
+              ) : (
+                <div>
+                  <input value={rechercheEnt} onChange={(e) => setRechercheEnt(e.target.value)}
+                    placeholder="🔎 Rechercher une entreprise (nom, ville)…"
+                    className={CH_FORM} />
+                  <div className="mt-1.5 max-h-36 overflow-y-auto rounded-xl border border-slate-100">
+                    {resultatsEnt.map((x) => (
+                      <button key={x.id} onClick={() => { setEntId(x.id); setCtId(""); setDlId(""); }}
+                        className="flex w-full items-center justify-between gap-2 border-b border-slate-50 px-3 py-1.5 text-left last:border-0 hover:bg-slate-50">
+                        <span className="truncate text-[12px] font-bold text-slate-700">{x.nom}</span>
+                        <span className="shrink-0 text-[10px] font-medium text-slate-400">{x.ville}</span>
+                      </button>
+                    ))}
+                    {resultatsEnt.length === 0 && <div className="px-3 py-2 text-[11.5px] text-slate-400">Aucune entreprise trouvée.</div>}
+                  </div>
+                </div>
+              )}
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select value={ctId} onChange={(e) => setCtId(e.target.value)} disabled={!entId}
+                  className={CH_FORM + " bg-white disabled:bg-slate-50 disabled:text-slate-300"}>
+                  <option value="">👤 Contact lié (optionnel)</option>
+                  {contactsEnt.map((c) => <option key={c.id} value={c.id}>{c.prenom} {c.nom}</option>)}
+                </select>
+                <select value={dlId} onChange={(e) => setDlId(e.target.value)} disabled={!entId}
+                  className={CH_FORM + " bg-white disabled:bg-slate-50 disabled:text-slate-300"}>
+                  <option value="">🎯 Deal lié (optionnel)</option>
+                  {dealsEnt.map((d) => <option key={d.id} value={d.id}>{d.nom}</option>)}
+                </select>
+              </div>
+
+              {/* Section 1 : ce qui a été fait. */}
+              <div className="mt-4 mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-500">Ce qui a été fait</div>
+              <div className="flex flex-wrap gap-1.5">
+                {TYPES_COMPOSER.map((b) => (
+                  <button key={b.type} onClick={() => setTypeFait(b.type)}
+                    className="rounded-xl border px-2.5 py-1 text-[11.5px] font-bold transition-colors"
+                    style={typeFait === b.type
+                      ? { borderColor: META_ACT[b.type].couleur, background: META_ACT[b.type].couleur + "14", color: META_ACT[b.type].couleur }
+                      : { borderColor: "#e2e8f0", background: "#ffffff", color: "#475569" }}>
+                    {b.icone} {b.libelle}
+                  </button>
+                ))}
+              </div>
+              <textarea rows={2} value={texteFait} onChange={(e) => setTexteFait(e.target.value)}
+                placeholder="Compte-rendu de ce qui a été fait…"
+                className={"mt-2 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500"} />
+              {/* Date de réalisation : saisie via mini-calendrier, pré-remplie
+                  avec aujourd'hui (modifiable pour rattraper une action passée). */}
+              <div className="mt-2">
+                <button onClick={() => setCalFaitOuvert((v) => !v)}
+                  className={CH_FORM + " bg-white text-left font-bold text-slate-800"}>
+                  📅 Réalisé le {dateFait}
+                </button>
+                {calFaitOuvert && (
+                  <MiniCalendrier valeur={dateFait}
+                    onChoisit={(v) => { setDateFait(v); setCalFaitOuvert(false); }} />
+                )}
+              </div>
+
+              {/* Section 2 : l'action suivante, planifiée dans l'agenda. */}
+              <div className="mt-4 flex items-center justify-between">
+                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">Action suivante → agenda</div>
+                <button onClick={() => setAvecSuivante(!avecSuivante)}
+                  className={"rounded-full px-2.5 py-1 text-[10.5px] font-black transition-colors " + (avecSuivante ? "bg-cyan-100 text-cyan-700" : "bg-slate-100 text-slate-400")}>
+                  {avecSuivante ? "✓ Planifiée" : "＋ Planifier"}
+                </button>
+              </div>
+              {avecSuivante && (
+                <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="mb-1.5 text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[typeSuivante].couleur }}>
+                    {META_ACT[typeSuivante].icone} {typeSuivante === "tache" ? "Tâche à faire" : "Réunion planifiée"}
+                  </div>
+                  <div className="mb-2 flex gap-1.5">
+                    {(["tache", "reunion"] as const).map((t) => (
+                      <button key={t} onClick={() => setTypeSuivante(t)}
+                        className="rounded-lg border px-2.5 py-1 text-[11px] font-bold capitalize transition-colors"
+                        style={typeSuivante === t
+                          ? { borderColor: META_ACT[t].couleur, background: META_ACT[t].couleur + "14", color: META_ACT[t].couleur }
+                          : { borderColor: "#e2e8f0", background: "#ffffff", color: "#94a3b8" }}>
+                        {META_ACT[t].icone} {t === "tache" ? "Tâche" : "Réunion"}
+                      </button>
+                    ))}
+                  </div>
+                  <input value={texteSuivante} onChange={(e) => setTexteSuivante(e.target.value)}
+                    placeholder="Que doit-on faire ensuite ?"
+                    className={CH_FORM} />
+                  {/* Échéance : saisie via mini-calendrier (clic sur un jour),
+                      le bouton affiche la date choisie. */}
+                  <div className="mt-2">
+                    <button onClick={() => setCalOuvert((v) => !v)}
+                      className={CH_FORM + " bg-white text-left " + (echeanceSuivante ? "font-bold text-slate-800" : "text-slate-400")}>
+                      📅 {echeanceSuivante || "Choisir la date…"}
+                    </button>
+                    {calOuvert && (
+                      <MiniCalendrier valeur={echeanceSuivante}
+                        onChoisit={(v) => { setEcheanceSuivante(v); setCalOuvert(false); }} />
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Validation : entreprise + compte-rendu obligatoires. */}
+              <div className="mt-5 flex gap-2">
+                <button onClick={fermerForm}
+                  className="flex-1 rounded-xl border border-slate-200 py-2.5 text-[13px] font-bold text-slate-400 hover:bg-slate-50">Annuler</button>
+                <button onClick={validerForm} disabled={!entId || !texteFait.trim()}
+                  className="flex-1 rounded-xl py-2.5 text-[13px] font-black text-white disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Enregistrer</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 /* ---- Tableau de bord : 6 KPIs + répartition du pipeline + actions à venir. ---- */
 function VueDashboard({ etat, onOuvre }: { etat: Etat; onOuvre: (c: Cible) => void }) {
@@ -2217,7 +2904,7 @@ function VueDashboard({ etat, onOuvre }: { etat: Etat; onOuvre: (c: Cible) => vo
 function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void }) {
   const q = recherche.toLowerCase().trim();
   const liste = etat.entreprises.filter((e) =>
-    !q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q));
+    !q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel));
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       {/* Défilement horizontal si le panneau est étroit : les colonnes gardent
@@ -2292,7 +2979,7 @@ function VueContacts({ etat, recherche, onOuvre }: { etat: Etat; recherche: stri
   const liste = etat.contacts.filter((c) => {
     // Recherche croisée : on matche aussi le nom de CHAQUE entreprise liée.
     const es = etat.entreprises.filter((x) => c.entrepriseIds.includes(x.id));
-    return !q || [c.prenom, c.nom, c.role, c.email, ...es.map((x) => x.nom)].join(" ").toLowerCase().includes(q);
+    return !q || [c.prenom, c.nom, c.role, c.email, ...es.map((x) => x.nom)].join(" ").toLowerCase().includes(q) || telCorrespond(q, c.tel);
   });
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -2350,6 +3037,110 @@ function VueContacts({ etat, recherche, onOuvre }: { etat: Etat; recherche: stri
 /* ---- Pipeline kanban : une colonne par étape, drag & drop des cartes deal. ----
    NB : les cartes sont des <div> NATIVES et non des <motion.div> : framer-motion
    intercepte onDragStart/onDrop, ce qui casserait le glisser-déposé. */
+/* ---- Vue DEALS : liste de consultation de toutes les opportunités —
+       même style que les listes Entreprises/Contacts. Chaque ligne ouvre la
+       modale du deal ; l'entreprise et le contact ont leurs propres liens.
+       Tri : montant décroissant (les plus gros enjeux d'abord). ---- */
+function VueDeals({ etat, recherche, onOuvre }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void }) {
+  const q = recherche.toLowerCase().trim();
+  // Une prochaine action est « en retard » si son échéance est passée et
+  // qu'elle n'est pas marquée faite (même logique que l'agenda).
+  const maintenant = new Date();
+  const enRetard = (d: Deal) => {
+    if (d.fait || !d.action || !d.echeance) return false;
+    const p = parseEcheance(d.echeance);
+    if (!p) return false;
+    return p.a < maintenant.getFullYear() || (p.a === maintenant.getFullYear() && (p.m < maintenant.getMonth() || (p.m === maintenant.getMonth() && p.j < maintenant.getDate())));
+  };
+  // La recherche porte sur le deal + son entreprise + son contact.
+  const liste = etat.deals.filter((d) => {
+    const e = etat.entreprises.find((x) => x.id === d.entrepriseId);
+    const c = etat.contacts.find((x) => x.id === d.contactId);
+    return !q || [d.nom, d.etape, d.action, e?.nom || "", c ? c.prenom + " " + c.nom : ""].join(" ").toLowerCase().includes(q)
+      || telCorrespond(q, e?.tel || "") || telCorrespond(q, c?.tel || "");
+  }).sort((a, b) => b.montant - a.montant);
+  // Petits compteurs affichés au-dessus du tableau (vue d'ensemble rapide).
+  const actifs = liste.filter((d) => d.etape !== "Gagné" && d.etape !== "Perdu");
+  const totalActif = actifs.reduce((s, d) => s + d.montant, 0);
+  const nbRetard = liste.filter(enRetard).length;
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[680px] text-left">
+        <thead>
+          <tr className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            <th className="px-4 py-2.5">Deal</th>
+            <th className="px-4 py-2.5">Entreprise</th>
+            <th className="px-4 py-2.5">Contact</th>
+            <th className="px-4 py-2.5">Étape</th>
+            <th className="px-4 py-2.5">Prochaine action</th>
+            <th className="px-4 py-2.5 text-right">Montant</th>
+          </tr>
+        </thead>
+        <tbody>
+          {liste.map((d) => {
+            const e = etat.entreprises.find((x) => x.id === d.entrepriseId);
+            const c = etat.contacts.find((x) => x.id === d.contactId);
+            return (
+              /* La ligne ouvre la modale du deal… */
+              <tr key={d.id} onClick={() => onOuvre({ type: "deal", id: d.id })}
+                className="cursor-pointer border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                <td className="px-4 py-2.5">
+                  <span className="text-[12.5px] font-bold text-slate-800">{d.nom}</span>
+                  {/* Étape affichée aussi dans la cellule deal pour lisibilité mobile. */}
+                </td>
+                {/* …mais l'entreprise est un bouton séparé (stopPropagation). */}
+                <td className="px-4 py-2.5">
+                  {e ? (
+                    <button onClick={(ev) => { ev.stopPropagation(); onOuvre({ type: "entreprise", id: e.id }); }}
+                      className="text-[12px] font-semibold text-cyan-600 hover:underline">{e.nom}</button>
+                  ) : <span className="text-[12px] text-slate-400">—</span>}
+                </td>
+                <td className="px-4 py-2.5">
+                  {c ? (
+                    <button onClick={(ev) => { ev.stopPropagation(); onOuvre({ type: "contact", id: c.id }); }}
+                      className="text-[12px] font-semibold text-cyan-600 hover:underline">{c.prenom} {c.nom}</button>
+                  ) : <span className="text-[12px] text-slate-400">—</span>}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5"><Badge texte={d.etape} couleur={couleurEtape(d.etape)} /></td>
+                <td className="px-4 py-2.5">
+                  {d.action ? (
+                    <span className="flex flex-wrap items-center gap-1.5 text-[12px] text-slate-600">
+                      {d.fait ? <span className="text-[11px] font-bold text-emerald-600">✓ faite</span> : (
+                        <>
+                          <span className="min-w-0 max-w-[220px] truncate">{d.action}</span>
+                          {d.echeance && <span className="text-[10.5px] font-bold text-slate-400">· {d.echeance}</span>}
+                          {enRetard(d) && <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-[9px] font-black uppercase text-red-600">en retard</span>}
+                        </>
+                      )}
+                    </span>
+                  ) : <span className="text-[12px] text-slate-400">—</span>}
+                </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right text-[13px] font-black text-slate-700">{d.montant} k€</td>
+              </tr>
+            );
+          })}
+          {liste.length === 0 && (
+            <tr><td colSpan={6} className="px-4 py-8 text-center text-[12.5px] text-slate-400">Aucun deal ne correspond à ta recherche.</td></tr>
+          )}
+        </tbody>
+      </table>
+      </div>
+      <button onClick={() => onOuvre({ type: "deal", id: null, preset: "" })}
+        className="w-full border-t border-slate-100 py-2.5 text-[12px] font-bold text-cyan-600 hover:bg-slate-50">
+        + Nouveau deal
+      </button>
+      {/* Bandeau de synthèse : deals affichés, actifs, enjeu total, retards. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-100 bg-slate-50/60 px-4 py-2 text-[11px] font-bold text-slate-500">
+        <span>{liste.length} deal{liste.length > 1 ? "s" : ""}</span>
+        <span>· {actifs.length} actif{actifs.length > 1 ? "s" : ""}</span>
+        <span>· {totalActif} k€ en jeu</span>
+        {nbRetard > 0 && <span className="text-red-500">· ⚠️ {nbRetard} en retard</span>}
+      </div>
+    </div>
+  );
+}
+
 function VuePipeline({ etat, recherche, onOuvre, onMove }: {
   etat: Etat; recherche: string; onOuvre: (c: Cible) => void;
   onMove: (id: string, etape: Etape) => void;
@@ -2362,7 +3153,8 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
   const visibles = etat.deals.filter((d) => {
     const e = etat.entreprises.find((x) => x.id === d.entrepriseId);
     const c = etat.contacts.find((x) => x.id === d.contactId);
-    return !q || [d.nom, e?.nom || "", c?.nom || "", d.action].join(" ").toLowerCase().includes(q);
+    return !q || [d.nom, e?.nom || "", c?.nom || "", d.action].join(" ").toLowerCase().includes(q)
+      || telCorrespond(q, e?.tel || "") || telCorrespond(q, c?.tel || "");
   });
 
   return (
@@ -2399,7 +3191,8 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
                 const c = etat.contacts.find((x) => x.id === d.contactId);
                 return (
                   /* Carte draggable : on mémorise l'id au moment de la prise.
-                     Un simple clic (sans drag) ouvre le deal en modale. */
+                     Un simple clic (sans drag) ouvre la page record du deal
+                     (l'édition rapide reste possible via ✎ Modifier). */
                   <div key={d.id}
                     draggable
                     onDragStart={() => setDragId(d.id)}
@@ -2446,7 +3239,7 @@ export default function App() {
   const [erreurChargement, setErreurChargement] = useState<string | null>(null);
   const [sync, setSync] = useState<"ok" | "ecriture" | "erreur">("ok"); // état de synchronisation
   const charge = useRef(false);                              // vrai dès que l'état initial est arrivé
-  const [vue, setVue] = useState<"dashboard" | "entreprises" | "contacts" | "pipeline">("dashboard"); // liste affichée
+  const [vue, setVue] = useState<"dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda">("dashboard"); // liste affichée
   const [recherche, setRecherche] = useState("");     // recherche globale du header
   const [cible, setCible] = useState<Cible | null>(null); // modale ouverte (null = fermée)
   const [fiche, setFiche] = useState<FicheRef | null>(null); // page record ouverte (null = liste)
@@ -2455,7 +3248,9 @@ export default function App() {
   // record ; tout le reste (id null = création, deals = pas de page record)
   // tombe dans la modale.
   const ouvrir = (c: Cible) => {
-    if ((c.type === "entreprise" || c.type === "contact") && c.id) setFiche({ type: c.type, id: c.id });
+    // Entreprises, contacts et deals existants → PAGE RECORD ; le reste
+    // (créations, deals sans id…) → modale d'édition.
+    if ((c.type === "entreprise" || c.type === "contact" || c.type === "deal") && c.id) setFiche({ type: c.type, id: c.id });
     else setCible(c);
   };
   // Navigation entre pages record (associations cliquables) : la modale se ferme
@@ -2532,13 +3327,12 @@ export default function App() {
     </div>
   );
 
-  // Journalise une activité (note, e-mail, appel…) sur une entreprise ou un
-  // contact, de façon immuable : on recrée le tableau plutôt que le muter.
-  const ajouterActivite = (type: "entreprise" | "contact", id: string, activite: Activite) => {
-    setEtat((s) => type === "entreprise"
-      ? { ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: [...x.activites, activite] } : x)) }
-      : { ...s, contacts: s.contacts.map((x) => (x.id === id ? { ...x, activites: [...x.activites, activite] } : x)) }
-    );
+  // Journalise une activité (note, e-mail, appel…) sur une ENTREPRISE —
+  // seule source d'activités du modèle — de façon immuable : on recrée le
+  // tableau plutôt que le muter. L'activité peut porter des liens optionnels
+  // `contactId`/`dealId` (rattachement à un contact / un deal de l'entreprise).
+  const ajouterActivite = (id: string, activite: Activite) => {
+    setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: [...x.activites, activite] } : x)) }));
   };
 
   // Édition directe depuis le panneau « À propos » de la fiche entreprise :
@@ -2546,6 +3340,26 @@ export default function App() {
   // immuable. La sauvegarde Supabase suit toute seule via le useEffect.
   const modifierEntreprise = (id: string, patch: Partial<Entreprise>) => {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  };
+
+  // Édition directe depuis la page record DEAL (panneau « À propos ») :
+  // même logique de patch immuable. Si l'ÉTAPE change, le mouvement est tracé
+  // dans l'historique comme via la modale ou le kanban (activité « Étape »
+  // journalisée sur l'entreprise du deal, avec lien `dealId`).
+  const modifierDeal = (id: string, patch: Partial<Deal>) => {
+    setEtat((s) => {
+      const ancien = s.deals.find((x) => x.id === id);
+      const etapeChange = ancien && patch.etape && patch.etape !== ancien.etape;
+      return {
+        ...s,
+        deals: s.deals.map((x) => (x.id === id ? { ...x, ...patch } : x)),
+        entreprises: etapeChange
+          ? s.entreprises.map((x) => x.id === ancien!.entrepriseId
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien!.etape} → ${patch.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: id }] }
+            : x)
+          : s.entreprises,
+      };
+    });
   };
 
   // Enregistrement depuis la modale : fait tout en une seule passe d'état.
@@ -2591,7 +3405,7 @@ export default function App() {
                 id: idSuivantLocal("c", ++n),
                 prenom: ct.prenom.trim(), nom: ct.nom.trim(), role: ct.role,
                 email: ct.email, tel: ct.tel,
-                entrepriseIds: [eid], activites: [],
+                entrepriseIds: [eid],
               });
             }
           });
@@ -2621,15 +3435,19 @@ export default function App() {
         return { ...s, contacts: existe ? s.contacts.map((x) => (x.id === ct.id ? ct : x)) : [...s.contacts, { ...ct, id: idSuivantLocal("c", 1) }] };
       }
       // Cas deal : on compare l'étape avant/après pour tracer le mouvement
-      // dans l'historique du deal (visible dans la timeline des fiches).
+      // dans l'historique. L'activité « Étape : X → Y » est journalisée sur
+      // l'ENTREPRISE du deal, avec un lien `dealId` (le deal ne porte plus
+      // sa propre liste d'activités).
       const d = donnees as Deal;
       const ancien = s.deals.find((x) => x.id === d.id);
-      const activites =
-        ancien && ancien.etape !== d.etape
-          ? [...d.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape" }]
-          : d.activites;
       const existe = s.deals.some((x) => x.id === d.id);
-      return { ...s, deals: existe ? s.deals.map((x) => (x.id === d.id ? { ...d, activites } : x)) : [...s.deals, { ...d, activites, id: idSuivantLocal("d", 1) }] };
+      const entreprises =
+        ancien && ancien.etape !== d.etape
+          ? s.entreprises.map((x) => x.id === d.entrepriseId
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: d.id }] }
+            : x)
+          : s.entreprises;
+      return { ...s, entreprises, deals: existe ? s.deals.map((x) => (x.id === d.id ? d : x)) : [...s.deals, { ...d, id: idSuivantLocal("d", 1) }] };
     });
     setCible(null); // la modale se ferme après enregistrement
   };
@@ -2655,27 +3473,33 @@ export default function App() {
   };
 
   // Déplacement kanban (drag & drop) : change l'étape et trace le mouvement
-  // dans l'historique du deal, comme une modification via la modale.
+  // dans l'historique — l'activité « Étape » est journalisée sur l'entreprise
+  // du deal, avec un lien `dealId`.
   const deplacer = (id: string, etape: Etape) => {
-    setEtat((s) => ({
-      ...s,
-      deals: s.deals.map((d) =>
-        d.id === id && d.etape !== etape
-          ? { ...d, etape, activites: [...d.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape" }] }
-          : d
-      ),
-    }));
+    setEtat((s) => {
+      const d = s.deals.find((x) => x.id === id);
+      if (!d || d.etape === etape) return s;
+      return {
+        ...s,
+        deals: s.deals.map((x) => (x.id === id ? { ...x, etape } : x)),
+        entreprises: s.entreprises.map((x) => x.id === d.entrepriseId
+          ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: d.id }] }
+          : x),
+      };
+    });
   };
 
   // Icônes de la navigation (barre latérale + version mobile).
-  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", pipeline: "📈" };
+  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅" };
 
-  // Les 4 vues principales, dans l'ordre de la barre latérale.
+  // Les vues principales, dans l'ordre de la barre latérale.
   const onglets = [
     ["dashboard", "Tableau de bord"],
     ["entreprises", "Entreprises"],
     ["contacts", "Contacts"],
+    ["deals", "Deals"],
     ["pipeline", "Pipeline"],
+    ["agenda", "Agenda"],
   ] as const;
 
   // Le bouton « + » du header crée l'objet cohérent avec la vue affichée.
@@ -2683,7 +3507,9 @@ export default function App() {
     dashboard: { type: "deal", id: null, preset: "" },
     entreprises: { type: "entreprise", id: null },
     contacts: { type: "contact", id: null },
+    deals: { type: "deal", id: null, preset: "" },
     pipeline: { type: "deal", id: null, preset: "" },
+    agenda: { type: "deal", id: null, preset: "" },
   };
 
   return (
@@ -2726,7 +3552,7 @@ export default function App() {
       <div className="min-w-0 flex-1">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
-          {/* Logo compact : seulement sur mobile (la sidebar l'affiche déjà ailleurs). */}
+          {/* Logo compact : masqué — la sidebar est toujours visible (canvas). */}
           <div className="flex items-center gap-2.5 sm:hidden">
             <div className="flex h-8 w-8 items-center justify-center rounded-xl text-[13px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>U'</div>
@@ -2765,13 +3591,19 @@ export default function App() {
             onModifie={(patch) => modifierEntreprise(fiche.id, patch)} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
-            onOuvre={setCible} onOuvreFiche={ouvrirFiche} onActivite={ajouterActivite} />
+            onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
+        ) : fiche?.type === "deal" ? (
+          <FicheDeal etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
+            onOuvre={setCible} onOuvreFiche={ouvrirFiche}
+            onModifie={(patch) => modifierDeal(fiche.id, patch)} />
         ) : (
           <>
             {vue === "dashboard" && <VueDashboard etat={etat} onOuvre={ouvrir} />}
             {vue === "entreprises" && <VueEntreprises etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "contacts" && <VueContacts etat={etat} recherche={recherche} onOuvre={ouvrir} />}
-            {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={setCible} onMove={deplacer} />}
+            {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
+            {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
+            {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
           </>
         )}
       </main>
