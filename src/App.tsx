@@ -55,7 +55,7 @@ const parserCSV = (txt: string): string[][] => {
 };
 const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureOk: boolean }> => {
   try {
-    const rep = await fetch("https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUJbjhUoiof7FZCk/gviz/tq?tqx=out:csv");
+    const rep = await fetch("https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv");
     if (!rep.ok) return { clients: [], lectureOk: false };
     const lignes = parserCSV(await rep.text());
     const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
