@@ -606,7 +606,17 @@ function Modale({
         const repS = await fetch("https://recherche-entreprises.api.gouv.fr/search?q=" + encodeURIComponent(dir.prenom + " " + dir.nom) + "&personne_physique=true&per_page=15");
         if (repS.ok) {
           const jsS = (await repS.json()) as { results?: Record<string, unknown>[] };
-          const liste = (jsS.results || []).filter((x) => x.etat_administratif === "A" && String(x.siren) !== String(r.siren));
+          // Filtre secteur : ne proposer QUE les sociétés du MÊME domaine que la
+          // société en cours de création (même section NAF, ex. 56 = restauration).
+          // Les holdings, sociétés électriques, immo’ du gérant ne sont pas des
+          // prospects U’mob — règle « même NAF » de la 11e itération, appliquée
+          // aussi aux sociétés sœurs venues de l’INSEE (jamais d’assimilation hasardeuse).
+          const sectionRef = String(r.section_activite_principale || "");
+          const liste = (jsS.results || []).filter((x) =>
+            x.etat_administratif === "A" &&
+            String(x.siren) !== String(r.siren) &&
+            (sectionRef === "" || String((x as Record<string, any>).section_activite_principale || "") === sectionRef)
+          );
           const dejaConnues = etat.entreprises.map((e) => e.nom.trim().toLowerCase());
           societesSoeurs = liste
             .filter((x) => {
