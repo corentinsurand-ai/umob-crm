@@ -5,9 +5,15 @@
 //   3. récupère détails (numéros, durée, enregistrement) via l'API publique Ringover
 //   4. récupère la transcription (Empower) — souvent disponible seulement sur les
 //      événements TARDIFS (record_available / transcription_available / summary_available)
-//   5. fait analyser la transcription par Mistral (résumé, sentiment, sujets, score)
+//   5. fait analyser la transcription par Mistral :
+//        a. analyse commerciale (résumé, sentiment, sujets, score, action)
+//        b. EXTRACTION des indications données par l'appelant (entreprise, ville,
+//           secteur, personne, e-mail, besoin) → remplissage automatique des fiches
 //   6. rattache l'appel à l'entreprise du CRM (matching par numéro) ou crée un Suspect ;
-//      si l'appel est déjà consigné, FUSIONNE l'enrichissement tardif (transcription, IA)
+//      si l'appel est déjà consigné, FUSIONNE l'enrichissement tardif.
+// Règle absolue de remplissage auto : UNIQUEMENT les champs vides, UNIQUEMENT ce que
+// la transcription dit explicitement. Jamais d'invention, jamais d'écrasement d'une
+// valeur saisie à la main.
 // Variables d'environnement Vercel : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //   RINGOVER_API_KEY, MISTRAL_API_KEY, RINGOVER_NOS_NUMEROS (ex. "0449392956")
 
@@ -42,8 +48,6 @@ export default async function handler(req: any, res: any) {
   const appelId = String(d.call_id ?? d.callId ?? d.id ?? payload.call_id ?? Date.now());
   const evt = String(payload.event ?? payload.type ?? payload.name ?? "").toLowerCase();
 
-  // Bruit de sonnerie/décroché/contact : on ignore (l'anti-doublon verrait l'appel
-  // déjà consigné et les détails ne sont pas encore disponibles de toute façon).
   if (EVENEMENTS_BRUIT.includes(evt)) {
     console.log("Webhook ignoré (événement bruyant):", evt, "call", appelId);
     return res.status(200).json({ ok: true, ignore: evt });
@@ -87,7 +91,7 @@ export default async function handler(req: any, res: any) {
     } catch (e) { console.log("Ringover API erreur:", e); }
   }
 
-  // ── Analyse IA de la transcription par Mistral (jamais d'invention) ──
+  // ── Analyse IA par Mistral : analyse commerciale + EXTRACTION des indications ──
   let ia: any = {};
   if (MIST && transcription) {
     try {
@@ -95,9 +99,9 @@ export default async function handler(req: any, res: any) {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + MIST },
         body: JSON.stringify({
-          model: "mistral-small-latest", temperature: 0.2, max_tokens: 400,
+          model: "mistral-small-latest", temperature: 0.2, max_tokens: 700,
           messages: [
-            { role: "system", content: "Tu analyses la transcription d'un appel téléphonique de la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown : {\"resume\": \"résumé factuel en 2-3 phrases en français\", \"sentiment\": \"positif\", \"neutre\", \"négatif\", \"sujets\": \"sujets, objections et signaux d'achat séparés par des virgules\", \"score\": entier de 1 à 5 (qualité commerciale de l'appel), \"action\": \"prochaine action recommandée en une phrase\"}. N'invente RIEN qui n'est pas dans la transcription." },
+            { role: "system", content: "Tu analyses la transcription d'un appel téléphonique reçu par la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown : {\"resume\": \"résumé factuel en 2-3 phrases en français\", \"sentiment\": \"positif\", \"neutre\" ou \"négatif\", \"sujets\": \"sujets, objections et signaux d'achat séparés par des virgules\", \"score\": entier de 1 à 5 (qualité commerciale de l'appel), \"action\": \"prochaine action recommandée en une phrase\", \"extraction\": {\"nomEntreprise\": \"nom de l'entreprise de l'interlocuteur s'il le dit, sinon chaîne vide\", \"ville\": \"ville ou commune mentionnée, sinon vide\", \"secteur\": \"secteur d'activité mentionné (restauration, pizza, sushi, livraison, pharmacie…), sinon vide\", \"prenom\": \"prénom de l'interlocuteur s'il se présente, sinon vide\", \"nom\": \"nom de l'interlocuteur s'il se présente, sinon vide\", \"role\": \"fonction de l'interlocuteur (gérant, directeur, responsable livraison…), sinon vide\", \"email\": \"adresse e-mail dictée pendant l'appel, sinon vide\", \"besoin\": \"besoin exprimé en une phrase courte (nombre de scooters, zone de livraison, budget, délai…), sinon vide\"}}. RÈGLES ABSOLUES : n'invente RIEN, ne devine RIEN ; chaque champ de extraction reste une chaîne vide si l'information n'est pas explicitement dite dans la transcription." },
             { role: "user", content: transcription.slice(0, 8000) },
           ],
         }),
@@ -119,6 +123,50 @@ export default async function handler(req: any, res: any) {
   if (!rows.length) return res.status(200).json({ ok: true, note: "base CRM vide, appel ignoré" });
   const etat: any = rows[0].data;
 
+  // ── Remplissage automatique de la fiche depuis les indications de l'appelant ──
+  // Règle absolue : on ne JAMAIS écraser une valeur existante (saisie manuelle ou
+  // source antérieure) ; on n'écrit que ce que la transcription dit explicitement.
+  const extr: any = (ia && ia.extraction && typeof ia.extraction === "object") ? ia.extraction : {};
+  const appliquerExtraction = (e: any, a: any): boolean => {
+    let m = false;
+    if (extr.nomEntreprise && (!e.nom || /^Appel /.test(e.nom))) { e.nom = String(extr.nomEntreprise).slice(0, 120); m = true; }
+    if (extr.ville && !e.ville) { e.ville = String(extr.ville).slice(0, 80); m = true; }
+    if (extr.secteur && !e.secteur) { e.secteur = String(extr.secteur).slice(0, 80); m = true; }
+    if (extr.besoin) {
+      const ligne = "Besoin exprimé (appel du " + (a.dateISO || "") + ") : " + String(extr.besoin).slice(0, 300);
+      if (!(e.notes || "").includes(ligne)) { e.notes = (e.notes ? e.notes + "\n" : "") + ligne; m = true; }
+    }
+    return m;
+  };
+  // Création/mise à jour du CONTACT d'après la présentation de l'appelant.
+  const gererContactExtrait = (cible: any, a: any): boolean => {
+    if (!(extr.prenom || extr.nom)) return false;
+    const tel = a.numeroAppel || "";
+    const telN = (t: string) => String(t || "").replace(/\D/g, "");
+    const existant = (etat.contacts || []).find((c: any) => telN(c.tel) && telN(c.tel) === telN(tel));
+    if (existant) {
+      let m = false;
+      if (extr.prenom && !existant.prenom) { existant.prenom = String(extr.prenom).slice(0, 60); m = true; }
+      if (extr.nom && !existant.nom) { existant.nom = String(extr.nom).slice(0, 60); m = true; }
+      if (extr.role && !existant.role) { existant.role = String(extr.role).slice(0, 80); m = true; }
+      if (extr.email && String(extr.email).includes("@") && !existant.email) { existant.email = String(extr.email).slice(0, 120); m = true; }
+      if (!(existant.entrepriseIds || []).includes(cible.id)) { existant.entrepriseIds = [...(existant.entrepriseIds || []), cible.id]; m = true; }
+      a.contactId = existant.id;
+      return m;
+    }
+    const nc: any = {
+      id: "c" + Date.now(),
+      prenom: String(extr.prenom || "").slice(0, 60),
+      nom: String(extr.nom || "").slice(0, 60),
+      role: String(extr.role || "").slice(0, 80),
+      email: String(extr.email || "").slice(0, 120),
+      tel, entrepriseIds: [cible.id],
+    };
+    (etat.contacts = etat.contacts || []).push(nc);
+    a.contactId = nc.id;
+    return true;
+  };
+
   // ── L'appel est-il déjà consigné ? Oui → FUSION de l'enrichissement tardif ──
   let deja: any = null;
   for (const e of etat.entreprises || []) {
@@ -135,7 +183,8 @@ export default async function handler(req: any, res: any) {
     if (ia.sujets && !a.sujets) { a.sujets = String(ia.sujets); modifie = true; }
     if (typeof ia.score === "number" && !a.scoreIA) { a.scoreIA = Math.min(5, Math.max(1, Math.round(ia.score))); modifie = true; }
     if (duration && !a.dureeAppel) { a.dureeAppel = Math.max(1, Math.round(duration / 60)) + " min"; modifie = true; }
-    if (!modifie) return res.status(200).json({ ok: true, note: "rien de neuf", appelId });
+    const enrichi = appliquerExtraction(deja.entreprise, a) || gererContactExtrait(deja.entreprise, a) || modifie;
+    if (!enrichi) return res.status(200).json({ ok: true, note: "rien de neuf", appelId });
     const ws = await fetch(SUP + "/rest/v1/crm_etat", {
       method: "POST",
       headers: { ...sbH, Prefer: "resolution=merge-duplicates" },
@@ -143,7 +192,7 @@ export default async function handler(req: any, res: any) {
     });
     if (!ws.ok) return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status });
     console.log("Fusion enrichissement appel", appelId, "ok");
-    return res.status(200).json({ ok: true, fusion: true, transcription: !!transcription });
+    return res.status(200).json({ ok: true, fusion: true, transcription: !!transcription, ficheEnrichie: true });
   }
 
   // ── Sens de l'appel + numéro client ──
@@ -151,7 +200,6 @@ export default async function handler(req: any, res: any) {
   const entrant: boolean = notreNumero ? normeTel(receiver) === notreNumero : !evt.includes("outgo");
   const numeroClient: string = entrant ? caller : receiver;
 
-  // Sans numéro exploitable ET sans transcription : rien de fiable à consigner.
   if (normeTel(numeroClient).length < 6 && !transcription) {
     console.log("Appel", appelId, "ignoré : ni numéro ni transcription disponible");
     return res.status(200).json({ ok: true, ignore: "données insuffisantes", evt });
@@ -195,7 +243,6 @@ export default async function handler(req: any, res: any) {
   if (entreprise) {
     entreprise.activites = [act, ...(entreprise.activites || [])];
   } else if (normeTel(numeroClient).length >= 6) {
-    // Appel d'un numéro inconnu du CRM : fiche Suspect auto-créée (donnée réelle, aucune invention au-delà).
     const id = "e" + now.getTime();
     (etat.entreprises = etat.entreprises || []).push({
       id, nom: "Appel " + (numAffiche || "inconnu"), nomCommercial: "", secteur: "", ville: "", site: "",
@@ -204,7 +251,15 @@ export default async function handler(req: any, res: any) {
       activites: [act], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "",
       immatriculations: "", modeles: [], contrats: [], risque: "",
     });
+    entreprise = (etat.entreprises || []).find((e: any) => e.id === id);
     cree = true;
+  }
+
+  // ── Remplissage automatique : fiche rattachée ou Suspect fraîchement créé ──
+  let ficheModifiee = false;
+  if (entreprise) {
+    ficheModifiee = appliquerExtraction(entreprise, act) || gererContactExtrait(entreprise, act);
+    if (ficheModifiee) console.log("Fiche enrichie automatiquement:", entreprise.nom);
   }
 
   const ws = await fetch(SUP + "/rest/v1/crm_etat", {
@@ -213,5 +268,5 @@ export default async function handler(req: any, res: any) {
     body: JSON.stringify([{ id: "main", data: etat, maj: now.toISOString() }]),
   });
   if (!ws.ok) { console.log("Ecriture Supabase KO:", ws.status); return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status }); }
-  return res.status(200).json({ ok: true, entreprise: entreprise ? entreprise.nom : (cree ? "fiche créée" : "aucun rattachement"), cree, sentiment: ia.sentiment || null, score: act.scoreIA || null, transcriptionRecue: !!transcription });
+  return res.status(200).json({ ok: true, entreprise: entreprise ? entreprise.nom : "aucun rattachement", cree, ficheEnrichie: ficheModifiee, sentiment: ia.sentiment || null, score: act.scoreIA || null, transcriptionRecue: !!transcription });
 }
