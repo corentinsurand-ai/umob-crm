@@ -34,7 +34,7 @@ const PROMPT_SYSTEME =
   "franchiseur : uniquement si l'interlocuteur le dit explicitement, choisi parmi [" + OPTIONS_FRANCHISEUR.join(", ") + "] ; réponds 'Indépendant' seulement s'il le dit explicitement. " +
   "activite : choisi parmi [" + OPTIONS_ACTIVITE.join(", ") + "]. " +
   "modeLivraison : mode de livraison utilisé, choisi parmi [" + OPTIONS_MODE_LIVRAISON.join(", ") + "] ; si une plateforme de livraison est mentionnée (Uber Eats, Deliveroo, Just Eat, Stuart…), réponds 'Uber Eats / Deliveroo' ; plusieurs modes cités -> 'Mixte'. " +
-  "nomEntreprise : nom de l'entreprise s'il le dit ; ville : ville mentionnée ; secteur : secteur d'activité mentionné ; prenom/nom/role : si l'interlocuteur se présente ; email : adresse dictée ; besoin : besoin exprimé en une phrase courte (nombre de scooters, zone, budget, délai…). " +
+  "nomEntreprise : nom de l'entreprise s'il le dit ; ville : ville mentionnée ; secteur : secteur d'activité mentionné ; prenom/nom/role : UNIQUEMENT si c'est l'INTERLOCUTEUR EXTERNE (le client ou prospect appelé) qui se présente ; JAMAIS le salarié U'mob qui répond (il dit souvent son propre prénom en décrochant) ; email : adresse dictée ; besoin : besoin exprimé en une phrase courte (nombre de scooters, zone, budget, délai…). " +
   "RÈGLES ABSOLUES : n'invente RIEN, ne devine RIEN ; chaque champ de extraction reste une chaîne vide si l'information n'est pas explicitement dite dans la transcription.";
 
 const attendre = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -82,13 +82,21 @@ export default async function handler(req: any, res: any) {
   const RING: string = env.RINGOVER_API_KEY || "";
   const MIST: string = env.MISTRAL_API_KEY || "";
   const NOS_NUMEROS: string[] = (env.RINGOVER_NOS_NUMEROS || "0449392956").split(",").map((s: string) => s.replace(/\D/g, "")).filter(Boolean);
+  const epureNom = (s: any) => String(s || "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+  const NOS_NOMS: string[] = (env.RINGOVER_NOS_NOMS || "Corentin Surand").split(",").map(epureNom).filter(Boolean);
+  // Un membre de l'équipe U'mob (qui se présente au téléphone) ne doit JAMAIS devenir un contact client
+  const estEquipe = (p: any, n: any): boolean => {
+    const c = epureNom(String(p || "") + " " + String(n || "")).trim();
+    if (!c || c.length < 4) return false;
+    return NOS_NOMS.some((x) => c === x || (x.length >= 5 && (c.includes(x) || x.includes(c))));
+  };
   const PLATEFORME_EMPOWER: string = env.RINGOVER_EMPOWER_PLATFORM || "";
 
   if (req.method === "GET") {
     // ── DIAGNOSTIC : teste les routes documentées sur un appel réel ──
     const diag: any = { ok: true, service: "ringover-webhook-diag", variables: {
       SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, RINGOVER_API_KEY: !!RING,
-      MISTRAL_API_KEY: !!MIST, RINGOVER_NOS_NUMEROS: !!env.RINGOVER_NOS_NUMEROS,
+      MISTRAL_API_KEY: !!MIST, RINGOVER_NOS_NUMEROS: !!env.RINGOVER_NOS_NUMEROS, RINGOVER_NOS_NOMS: !!env.RINGOVER_NOS_NOMS,
       RINGOVER_EMPOWER_PLATFORM: !!PLATEFORME_EMPOWER,
     }, etapes: [] };
     if (!RING) { diag.erreur = "RINGOVER_API_KEY absente"; return res.status(200).json(diag); }
@@ -361,6 +369,7 @@ export default async function handler(req: any, res: any) {
   };
   const gererContactExtrait = (cible: any, a: any): boolean => {
     if (!(extr.prenom || extr.nom)) return false;
+    if (estEquipe(extr.prenom, extr.nom)) { console.log("Contact extrait ignoré : membre de l'équipe U'mob (" + extr.prenom + " " + extr.nom + ")"); return false; }
     const tel = a.numeroAppel || "";
     const telN = (t: string) => String(t || "").replace(/\D/g, "");
     const existant = (etat.contacts || []).find((c: any) => telN(c.tel) && telN(c.tel) === telN(tel));
