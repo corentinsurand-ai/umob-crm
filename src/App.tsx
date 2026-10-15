@@ -147,30 +147,35 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
 // normalisés comparés strictement, ville tolérante aux arrondissements ; dans le
 // doute on ne marque PAS). Le « Nom client » du Sheet peut être du type
 // « GAF (BOITE A PIZZA ANNEMASSE) » : on compare nom légal, base et parenthèse.
+// Formes juridiques ignorées pour comparer les noms légaux : la base INSEE
+// « SARL LCD » doit matcher le « LCD » du Sheet, et « NKM SARL » ↔ « NKM ».
+const FORMES_JURIDIQUES = new Set(["sarl", "sas", "sasu", "eurl", "sa", "sci", "snc", "scm", "selarl", "selas", "ei", "sca", "scs", "scp", "gaec"]);
+const epurerBase = (s: string): string => {
+  const mots = String(s || "").split(/\s+/).filter(Boolean)
+    .filter((w) => !FORMES_JURIDIQUES.has(w.toLowerCase().replace(/[^a-z]/g, "")));
+  return norme(mots.join(" "));
+};
+// Reconnaissance d'un client du Sheet — l'IDENTITÉ d'une société est son NOM
+// LÉGAL (base sans forme juridique) : « PIRYVE » ≠ « PIRYVE 2 », « FPS12 » ≠
+// « GRAPP » — deux sociétés différentes ne matchent JAMAIS. Une marque de
+// franchise (Domino's…) est portée par des dizaines de sociétés : elle
+// n'identifie JAMAIS un client à elle seule (les villes du Sheet sont des
+// SITES DE CONTRAT, pas des sièges — GRAPP Angoulême a une ligne à Bordeaux,
+// PIRYVE Pau une ligne à Lons — donc la ville ne peut pas départager).
+// L'enseigne ne sert que pour une enseigne locale unique, avec ville compatible.
 const trouverClientSheet = (clients: ClientSheet[], nomLegal: string, enseigne: string, ville: string): ClientSheet | undefined =>
   clients.find((c) => {
     const base = c.nom.split(" (")[0].trim();
     const paren = (c.nom.match(/\(([^)]*)\)/) || [])[1] || "";
-    const nL = norme(nomLegal), baseL = norme(nomLegal.split(" (")[0].trim()), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville); // l’INSEE renvoie le nom complet avec l’enseigne entre parenthèses : on compare aussi la base seule
+    const nBase = epurerBase(nomLegal.split(" (")[0].trim());
+    const cBase = epurerBase(base);
+    const nL = norme(nomLegal), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville);
     const villesOK = v === "" || vC === "" || v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v)));
-    // Ville CORROBORÉE : une marque de franchise (Domino's, Pizza Hut…) est
-    // portée par des dizaines de sociétés différentes — elle n'identifie JAMAIS
-    // un client à elle seule. Pour une enseigne de franchise on exige que la
-    // ville de la suggestion soit confirmée par le client Sheet : soit sa
-    // colonne Ville (les deux présentes et compatibles), soit la ville
-    // embarquée dans son « Nom client » (ex. « X (DOMINO'S PIZZA BORDEAUX) »).
-    // Corrige les faux badges du type « FPS12 — Bordeaux » matché sur
-    // « GRAPP (DOMINO'S PIZZA ANGOULEME) » alors que la colonne Ville est vide.
-    const villeStricte = v !== "" && vC !== "" && (v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v))));
-    const villeDansNom = v !== "" && norme(paren).includes(v);
+    const memeBase = nBase !== "" && cBase !== "" && nBase === cBase;
     const franchise = franchiseurDepuis(enseigne) !== "";
-    return (villesOK && (
-      (baseL !== "" && (baseL === norme(base) || baseL === norme(c.nom))) || (nL !== "" && (nL === norme(base) || nL === norme(c.nom))) || (ens !== "" && ens.length >= 5 && ens === norme(base))
-    )) || (
-      ens !== "" && ens.length >= 5 && (franchise
-        ? (villeStricte || villeDansNom) && (ens === norme(paren) || norme(c.nom).includes(ens))
-        : villesOK && (ens === norme(paren) || norme(c.nom).includes(ens)))
-    );
+    return memeBase
+      || (villesOK && nL !== "" && (nL === norme(base) || nL === norme(c.nom)))
+      || (villesOK && ens !== "" && ens.length >= 5 && !franchise && (ens === norme(base) || ens === norme(paren) || norme(c.nom).includes(ens)));
   });
 // (b accepte un Contact OU un ContactSimple de l'annuaire : seuls ces 4 champs comptent)
 const memePersonne = (a: { prenom: string; nom: string; email: string; tel: string }, b: { prenom: string; nom: string; email: string; tel: string }) =>
