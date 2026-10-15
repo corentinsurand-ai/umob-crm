@@ -1767,8 +1767,11 @@ function ComposerActivites({ onAjouter, contacts, deals }: {
           supplémentaire pour les tâches et les réunions uniquement. */}
       {typeSel && (
         <div className="mt-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-          <div className="mb-2 text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[typeSel].couleur }}>
-            {META_ACT[typeSel].icone} {META_ACT[typeSel].libelle}
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[typeSel].couleur }}>
+              {META_ACT[typeSel].icone} {META_ACT[typeSel].libelle}
+            </div>
+            <Dictee valeur={texte} onTexte={setTexte} />
           </div>
           <textarea rows={2} value={texte} onChange={(ev) => setTexte(ev.target.value)}
             placeholder={
@@ -2419,6 +2422,60 @@ function MiniCalendrier({ valeur, onChoisit }: { valeur: string; onChoisit: (jjm
   );
 }
 
+/* ---- Bouton « 🎤 Dicter » : transcription vocale (Web Speech API du
+        navigateur, en français) qui AJOUTE le texte reconnu à la fin du
+        champ ciblé. Recliquer pendant l'écoute = arrêt. La valeur du champ
+        est figée dans un ref au DÉBUT de l'écoute et chaque segment reconnu
+        s'y empile : la dictée ne « saute » jamais, le texte arrive au fil de
+        la parole (résultats intermédiaires visibles en direct). Navigateur
+        sans dictée (Firefox, anciens Safari) → bouton simplement masqué. ---- */
+function Dictee({ valeur, onTexte }: { valeur: string; onTexte: (t: string) => void }) {
+  const [ecoute, setEcoute] = useState(false);
+  const [erreur, setErreur] = useState("");
+  const recRef = useRef<any>(null);
+  const baseRef = useRef("");
+  const accRef = useRef("");
+  // Arrêt propre si le formulaire se ferme pendant une écoute.
+  useEffect(() => () => { try { recRef.current?.stop(); } catch {} }, []);
+  const SR = typeof window !== "undefined" ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
+  if (!SR) return null;
+  const demarrer = () => {
+    try {
+      const rec = new SR();
+      rec.lang = "fr-FR";
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.onresult = (e: any) => {
+        let final = "", interime = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          if (r.isFinal) final += r[0].transcript; else interime += r[0].transcript;
+        }
+        if (final.trim()) accRef.current = (accRef.current ? accRef.current + " " : "") + final.trim();
+        onTexte(((baseRef.current ? baseRef.current + " " : "") + accRef.current + (interime.trim() ? " " + interime.trim() : "")).replace(/\s+/g, " ").trim());
+      };
+      rec.onerror = (e: any) => { setErreur(e && e.error === "not-allowed" ? "micro refusé" : "erreur micro"); setEcoute(false); };
+      rec.onend = () => setEcoute(false);
+      baseRef.current = valeur.trim();
+      accRef.current = "";
+      recRef.current = rec;
+      setErreur("");
+      setEcoute(true);
+      rec.start();
+    } catch { setErreur("démarrage impossible"); setEcoute(false); }
+  };
+  return (
+    <button onClick={() => { if (ecoute) { try { recRef.current?.stop(); } catch {} setEcoute(false); } else demarrer(); }}
+      title={erreur ? "Micro refusé : vérifie l'autorisation du navigateur (icône cadenas → Micro). En preview le micro est bloqué par l'iframe — en production ça marche." : "Dicter au micro : le texte reconnu s'ajoute à la fin du champ"}
+      className={"flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[10.5px] font-black transition-colors " + (ecoute ? "bg-rose-100 text-rose-600" : "bg-slate-100 text-slate-500 hover:bg-slate-200")}
+      style={ecoute ? { boxShadow: "0 0 0 2px #fda4af55" } : undefined}>
+      <span className={ecoute ? "animate-pulse" : ""}>{ecoute ? "⏺" : "🎤"}</span>
+      {ecoute ? "En écoute — recliquer pour arrêter" : "Dicter"}
+      {erreur ? <span className="text-rose-500">· {erreur}</span> : null}
+    </button>
+  );
+}
+
 function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cible) => void; onAjouter: (id: string, activite: Activite) => void }) {
   const auj = new Date();
   const [mode, setMode] = useState<"mois" | "semaine">("mois");
@@ -2729,7 +2786,10 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
               </div>
 
               {/* Section 1 : ce qui a été fait. */}
-              <div className="mt-4 mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-500">Ce qui a été fait</div>
+              <div className="mt-4 mb-1.5 flex items-center justify-between gap-2">
+                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">Ce qui a été fait</div>
+                <Dictee valeur={texteFait} onTexte={setTexteFait} />
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {TYPES_COMPOSER.map((b) => (
                   <button key={b.type} onClick={() => setTypeFait(b.type)}
@@ -2767,8 +2827,11 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
               </div>
               {avecSuivante && (
                 <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                  <div className="mb-1.5 text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[typeSuivante].couleur }}>
-                    {META_ACT[typeSuivante].icone} {typeSuivante === "tache" ? "Tâche à faire" : "Réunion planifiée"}
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[typeSuivante].couleur }}>
+                      {META_ACT[typeSuivante].icone} {typeSuivante === "tache" ? "Tâche à faire" : "Réunion planifiée"}
+                    </div>
+                    <Dictee valeur={texteSuivante} onTexte={setTexteSuivante} />
                   </div>
                   <div className="mb-2 flex gap-1.5">
                     {(["tache", "reunion"] as const).map((t) => (
