@@ -122,7 +122,7 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
       const im = g(cImm); if (im && !c.immats.includes(im)) c.immats = c.immats ? c.immats + ", " + im : im;
       const kd = cleDate(g(cDd)); if (!Number.isNaN(kd) && (prem.get(code) === undefined || kd < prem.get(code)!)) { prem.set(code, kd); c.dateDebut = fmtDate(kd); }
       const kf = cleDate(g(cDf)); if (!Number.isNaN(kf) && (der.get(code) === undefined || kf > der.get(code)!)) { der.set(code, kf); c.dateFin = fmtDate(kf); }
-      const rq = g(cRq); if (rq && !c.risque) c.risque = rq;
+      const rq = normRisque(g(cRq)); if (rq && !c.risque) c.risque = rq;
       else if (!c.risque && g(cImp).toLowerCase() === "true") c.risque = "Impayé";
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
       // ── Interlocuteurs du Sheet : prénom + nom (+ fonction, mobile, email).
@@ -540,7 +540,7 @@ const ETAT_VIDE: Etat = { entreprises: [], contacts: [], deals: [] };
 
 // Déconnexion manuelle (bouton de la barre latérale).
 async function seDeconnecter() {
-  await supabase.auth.signOut();;
+  await supabase.auth.signOut();
 }
 
 /* ============================== UI DE BASE ============================== */
@@ -573,6 +573,24 @@ const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", 
 // Impayes, Procedure_collective). L'option vide « — » de ChampSelect vaut
 // « aucun risque signalé ».
 const OPTIONS_RISQUE = ["Impayé", "Mauvais payeur", "À risque", "Sous surveillance", "Procédure collective", "Impayé + Procédure collective"];
+// ── Normalisation du libellé de risque : le Sheet (ou d'anciennes fiches)
+// contient parfois des valeurs tronquées ou mal orthographiées (« Mauvais pa »,
+// « Impaye », « Sous surve », « Mauvais payeurs »…). On les ramène au libellé
+// PROPRE du menu — comparaison sur la forme normalisée (sans accents ni
+// espaces). Valeur inconnue → laissée telle quelle (jamais d'invention). ──
+const EQUIV_RISQUE: [string, string][] = [
+  ["mauvaispa", "Mauvais payeur"], ["mauvaispayeur", "Mauvais payeur"], ["mauvaispayeurs", "Mauvais payeur"],
+  ["impaye", "Impayé"], ["impayes", "Impayé"], ["impayer", "Impayé"],
+  ["soussurve", "Sous surveillance"], ["soussurveillance", "Sous surveillance"],
+  ["procedurecollective", "Procédure collective"], ["procedurecollectiveradiation", "Procédure collective"],
+  ["arisque", "À risque"],
+  ["impayeprocedurecollective", "Impayé + Procédure collective"],
+];
+const normRisque = (r: string): string => {
+  const n = norme(r);
+  const t = EQUIV_RISQUE.find(([k]) => k === n);
+  return t ? t[1] : (r || "");
+};
 
 /* ── Statut du cycle de vie : Suspect → Prospect → Client ───────────────────
    C'est le seul champ que l'humain maîtrise totalement : ni les API ni l'IA
@@ -1370,7 +1388,7 @@ function Modale({
                 {/* Risque : champ texte LIBRE avec suggestions (datalist) — le
                     SAV peut écrire des statuts non standard (ex. « Mauvais
                     payeur »), qu'un menu fermé empêchait de saisir. */}
-                <input className={champ} value={ent.risque} list="options-risque" onChange={(e) => setEnt({ ...ent, risque: e.target.value })} placeholder="ex. Impayé, Mauvais payeur…" />
+                <input className={champ} value={normRisque(ent.risque)} list="options-risque" onChange={(e) => setEnt({ ...ent, risque: e.target.value })} placeholder="ex. Impayé, Mauvais payeur…" />
                 <datalist id="options-risque">{OPTIONS_RISQUE.map((o) => <option key={o} value={o} />)}</datalist></div>
               <div className="col-span-2"><label className={label}>Notes</label>
                 <textarea rows={2} className={champ + " resize-none"} value={ent.notes} onChange={(e) => setEnt({ ...ent, notes: e.target.value })} /></div>
@@ -2335,7 +2353,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                     <div className="w-full overflow-hidden rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
                       <div className="flex w-full items-start gap-2">
                         <span className="shrink-0 text-[13px] leading-snug">⚠️</span>
-                        <span className="w-full whitespace-normal break-words text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
+                        <span className="w-full whitespace-normal break-words text-[12px] font-bold leading-snug text-red-600">{normRisque(e.risque)}</span>
                       </div>
                       <div className="mt-0.5 text-right text-[10px] font-medium text-red-400">source SAV</div>
                     </div>
@@ -2420,7 +2438,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 e.activite ? "Activité : " + e.activite + "." : "",
                 e.franchiseur ? "Franchiseur : " + e.franchiseur + "." : "",
                 e.modeLivraison ? "Mode de livraison : " + e.modeLivraison + "." : "",
-                e.risque ? "⚠️ Risque signalé : " + e.risque + "." : "",
+                e.risque ? "⚠️ Risque signalé : " + normRisque(e.risque) + "." : "",
                 (e.modeles || []).length > 0 ? e.nom + " loue les modèles de scooter " + e.modeles.join(" et ") + "." : "",
                 (e.contrats || []).length > 0 ? e.nom + " a " + e.contrats.length + (e.contrats.length > 1 ? " contrats" : " contrat") + "." : "",
                 ...(e.contrats || []).map((k) => "Le contrat " + (affPack(k.pack) || "sans nom") + " se termine le " + k.dateFin + "."),
