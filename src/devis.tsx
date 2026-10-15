@@ -223,6 +223,12 @@ export interface DevisBrouillon {
   flotteReprise: VehiculeReprise[];
   dureeAmort: string;
   locamRenouvellement: { contrat: string; montant: string; date: string };
+  // Liaison avec un devis DÉJÀ ARCHIVÉ (posée par App.tsx à l'ouverture d'une
+  // archive « Rouvrir », et par le module après une sauvegarde réussie) :
+  // présent + même société → la sauvegarde MET À JOUR l'archive d'origine
+  // (même n° d'offre) au lieu d'en créer une nouvelle.
+  idOrigine?: string;
+  numOffreOrigine?: string;
 }
 
 // ==================== ARCHIVAGE SUR FICHE ENTREPRISE ====================
@@ -477,13 +483,14 @@ export function telechargerPdfDevis(r: DevisResume): string {
 // utilisé pour passer le PDF à l'API d'envoi réel.
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
-  // Sauvegarde du devis sur la fiche entreprise du CRM. Retourne false si la
-  // société saisie n'existe pas dans le CRM (le module l'affiche à l'utilisateur).
-  onSauvegarder?: (s: SauvegardeDevis) => boolean;
+  // Sauvegarde du devis sur la fiche entreprise du CRM. Retourne l'ID de
+  // l'archive (nouvelle ou mise à jour) pour lier les sauvegardes suivantes
+  // au même devis, ou false si la société n'existe pas dans le CRM.
+  onSauvegarder?: (s: SauvegardeDevis) => string | boolean;
   // E-mail de contact du compte (premier contact avec e-mail), "" si inconnu.
   emailSociete?: (nom: string) => string;
   // Modèles de corps de mail pour l'envoi du devis (persistés dans le CRM).
@@ -492,8 +499,18 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // Signale au CRM qu'un devis vient d'être envoyé au client (mail + PDF) :
   // le CRM marque « Envoyé » l'archive correspondante sur la fiche entreprise.
   onDevisEnvoye?: (societe: string, numOffre: string) => void;
+  // N° d'offre déjà archivés dans tout le CRM (toutes fiches) — sert à
+  // attribuer un numéro UNIQUE (suffixe -1, -2, -3…) par jour et commercial.
+  numerosExistants?: string[];
 }) {
   const b: Partial<DevisBrouillon> = brouillon ?? {};
+
+  // Devis archivé lié au brouillon courant (rouvert depuis une fiche ou déjà
+  // sauvegardé dans cette session) : conserve son n° d'offre et fait que la
+  // sauvegarde MET À JOUR l'original au lieu de créer un doublon.
+  const [offreLiee, setOffreLiee] = useState<{ id: string; num: string; societe: string } | null>(
+    b.idOrigine && b.numOffreOrigine ? { id: b.idOrigine, num: b.numOffreOrigine, societe: (b.societe ?? "").trim() } : null
+  );
 
   const [step, setStep] = useState<number>(b.step ?? 0);
 
@@ -585,15 +602,28 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
       step, societe, anciennete, mode, duree, grille, renouvellement,
       qtes, remises, packsCoches, coupDePoing, remiseLibre, commercial,
       miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
+      ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
     });
-  }, [step, societe, anciennete, mode, duree, grille, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement]);
+  }, [step, societe, anciennete, mode, duree, grille, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement, offreLiee]);
 
   // N° d'offre dynamique : L + initiales du commercial + aaaammjj + position du jour
   const aujourdhui = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const aaaammjj = `${aujourdhui.getFullYear()}${pad(aujourdhui.getMonth() + 1)}${pad(aujourdhui.getDate())}`;
   const initiales = (commercial || "CS").split(/\s+/).map((m) => m[0]).join("").toUpperCase();
-  const numOffre = `L${initiales}${aaaammjj}-1`;
+  // N° UNIQUE : L + initiales + date + premier suffixe libre (-1, -2, -3…)
+  // parmi TOUS les devis déjà archivés du CRM. Si le brouillon est lié à un
+  // devis archivé pour la MÊME société, on conserve son n° : la sauvegarde
+  // mettra à jour l'original (jamais deux devis avec le même numéro).
+  const baseOffre = `L${initiales}${aaaammjj}`;
+  const numOffre = offreLiee && offreLiee.societe === (societe || "").trim()
+    ? offreLiee.num
+    : (() => {
+        const pris = new Set((numerosExistants ?? []).filter(Boolean));
+        let i = 1;
+        while (pris.has(`${baseOffre}-${i}`)) i++;
+        return `${baseOffre}-${i}`;
+      })();
   const dateEmission = `${pad(aujourdhui.getDate())}/${pad(aujourdhui.getMonth() + 1)}/${aujourdhui.getFullYear()}`;
   const dateValidite = new Date(aujourdhui.getTime() + 30 * 86400000);
   const dateValiditeFr = `${pad(dateValidite.getDate())}/${pad(dateValidite.getMonth() + 1)}/${dateValidite.getFullYear()}`;
@@ -738,6 +768,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     step, societe, anciennete, mode, duree, grille, renouvellement,
     qtes, remises, packsCoches, coupDePoing, remiseLibre, commercial,
     miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
+    ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
   });
 
   // ── Actions d'archivage & d'envoi ──
@@ -746,7 +777,14 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     const mail = construireMail(resume);
     const ok = onSauvegarder?.({ societe, commentaire: commentaire.trim(), brouillon: brouillonCourant(), resume, mail });
     if (ok === undefined) setRetourAction("⚠️ Sauvegarde indisponible hors CRM.");
-    else if (ok) { setRetourAction(`✅ Devis ${resume.numOffre} sauvegardé sur la fiche « ${societe} » — visible dans la section 🧾 Devis et la timeline de l'entreprise.`); setCommentaire(""); }
+    else if (ok) {
+      // Liaison avec l'archive (nouvelle ou mise à jour) : les sauvegardes
+      // suivantes de CE devis mettront à jour la même archive, même n°.
+      if (typeof ok === "string" && ok) setOffreLiee({ id: ok, num: resume.numOffre, societe: societe.trim() });
+      const maj = !!offreLiee && offreLiee.num === resume.numOffre && offreLiee.societe === societe.trim();
+      setRetourAction(`✅ Devis ${resume.numOffre} ${maj ? "mis à jour" : "sauvegardé"} sur la fiche « ${societe} » — visible dans la section 🧾 Devis et la timeline de l'entreprise.`);
+      setCommentaire("");
+    }
     else setRetourAction(`❌ « ${societe || "—"} » n'existe pas dans le CRM. Utilise 🔍 Chercher un compte (étape 1) ou crée la fiche d'abord.`);
   };
   const corpsCourtMail = (resume: DevisResume): string =>
@@ -1685,4 +1723,5 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     </div>
   );
 }
+
 

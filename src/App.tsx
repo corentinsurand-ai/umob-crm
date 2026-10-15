@@ -2298,7 +2298,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onActivite: (id: string, activite: Activite) => void; // journalise une activité SUR l'entreprise
   onModifie: (patch: Partial<Entreprise>) => void; // édition directe du panneau « À propos »
   onMajContacts: (mods: { id: string; tel?: string; email?: string; role?: string }[]) => void; // rattrapage Sheet des contacts
-  onRouvrirDevis: (b: DevisBrouillon) => void; // recharge un devis archivé dans le module Devis
+  onRouvrirDevis: (dv: DevisArchive) => void; // recharge un devis archivé dans le module Devis (lié à son original)
   onMarquerDevisEnvoye: (devisId: string) => void; // passe le devis au statut « Envoyé au client »
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
@@ -2424,7 +2424,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                         </p>
                         {dv.commentaire && <p className="mt-1 whitespace-pre-wrap border-l-2 border-emerald-300 pl-2 italic text-slate-500">{dv.commentaire}</p>}
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          <button onClick={() => onRouvrirDevis(dv.brouillon)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
+                          <button onClick={() => onRouvrirDevis(dv)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
                           <button
                             onClick={() => {
                               onMarquerDevisEnvoye(dv.id); // le devis part au client → statut ✅ « Envoyé »
@@ -3936,10 +3936,27 @@ export default function App() {
     const cible = (nom || "").trim().toLowerCase();
     return cible ? etat.entreprises.find((x) => (x.nomCommercial || x.nom).trim().toLowerCase() === cible) : undefined;
   };
-  const sauvegarderDevisSurFiche = (s: SauvegardeDevis): boolean => {
+  const sauvegarderDevisSurFiche = (s: SauvegardeDevis): string | boolean => {
     const ent = trouverEntrepriseParNom(s.societe);
     if (!ent) return false;
     const maintenant = new Date();
+    // MÊME devis (même n° d'offre déjà archivé) → MET À JOUR l'original :
+    // même id, même n°, même date de création, statut d'envoi conservé —
+    // seul le contenu (brouillon, résumé, mail, commentaire) est rafraîchi.
+    const existant = (ent.devisHistorique ?? []).find((dv) => dv.resume?.numOffre === s.resume.numOffre);
+    if (existant) {
+      const archive: DevisArchive = { ...existant, societe: s.societe, commentaire: s.commentaire, brouillon: s.brouillon, resume: s.resume, mail: s.mail };
+      const texte = `Devis n° ${s.resume.numOffre} mis à jour — ${s.resume.nbChassis} scooter(s), ${s.resume.loyerMensuelHT.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €/mois HT${s.commentaire ? ` — « ${s.commentaire} »` : ""}`;
+      setEtat((s2) => ({
+        ...s2,
+        entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
+          ...x,
+          devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === archive.id ? archive : dv),
+          activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+        } : x),
+      }));
+      return archive.id;
+    }
     const archive: DevisArchive = { ...s, id: `dv-${maintenant.getTime()}`, dateISO: maintenant.toISOString(), dateFr: maintenant.toLocaleDateString("fr-FR"), statut: "enregistre" };
     const texte = `Devis n° ${s.resume.numOffre} sauvegardé — ${s.resume.nbChassis} scooter(s), ${s.resume.loyerMensuelHT.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €/mois HT${s.commentaire ? ` — « ${s.commentaire} »` : ""}`;
     setEtat((s2) => ({
@@ -3950,7 +3967,7 @@ export default function App() {
         activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
       } : x),
     }));
-    return true;
+    return archive.id;
   };
   // ── Notion « envoyé au client » vs « simplement enregistré » : passe
   // l'archive au statut « envoye » (badge ✅ sur la fiche entreprise) et
@@ -3993,8 +4010,10 @@ export default function App() {
   };
   // Rouvrir un devis archivé : on le recharge comme brouillon courant du
   // module Devis (qui se monte frais et relit ses champs) et on y navigue.
-  const rouvrirDevis = (b: DevisBrouillon) => {
-    setEtat((e) => ({ ...e, devis: b }));
+  const rouvrirDevis = (dv: DevisArchive) => {
+    // Le brouillon rechargé porte la liaison vers l'archive d'origine : la
+    // sauvegarde METTRA À JOUR ce devis (même n°) au lieu d'en créer un autre.
+    setEtat((e) => ({ ...e, devis: { ...dv.brouillon, idOrigine: dv.id, numOffreOrigine: dv.resume?.numOffre || "" } }));
     setFiche(null);
     setVue("devis");
   };
@@ -4274,7 +4293,7 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
-            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
+            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
           </>
         )}
       </main>
@@ -4292,4 +4311,5 @@ export default function App() {
     </div>
   );
 }
+
 
