@@ -2328,12 +2328,12 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} onModifie={onModifie} />}>
                 <div className="space-y-2">
                   {e.risque && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
-                      <div className="flex items-start gap-2">
+                    <div className="w-full overflow-hidden rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
+                      <div className="flex w-full items-start gap-2">
                         <span className="shrink-0 text-[13px] leading-snug">⚠️</span>
-                        <span className="min-w-0 flex-1 break-words text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
-                        <span className="shrink-0 pt-0.5 text-[10px] font-medium text-red-400">source SAV</span>
+                        <span className="w-full whitespace-normal break-words text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
                       </div>
+                      <div className="mt-0.5 text-right text-[10px] font-medium text-red-400">source SAV</div>
                     </div>
                   )}
                   {(e.modeles || []).length > 0 && (
