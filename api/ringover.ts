@@ -18,7 +18,9 @@
 //   - Rate limit : 2 req/s par clé → petites pauses entre les requêtes
 // Variables d'environnement Vercel : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //   RINGOVER_API_KEY, MISTRAL_API_KEY, RINGOVER_NOS_NUMEROS,
-//   RINGOVER_EMPOWER_PLATFORM (optionnel : nom de plateforme Empower)
+//   RINGOVER_EMPOWER_PLATFORM (optionnel : nom de plateforme Empower),
+//   RINGOVER_WEBHOOK_SECRET (recommandé : secret partagé exigé sur chaque POST
+//   — à ajouter à l'URL webhook Ringover sous la forme ?secret=XXX)
 
 const EVENEMENTS_BRUIT = ["ringing", "answered", "answer", "contact", "in_progress", "created", "updated", "update"];
 
@@ -91,13 +93,20 @@ export default async function handler(req: any, res: any) {
     return NOS_NOMS.some((x) => c === x || (x.length >= 5 && (c.includes(x) || x.includes(c))));
   };
   const PLATEFORME_EMPOWER: string = env.RINGOVER_EMPOWER_PLATFORM || "";
+  // ── SECRET WEBHOOK : si RINGOVER_WEBHOOK_SECRET est défini (recommandé), tout
+  // POST doit porter ce secret — header x-webhook-secret OU ?secret=XXX dans
+  // l'URL configurée chez Ringover. Sinon rejet 401 : quiconque connaît l'URL
+  // ne peut plus injecter de faux appels dans le CRM. Le GET de diagnostic
+  // reste ouvert (aucune donnée sensible n'y est exposée) ; le replay interne
+  // (?replay=1) transmet le secret à son propre POST. ──
+  const SECRET_WHH: string = env.RINGOVER_WEBHOOK_SECRET || "";
 
   if (req.method === "GET") {
     // ── DIAGNOSTIC : teste les routes documentées sur un appel réel ──
     const diag: any = { ok: true, service: "ringover-webhook-diag", variables: {
       SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, RINGOVER_API_KEY: !!RING,
       MISTRAL_API_KEY: !!MIST, RINGOVER_NOS_NUMEROS: !!env.RINGOVER_NOS_NUMEROS, RINGOVER_NOS_NOMS: !!env.RINGOVER_NOS_NOMS,
-      RINGOVER_EMPOWER_PLATFORM: !!PLATEFORME_EMPOWER,
+      RINGOVER_EMPOWER_PLATFORM: !!PLATEFORME_EMPOWER, RINGOVER_WEBHOOK_SECRET: !!SECRET_WHH,
     }, etapes: [] };
     if (!RING) { diag.erreur = "RINGOVER_API_KEY absente"; return res.status(200).json(diag); }
     const h = { Authorization: RING };
@@ -197,7 +206,7 @@ export default async function handler(req: any, res: any) {
         const host = (req.headers && (req.headers.host || req.headers["x-forwarded-host"])) || "umob-crm.vercel.app";
         const rep = await fetch("https://" + host + "/api/ringover", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-webhook-secret": SECRET_WHH },
           body: JSON.stringify({ resource: "replay", event: "hangup", data: { call_id: pid, channel_id: pch } }),
         });
         diag.replay = { statut: rep.status, corps: (await rep.text()).slice(0, 2000) };
@@ -207,6 +216,16 @@ export default async function handler(req: any, res: any) {
   }
 
   // ══════════════════════════ POST : traitement webhook ══════════════════════════
+  // ── Vérification du SECRET WEBHOOK (voir commentaire plus haut) : rejet
+  // immédiat 401 de tout POST sans le secret attendu. ──
+  if (SECRET_WHH) {
+    const urlPost = new URL(req.url || "/", "http://localhost");
+    const fourni = String((req.headers && (req.headers["x-webhook-secret"] || req.headers["x-ringover-secret"])) || urlPost.searchParams.get("secret") || "");
+    if (fourni !== SECRET_WHH) {
+      console.log("POST rejeté : secret webhook invalide ou absent");
+      return res.status(401).json({ ok: false, erreur: "secret webhook invalide" });
+    }
+  }
   let payload: any = {};
   try { payload = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {}); } catch (e) { payload = {}; }
   console.log("WEBHOOK RINGOVER brut:", JSON.stringify(payload));
