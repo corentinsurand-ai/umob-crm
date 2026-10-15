@@ -2373,9 +2373,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           minimale + défilement horizontal si le panneau est étroit (même logique
           que le pipeline) : les 3 colonnes restent ainsi toujours visibles. */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos (= panneau « Informations clés » HubSpot). */}
-          <div>
+          <div className="col-roulette">
             <CarteFiche titre="À propos">
               {/* Propriétés empilées, libellé au-dessus de la valeur. */}
               <div className="space-y-2.5">
@@ -2462,7 +2462,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
 
           {/* Colonne centrale : Activités (composer + timeline), comme le
               bandeau central de la fiche HubSpot. */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
             <div className="mt-3">
@@ -2471,7 +2471,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           </div>
 
           {/* Colonne droite : associations puis résumé (comme HubSpot). */}
-          <div className="space-y-4">
+          <div className="col-roulette space-y-4">
             {/* Carte « Contrat & flotte » : affichée seulement si un champ
                 contrat est renseigné (les prospects n'ont pas de contrat).
                 Chaque ligne est éditable sur place (même mécanisme inline
@@ -2648,9 +2648,9 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
           associations + résumé à droite (même structure que la fiche entreprise,
           défilement horizontal si le panneau est étroit). */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos. */}
-          <div>
+          <div className="col-roulette">
             <CarteFiche titre="À propos">
               {/* Propriétés empilées, libellé au-dessus de la valeur. */}
               <div className="space-y-2.5">
@@ -2668,7 +2668,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
 
           {/* Colonne centrale : Activités en CONSULTATION SEULE (elles sont
               ajoutées depuis la fiche de l'entreprise, où elles vivent). */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-[11.5px] font-medium text-slate-400">
               ℹ️ Les activités se consignent depuis la fiche d'une entreprise — chaque activité peut être reliée à {c.prenom}. Elles s'affichent ici automatiquement.
@@ -2677,7 +2677,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
           </div>
 
           {/* Colonne droite : associations puis résumé. */}
-          <div className="space-y-4">
+          <div className="col-roulette space-y-4">
             {/* Association inverse : l'entreprise du contact (association unique). */}
           {/* TOUTES les entreprises liées (un contact peut en avoir plusieurs :
               ex. franchisé multi-sites). Chaque carte est cliquable. */}
@@ -2776,9 +2776,9 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
 
       {/* 3 colonnes façon HubSpot, défilement horizontal si le panneau est étroit. */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos — tout est éditable EN DIRECT. */}
-          <div>
+          <div className="col-roulette">
             <CarteFiche titre="À propos">
               <div className="space-y-2.5">
               {/* L'étape change via le select ; le changement est tracé
@@ -2809,7 +2809,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
 
           {/* Colonne centrale : Activités en CONSULTATION SEULE (elles sont
               ajoutées depuis la fiche de l'entreprise, où elles vivent). */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-2 text-[11.5px] font-medium text-slate-400">
               ℹ️ Les activités se consignent depuis la fiche de l'entreprise {entreprise ? <span className="font-bold text-slate-500">{entreprise.nom}</span> : ""} — chaque activité peut être reliée à ce deal. Elles s'affichent ici automatiquement.
@@ -2818,7 +2818,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
           </div>
 
           {/* Colonne droite : associations puis résumé. */}
-          <div className="space-y-4">
+          <div className="col-roulette space-y-4">
             <CarteFiche titre="Entreprise">
               {entreprise ? (
                 <button onClick={() => onOuvreFiche({ type: "entreprise", id: entreprise.id })}
@@ -3825,6 +3825,24 @@ export default function App() {
   const estManager = EMAILS_CONSOLE.has(monEmail);
   // Sécurité : Console non permise pour ce compte → retour au tableau de bord.
   useEffect(() => { if (vue === "console" && monEmail !== "" && !estManager) setVue("dashboard"); }, [vue, monEmail, estManager]);
+
+  // ── ROULETTE PAR COLONNE (fiches Entreprise/Contact/Deal) : là où est la
+  // souris, la colonne défile ; la page ne bouve JAMAIS au-dessus d'une colonne.
+  // Listener non-passif obligatoire : React onWheel est passif → preventDefault y est ignoré.
+  useEffect(() => {
+    const surRoulette = (e: WheelEvent) => {
+      const cible = e.target as HTMLElement | null;
+      const el = cible && cible.closest ? cible.closest(".col-roulette") as HTMLElement | null : null;
+      if (!el) return; // hors des colonnes : comportement normal
+      e.preventDefault();
+      const reste = e.deltaY > 0
+        ? el.scrollHeight - el.scrollTop - el.clientHeight
+        : el.scrollTop;
+      if (reste > 0) el.scrollTop += e.deltaY;
+    };
+    window.addEventListener("wheel", surRoulette, { passive: false });
+    return () => window.removeEventListener("wheel", surRoulette);
+  }, []);
 
   // Routeur des listes : une entreprise / un contact EXISTANT ouvre sa page
   // record ; tout le reste (id null = création, deals = pas de page record)
