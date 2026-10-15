@@ -28,7 +28,7 @@ const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", 
 
 const PROMPT_SYSTEME =
   "Tu analyses la transcription d'un appel téléphonique reçu par la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown, avec exactement ces clés : " +
-  "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase), " +
+  "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase), delaiJours (entier 1 à 14 : nombre de jours avant l'action recommandée ; si l'interlocuteur ou le salarié dit un délai précis dans l'appel ('je rappelle demain', 'la semaine prochaine'), calcule-le en jours ; sinon réponds 2), " +
   "extraction (objet avec : nomEntreprise, ville, secteur, franchiseur, activite, modeLivraison, prenom, nom, role, email, besoin — chaque valeur est une chaîne). " +
   "Pour extraction : " +
   "franchiseur : uniquement si l'interlocuteur le dit explicitement, choisi parmi [" + OPTIONS_FRANCHISEUR.join(", ") + "] ; réponds 'Indépendant' seulement s'il le dit explicitement. " +
@@ -396,6 +396,26 @@ export default async function handler(req: any, res: any) {
     return true;
   };
 
+  // ── Tâche CRM automatique : transforme l'action recommandée en tâche planifiée ──
+  const creerTacheSuivante = (ent: any, a: any): boolean => {
+    const actionTxt = String(ia.action || "").trim();
+    if (!actionTxt || actionTxt.length < 5 || !ent) return false;
+    // pas de doublon : une seule tâche par appel
+    if ((ent.activites || []).some((x: any) => x.tacheDepuisAppel === appelId)) return false;
+    let delai = Number(ia.delaiJours);
+    if (!Number.isFinite(delai) || delai < 1 || delai > 14) delai = 2;
+    const ech = new Date(Date.now() + delai * 86400000);
+    const tache: any = {
+      date, dateISO, type: "tache",
+      echeance: p2(ech.getDate()) + "/" + p2(ech.getMonth() + 1) + "/" + ech.getFullYear(),
+      texte: "✅ " + actionTxt.slice(0, 300) + " (suggérée par l'IA après l'appel)",
+      tacheDepuisAppel: appelId,
+    };
+    if (a.contactId) tache.contactId = a.contactId;
+    ent.activites = [a, tache, ...(ent.activites || []).filter((x: any) => x !== a)];
+    return true;
+  };
+
   // ── L'appel est-il déjà consigné ? Oui → FUSION de l'enrichissement tardif ──
   let deja: any = null;
   for (const e of etat.entreprises || []) {
@@ -417,7 +437,8 @@ export default async function handler(req: any, res: any) {
     if (ia.sujets && !a.sujets) { a.sujets = String(ia.sujets); modifie = true; }
     if (typeof ia.score === "number" && !a.scoreIA) { a.scoreIA = Math.min(5, Math.max(1, Math.round(ia.score))); modifie = true; }
     if (duration && !a.dureeAppel) { a.dureeAppel = Math.max(1, Math.round(duration / 60)) + " min"; modifie = true; }
-    const enrichi = appliquerExtraction(deja.entreprise, a) || gererContactExtrait(deja.entreprise, a) || modifie;
+    const tacheCreeeFusion = creerTacheSuivante(deja.entreprise, a);
+    const enrichi = appliquerExtraction(deja.entreprise, a) || gererContactExtrait(deja.entreprise, a) || modifie || tacheCreeeFusion;
     if (!enrichi) return res.status(200).json({ ok: true, note: "rien de neuf", appelId });
     const ws = await fetch(SUP + "/rest/v1/crm_etat", {
       method: "POST",
@@ -426,7 +447,7 @@ export default async function handler(req: any, res: any) {
     });
     if (!ws.ok) return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status });
     console.log("Fusion enrichissement appel", appelId, "ok");
-    return res.status(200).json({ ok: true, fusion: true, transcription: !!transcription, ficheEnrichie: true });
+    return res.status(200).json({ ok: true, fusion: true, transcription: !!transcription, ficheEnrichie: true, tacheCreee: tacheCreeeFusion });
   }
 
   // ── Sens de l'appel + numéro client ──
@@ -490,7 +511,9 @@ export default async function handler(req: any, res: any) {
   }
 
   let ficheModifiee = false;
+  let tacheCreee = false;
   if (entreprise) {
+    tacheCreee = creerTacheSuivante(entreprise, act);
     ficheModifiee = appliquerExtraction(entreprise, act) || gererContactExtrait(entreprise, act);
     if (ficheModifiee) console.log("Fiche enrichie automatiquement:", entreprise.nom);
   }
@@ -501,5 +524,5 @@ export default async function handler(req: any, res: any) {
     body: JSON.stringify([{ id: "main", data: etat, maj: now.toISOString() }]),
   });
   if (!ws.ok) { console.log("Ecriture Supabase KO:", ws.status); return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status }); }
-  return res.status(200).json({ ok: true, entreprise: entreprise ? entreprise.nom : "aucun rattachement", cree, ficheEnrichie: ficheModifiee, sentiment: ia.sentiment || null, score: act.scoreIA || null, transcriptionRecue: !!transcription });
+  return res.status(200).json({ ok: true, entreprise: entreprise ? entreprise.nom : "aucun rattachement", cree, ficheEnrichie: ficheModifiee, tacheCreee, sentiment: ia.sentiment || null, score: act.scoreIA || null, transcriptionRecue: !!transcription });
 }
