@@ -2290,7 +2290,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onSupprimerDevis }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2300,6 +2300,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onMajContacts: (mods: { id: string; tel?: string; email?: string; role?: string }[]) => void; // rattrapage Sheet des contacts
   onRouvrirDevis: (dv: DevisArchive) => void; // recharge un devis archivé dans le module Devis (lié à son original)
   onMarquerDevisEnvoye: (devisId: string) => void; // passe le devis au statut « Envoyé au client »
+  onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
@@ -2432,6 +2433,12 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                               window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(`Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n° ${dv.resume?.numOffre || ""} pour ${e.nom}, valable jusqu'au ${dv.resume?.dateValiditeFr || dv.dateFr}.\n\nBien cordialement,\n${dv.resume?.commercial || ""}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78`)}`;
                             }}
                             className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">✉️ Mail + PDF</button>
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Supprimer définitivement le devis n° ${dv.resume?.numOffre || ""} de la fiche ?`)) onSupprimerDevis(dv.id);
+                            }}
+                            title="Supprimer ce devis archivé"
+                            className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50">🗑️</button>
                         </div>
                       </div>
                     );
@@ -3975,6 +3982,21 @@ export default function App() {
   // Corentin clique « Envoyer par mail + PDF » (matching société + n° d'offre)
   // et (2) par le bouton « ✉️ Mail + PDF » de la fiche (matching par id).
   // Un devis déjà « envoye » n'est pas retouché (le plus ancien envoi prime).
+  // Supprime un devis archivé de la fiche (bouton 🗑️ — nettoie les doublons).
+  const supprimerDevisArchived = (entId: string, devisId: string) => {
+    const dv = (etat.entreprises.find((x) => x.id === entId)?.devisHistorique ?? []).find((d) => d.id === devisId);
+    if (!dv) return;
+    const maintenant = new Date();
+    const texte = `Devis n° ${dv.resume?.numOffre || ""} supprimé de la fiche`;
+    setEtat((s2) => ({
+      ...s2,
+      entreprises: s2.entreprises.map((x) => x.id === entId ? {
+        ...x,
+        devisHistorique: (x.devisHistorique ?? []).filter((d) => d.id !== devisId),
+        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+      } : x),
+    }));
+  };
   const marquerDevisEnvoyeParId = (entId: string, devisId: string) => {
     const maintenant = new Date();
     setEtat((s2) => ({
@@ -4277,7 +4299,8 @@ export default function App() {
             onModifie={(patch) => modifierEntreprise(fiche.id, patch)}
             onMajContacts={majContacts}
             onRouvrirDevis={rouvrirDevis}
-            onMarquerDevisEnvoye={(devisId) => marquerDevisEnvoyeParId(fiche.id, devisId)} />
+            onMarquerDevisEnvoye={(devisId) => marquerDevisEnvoyeParId(fiche.id, devisId)}
+            onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
