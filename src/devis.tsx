@@ -244,6 +244,41 @@ export interface SauvegardeDevis { societe: string; commentaire: string; brouill
 // Ce qui est archivé sur la fiche entreprise (id + horodatage ajoutés par App.tsx).
 export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string };
 
+// Modèle de corps de mail pour l'envoi du devis (persisté dans l'état du CRM
+// via etat.modelesMailDevis → Supabase). Les variables {{...}} sont remplacées
+// au moment de l'envoi par les valeurs du devis en cours.
+export interface ModeleMailDevis { id: string; nom: string; objet: string; corps: string; }
+// Variables insérables dans un modèle (chips cliquables du volet).
+export const VARIABLES_MAIL: { code: string; label: string }[] = [
+  { code: "{{societe}}", label: "Société" },
+  { code: "{{numero}}", label: "N° d'offre" },
+  { code: "{{commercial}}", label: "Commercial" },
+  { code: "{{date_emission}}", label: "Date du devis" },
+  { code: "{{date_validite}}", label: "Validité" },
+  { code: "{{nb_scooters}}", label: "Nb scooters" },
+  { code: "{{duree}}", label: "Durée (mois)" },
+  { code: "{{loyer_ht}}", label: "Loyer HT/mois" },
+  { code: "{{loyer_ttc}}", label: "Loyer TTC/mois" },
+  { code: "{{contrat_ttc}}", label: "Contrat TTC" },
+  { code: "{{mise_service}}", label: "Mise en service" },
+];
+// Remplace les variables d'un modèle par les valeurs du devis en cours.
+export function rendreModeleMail(texte: string, r: DevisResume): string {
+  const arr2 = (n: number) => Math.round(n * 100) / 100;
+  return texte
+    .replace(/\{\{societe\}\}/g, r.societe || "votre société")
+    .replace(/\{\{numero\}\}/g, r.numOffre)
+    .replace(/\{\{commercial\}\}/g, r.commercial || "L'équipe U'mob")
+    .replace(/\{\{date_emission\}\}/g, r.dateEmission ?? "")
+    .replace(/\{\{date_validite\}\}/g, r.dateValiditeFr ?? "")
+    .replace(/\{\{nb_scooters\}\}/g, String(r.nbChassis))
+    .replace(/\{\{duree\}\}/g, String(r.duree))
+    .replace(/\{\{loyer_ht\}\}/g, eurM(r.loyerMensuelHT))
+    .replace(/\{\{loyer_ttc\}\}/g, eurM(r.loyerMensuelTTC))
+    .replace(/\{\{contrat_ttc\}\}/g, eurM(arr2(r.loyerMensuelTTC * r.duree)))
+    .replace(/\{\{mise_service\}\}/g, eurM(r.miseService));
+}
+
 // ==================== PDF DU DEVIS (génération native, zéro dépendance) ====================
 // Mise en page fidèle à l'écran « Devis client » du module : logo U'mob
 // vectoriel (cercle vert + éclair), accents émeraude, en-têtes de tableaux
@@ -455,7 +490,7 @@ export function telechargerPdfDevis(r: DevisResume): string {
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -464,6 +499,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   onSauvegarder?: (s: SauvegardeDevis) => boolean;
   // E-mail de contact du compte (premier contact avec e-mail), "" si inconnu.
   emailSociete?: (nom: string) => string;
+  // Modèles de corps de mail pour l'envoi du devis (persistés dans le CRM).
+  modelesMail?: ModeleMailDevis[];
+  onModelesMail?: (m: ModeleMailDevis[]) => void;
 }) {
   const b: Partial<DevisBrouillon> = brouillon ?? {};
 
@@ -512,6 +550,15 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // ── Archivage & envoi (étape « Devis client ») ──
   const [commentaire, setCommentaire] = useState("");
   const [retourAction, setRetourAction] = useState("");
+  // ── Volet « modèles de mail » (envoi du devis) ──
+  const [voletMailOuvert, setVoletMailOuvert] = useState(false);
+  const [mailSelection, setMailSelection] = useState<string | null>(null);
+  const [mailEdition, setMailEdition] = useState(false);
+  const [mailEditId, setMailEditId] = useState<string | null>(null);
+  const [fNom, setFNom] = useState("");
+  const [fObjet, setFObjet] = useState("");
+  const [fCorps, setFCorps] = useState("");
+  const corpsMailRef = useRef<any>(null);
   const [microActif, setMicroActif] = useState(false);
   const microRef = useRef<any>(null);
   const microDispo = typeof window !== "undefined" && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
@@ -711,15 +758,63 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     else if (ok) { setRetourAction(`✅ Devis ${resume.numOffre} sauvegardé sur la fiche « ${societe} » — visible dans la section 🧾 Devis et la timeline de l'entreprise.`); setCommentaire(""); }
     else setRetourAction(`❌ « ${societe || "—"} » n'existe pas dans le CRM. Utilise 🔍 Chercher un compte (étape 1) ou crée la fiche d'abord.`);
   };
-  const envoyerMail = () => {
+  const envoyerMail = (objetMail?: string, corpsMail?: string) => {
     const resume = construireResume();
-    // Le devis complet part en PDF (téléchargé) : le corps du mail reste court,
-    // on ne colle plus tout le devis en texte brut dans la messagerie.
+    // Le devis complet part en PDF (téléchargé) : le corps du mail vient du
+    // modèle choisi dans le volet, sinon message court par défaut.
     const nomPdf = telechargerPdfDevis(resume);
     const mail = construireMail(resume);
-    const corpsCourt = `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
-    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(mail.objet)}&body=${encodeURIComponent(corpsCourt)}`;
+    const objetFinal = objetMail ?? mail.objet;
+    const corpsFinal = corpsMail ?? `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
+    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
     setRetourAction(`📄 PDF « ${nomPdf} » généré et téléchargé — joins-le en pièce jointe du message qui vient de s'ouvrir (aucune donnée interne n'y figure).`);
+  };
+  // ── Volet « modèles de mail » ──
+  const ouvrirVoletMail = () => {
+    const liste = modelesMail ?? [];
+    setMailSelection((prev) => (prev && liste.some((m) => m.id === prev) ? prev : liste.length ? liste[0].id : null));
+    setMailEdition(false);
+    setVoletMailOuvert(true);
+  };
+  const demarrerCreationModeleMail = () => {
+    setMailEditId(null);
+    setFNom("");
+    setFObjet("Votre offre U'mob n° {{numero}}");
+    setFCorps("");
+    setMailEdition(true);
+  };
+  const demarrerEditionModeleMail = (m: ModeleMailDevis) => {
+    setMailEditId(m.id);
+    setFNom(m.nom);
+    setFObjet(m.objet);
+    setFCorps(m.corps);
+    setMailEdition(true);
+  };
+  const enregistrerModeleMail = () => {
+    if (!fNom.trim() || !fObjet.trim()) { setRetourAction("⚠️ Le modèle a besoin d'un nom et d'un objet."); return; }
+    const liste = modelesMail ?? [];
+    if (mailEditId) {
+      onModelesMail?.(liste.map((m) => (m.id === mailEditId ? { ...m, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps } : m)));
+      setMailSelection(mailEditId);
+    } else {
+      const nouveau: ModeleMailDevis = { id: `mm${Date.now()}`, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps };
+      onModelesMail?.([...liste, nouveau]);
+      setMailSelection(nouveau.id);
+    }
+    setMailEdition(false);
+  };
+  const supprimerModeleMail = (id: string) => {
+    const reste = (modelesMail ?? []).filter((m) => m.id !== id);
+    onModelesMail?.(reste);
+    if (mailSelection === id) setMailSelection(reste.length ? reste[0].id : null);
+    if (mailEditId === id) setMailEdition(false);
+  };
+  const insererVariableMail = (code: string) => {
+    const el = corpsMailRef.current as any;
+    if (el && typeof el.selectionStart === "number" && typeof el.selectionEnd === "number") {
+      const debut = el.selectionStart, fin = el.selectionEnd;
+      setFCorps(fCorps.slice(0, debut) + code + fCorps.slice(fin));
+    } else setFCorps(fCorps + code);
   };
   const copierTexte = async () => {
     try { await navigator.clipboard.writeText(construireMail(construireResume()).corps); setRetourAction("📋 Texte du devis copié — prêt à coller dans un e-mail ou un message."); }
@@ -1438,18 +1533,113 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                 </Field>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={sauvegarder} disabled={!societe.trim()}>💾 Sauvegarder sur la fiche entreprise</Button>
-                  <Button variant="outline" onClick={envoyerMail}>✉️ Envoyer par mail + PDF</Button>
+                  <Button variant="outline" onClick={ouvrirVoletMail}>✉️ Envoyer par mail + PDF</Button>
                   <Button variant="outline" onClick={copierTexte}>📋 Copier le texte du devis</Button>
                 </div>
                 {retourAction && <p className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{retourAction}</p>}
                 <p className="text-xs text-slate-400">
                   Le devis complet (brouillon ré-ouvrable) est archivé avec le commentaire — on le relance depuis la fiche entreprise → « 🚀 Rouvrir ».
-                  « ✉️ Envoyer par mail » télécharge le devis en PDF (mis en page, sans données internes) et ouvre ta messagerie avec un message court : il ne reste qu'à joindre le PDF.
+                  « ✉️ Envoyer par mail » ouvre le volet des modèles de corps de mail : tu choisis un modèle (ou le message court par défaut), le devis part en PDF (mis en page, sans données internes) et ta messagerie s'ouvre pré-remplie — il ne reste qu'à joindre le PDF.
                 </p>
               </CardContent>
             </Card>
           </div>
         )}
+      {/* ============ VOLET MODÈLES DE MAIL (envoi du devis) ============ */}
+      {voletMailOuvert && (() => {
+        const listeModeles = modelesMail ?? [];
+        const modeleChoisi = listeModeles.find((m) => m.id === mailSelection) ?? null;
+        const apercuResume = construireResume();
+        return (
+          <div className="fixed inset-0 z-[60] flex justify-end bg-slate-900/40" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>
+            <div className="h-full w-full max-w-md bg-white shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-3 border-b bg-white shrink-0">
+                <p className="font-semibold text-slate-800 text-sm">
+                  {mailEdition ? (mailEditId ? "✏️ Modifier le modèle" : "✨ Nouveau modèle de mail") : "✉️ Envoyer le devis par mail"}
+                </p>
+                <button type="button" className="text-slate-400 hover:text-slate-700 text-xl leading-none cursor-pointer" title="Fermer" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>×</button>
+              </div>
+              {mailEdition ? (
+                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 bg-white">
+                  <Field label="Nom du modèle" hint="Ex. : Envoi standard, Relance courte…">
+                    <Input value={fNom} onChange={(e) => setFNom(e.target.value)} placeholder="Nom du modèle" className="bg-white text-black" />
+                  </Field>
+                  <Field label="Objet du mail">
+                    <Input value={fObjet} onChange={(e) => setFObjet(e.target.value)} placeholder={"Votre offre U'mob n° {{numero}}"} className="bg-white text-black" />
+                  </Field>
+                  <Field label="Corps du mail">
+                    <textarea
+                      ref={corpsMailRef}
+                      value={fCorps}
+                      onChange={(e) => setFCorps(e.target.value)}
+                      rows={8}
+                      placeholder={"Bonjour,\n\nVeuillez trouver ci-joint notre offre n° {{numero}} pour {{nb_scooters}} scooters…"}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                    />
+                  </Field>
+                  <div>
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Variables (remplacées à l'envoi)</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {VARIABLES_MAIL.map((v) => (
+                        <button key={v.code} type="button" title={v.label} onClick={() => insererVariableMail(v.code)} className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-mono text-emerald-800 hover:bg-emerald-100 cursor-pointer">{v.code}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {(fObjet.trim() || fCorps.trim()) && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Aperçu (données du devis en cours)</p>
+                      <p className="text-xs font-semibold text-slate-700 mb-1">{rendreModeleMail(fObjet, apercuResume) || "(objet vide)"}</p>
+                      <pre className="text-xs text-slate-600 whitespace-pre-wrap font-sans">{rendreModeleMail(fCorps, apercuResume) || "(corps vide)"}</pre>
+                    </div>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <Button onClick={enregistrerModeleMail}>💾 Enregistrer</Button>
+                    <Button variant="outline" className="bg-white" onClick={() => setMailEdition(false)}>Annuler</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col bg-white min-h-0">
+                  <div className="px-4 pt-3 pb-3 border-b bg-white shrink-0">
+                    <Button variant="outline" className="w-full bg-white" onClick={demarrerCreationModeleMail}>✨ Créer un modèle de mail</Button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto bg-white">
+                    {listeModeles.length === 0 ? (
+                      <div className="px-4 py-10 text-center">
+                        <p className="text-4xl mb-2">✉️</p>
+                        <p className="text-sm text-slate-500">Aucun modèle pour l'instant.</p>
+                        <p className="text-xs text-slate-400 mt-1">Crée ton premier modèle avec « ✨ Créer un modèle de mail », ou envoie directement avec le message court par défaut.</p>
+                      </div>
+                    ) : listeModeles.map((m) => (
+                      <div key={m.id} className={`px-4 py-3 border-b border-slate-100 cursor-pointer ${mailSelection === m.id ? "bg-emerald-50" : "bg-white hover:bg-slate-50"}`} onClick={() => setMailSelection(m.id)}>
+                        <div className="flex items-center gap-2">
+                          <span>{mailSelection === m.id ? "🔘" : "⚪️"}</span>
+                          <p className="text-sm font-semibold text-slate-800 flex-1 truncate">{m.nom}</p>
+                          <button type="button" title="Modifier" className="text-slate-400 hover:text-emerald-600 cursor-pointer px-1" onClick={(e) => { e.stopPropagation(); demarrerEditionModeleMail(m); }}>✏️</button>
+                          <button type="button" title="Supprimer" className="text-slate-400 hover:text-red-600 cursor-pointer px-1" onClick={(e) => { e.stopPropagation(); supprimerModeleMail(m.id); }}>🗑️</button>
+                        </div>
+                        <p className="text-xs text-slate-500 truncate mt-0.5 ml-6">{m.objet}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {modeleChoisi && (
+                    <div className="border-t border-slate-200 bg-slate-50 p-4 shrink-0 max-h-56 overflow-y-auto">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Aperçu — {modeleChoisi.nom}</p>
+                      <p className="text-xs font-semibold text-slate-700 mb-1">{rendreModeleMail(modeleChoisi.objet, apercuResume)}</p>
+                      <pre className="text-xs text-slate-600 whitespace-pre-wrap font-sans">{rendreModeleMail(modeleChoisi.corps, apercuResume)}</pre>
+                    </div>
+                  )}
+                  <div className="border-t bg-white p-4 space-y-2 shrink-0">
+                    <Button className="w-full" onClick={() => { setVoletMailOuvert(false); envoyerMail(modeleChoisi ? rendreModeleMail(modeleChoisi.objet, apercuResume) : undefined, modeleChoisi ? rendreModeleMail(modeleChoisi.corps, apercuResume) : undefined); }}>
+                      {modeleChoisi ? `✉️ Envoyer avec « ${modeleChoisi.nom} »` : "✉️ Envoyer (message court)"}
+                    </Button>
+                    <Button variant="outline" className="w-full bg-white" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>Annuler</Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
       </div>
     </div>
   );

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
-import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, telechargerPdfDevis } from "./devis";
+import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, telechargerPdfDevis } from "./devis";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
@@ -331,7 +331,7 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
 interface Deal { id: string; nom: string; entrepriseId: string; contactId: string; montant: number; etape: Etape; action: string; echeance: string; notes: string; fait: boolean }
 
 // L'état global de l'application : la base de données entière tient dans cet objet.
-interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[]; devis?: DevisBrouillon | null }
+interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[]; devis?: DevisBrouillon | null; modelesMailDevis?: ModeleMailDevis[] }
 
 // Couleur officielle de chaque étape (réutilisée partout : kanban, badges, fiches…).
 const ETAPES: { nom: Etape; couleur: string }[] = [
@@ -573,7 +573,7 @@ function normaliser(s: Etat): Etat {
   // plus dans le modèle : seule l'entreprise porte des activités).
   const contactsFinaux = contacts.map(({ activites, ...reste }: { activites?: Activite[] } & Contact) => reste);
   const dealsFinaux = deals.map(({ activites, ...reste }: { activites?: Activite[] } & Deal) => reste);
-  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux };
+  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice() };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -4233,7 +4233,7 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
-            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} emailSociete={emailDuCompte} />}
+            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
           </>
         )}
       </main>
