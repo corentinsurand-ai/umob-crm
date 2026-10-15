@@ -524,7 +524,7 @@ const ETAT_VIDE: Etat = { entreprises: [], contacts: [], deals: [] };
 
 // Déconnexion manuelle (bouton de la barre latérale).
 async function seDeconnecter() {
-  await supabase.auth.signOut();
+  await supabase.auth.signOut();;
 }
 
 /* ============================== UI DE BASE ============================== */
@@ -1556,35 +1556,104 @@ function PropSelect({ label: libelle, valeur, options, onChange }: { label: stri
    timeline (dernière activité reformulée, prochaine action en attente,
    sentiment estimé par mots-clés). Dans la version déployée, ce même emplacement
    sera branché sur l'API Mistral pour une vraie génération de texte. */
-function genererResumeIA(nom: string, events: { date: string; texte: string; type?: TypeActivite }[], prochaine?: { nom: string; action: string; echeance: string } | null) {
+/* Résumé IA v3 : synthèse locale enrichie — appels analysés (webhook Ringover),
+   sentiment, score moyen, recommandations — complétée à l OUVERTURE de la fiche
+   par un vrai résumé Mistral via l endpoint serverless /api/resume (production).
+   Règle anti-invention inchangée : le moteur local ne fait que compter et citer
+   les données de la fiche, JAMAIS deviner. */
+type EvResume = { date: string; texte: string; type?: TypeActivite; dateISO?: string; heure?: string; resumeIA?: string; sentiment?: string; scoreIA?: number; sujets?: string; transcription?: string };
+function genererResumeIA(nom: string, events: EvResume[], prochaine?: { nom: string; action: string; echeance: string } | null, faits?: string[]) {
   const derniere = events[0];
-  // Sentiment estimé sur les 5 activités les plus récentes (comme la ligne
-  // « Sentiment » du résumé HubSpot de la capture) : positif si mots-clés
-  // enthousiastes, négatif si mots-clés d'insatisfaction, neutre sinon.
-  // Priorité aux VRAIS sentiments IA des appels analysés (webhook Ringover) :
-  // le sentiment affiché = celui du premier appel analysé trouvé dans la timeline
-  // (positif/négatif), sinon repli sur l'estimation locale par mots-clés.
-  const appelSentiment = events.find((x) => x.sentiment === "positif" || x.sentiment === "négatif");
+  // ── Appels analysés par l IA (webhook Ringover) : resumeIA / sentiment /
+  // scoreIA / sujets viennent TELS QUELS des activités d appel analysées. ──
+  const appels = events.filter((x) => x.type === "appel" && !!(x.resumeIA || x.sentiment || x.scoreIA || x.transcription));
+  const dernierAppel = appels[0];
+  const sentiments = appels.map((x) => x.sentiment || "").filter(Boolean);
+  const nPos = sentiments.filter((s) => s === "positif").length;
+  const nNeg = sentiments.filter((s) => s === "négatif").length;
+  const sentimentDominant = nPos > nNeg ? "positif" : nNeg > nPos ? "négatif" : "neutre";
+  const scores = appels.map((x) => x.scoreIA).filter((x): x is number => typeof x === "number");
+  const scoreMoyen = scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : 0;
+  // Sentiment global : priorité au sentiment IA des appels analysés (le plus
+  // récent l emporte), sinon estimation locale par mots-clés (repli).
   let sentiment = "neutre";
   let couleurSentiment = "#94a3b8";
-  if (appelSentiment) {
-    sentiment = appelSentiment.sentiment;
-    couleurSentiment = sentiment === "positif" ? "#57c26b" : "#ef4444";
-  } else {
+  const sentIA = appels.find((x) => x.sentiment === "positif" || x.sentiment === "négatif");
+  if (sentIA) { sentiment = sentIA.sentiment as string; couleurSentiment = sentiment === "positif" ? "#57c26b" : "#ef4444"; }
+  else {
     const corpus = events.slice(0, 5).map((x) => x.texte).join(" ").toLowerCase();
     if (/(satisfait|content|ravi|parfait|super|enthousiaste|intéressé|interessé|validé|valide|impatient)/.test(corpus)) { sentiment = "positif"; couleurSentiment = "#57c26b"; }
     if (/(mécontent|mecontent|déçu|decu|problème|probleme|panne|trop cher|refus|refuse|annulé|annule|retard|inquiet)/.test(corpus)) { sentiment = "négatif"; couleurSentiment = "#ef4444"; }
   }
-  // Paragraphe narratif : dernière activité citée + action de suivi en attente.
-  const texte =
-    (derniere
-      ? `Le ${derniere.dateISO || derniere.date}${(derniere.heure || (/^d{1,2}:d{2}$/.test(derniere.date || "") ? derniere.date : "")) ? " à " + (derniere.heure || (/^d{1,2}:d{2}$/.test(derniere.date || "") ? derniere.date : "")) : ""} — ${META_ACT[derniere.type || "note"].libelle.toLowerCase()} : « ${derniere.texte.slice(0, 160)}${derniere.texte.length > 160 ? "…" : ""} ».`
-      : `${nom} n'a encore aucune activité enregistrée.`) +
-    (prochaine && prochaine.action
-      ? ` Une action de suivi est prévue : ${prochaine.action}${prochaine.echeance ? ` (le ${prochaine.echeance})` : ""}${prochaine.nom ? ` sur le deal « ${prochaine.nom} »` : ""}.`
-      : " Aucune action de suivi en attente.");
-  // « Sources » = nombre d'événements qui alimentent la synthèse (comme HubSpot).
-  return { texte, sentiment, couleurSentiment, sources: events.length };
+  // ── Profil « À propos » de la fiche : les faits de PROPRIÉTÉS (statut, ville,
+  //   secteur, franchiseur, risque, modèles, contrats, flotte, contacts) —
+  //   pas les faits d'activité, déjà cités par la narrative ci-dessous.
+  const cleProfil = [" a le statut «", " est situé à ", "Secteur :", "Activité :", "Franchiseur :", "⚠️ Risque signalé", " loue les modèles", "Mode de livraison :", " contrats Locam.", " contrat Locam.", " exploite ", "Les contacts de "];
+  const profil = (faits || []).filter((f) => cleProfil.some((c) => f.includes(c))).slice(0, 10);
+  // ── Paragraphe narratif : profil (À propos + contrats + flotte + contacts),
+  //     puis dernière activité, appels analysés, action en attente. ──
+  // ── Résumé rédigé en langage NATUREL : les faits « À propos » ne sont PAS
+  //     collés bout à bout — on les REDÉCOUPE en une vraie phrase de
+  //     présentation (« X est un prospect indépendant du commerce floral,
+  //     basé à Lyon »), puis viennent les phrases d'actualité (dernier
+  //     échange, appels analysés, pipeline). Jamais d'invention : chaque
+  //     mot vient d'un FAIT de la fiche. ──
+  const val = (f: string | undefined, apres: string): string => {
+    if (!f) return "";
+    const i = f.indexOf(apres);
+    return i >= 0 ? f.slice(i + apres.length).replace(/\.\s*$/, "") : "";
+  };
+  const pStatut = profil.find((f) => f.includes(" a le statut «"));
+  const statut = pStatut ? (pStatut.match(/« ([^»]*) »/) || [])[1] || "" : "";
+  const ville = val(profil.find((f) => f.includes(" est situé à ")), " est situé à ");
+  const secteur = val(profil.find((f) => f.startsWith("Secteur :")), "Secteur :");
+  const franchiseur = val(profil.find((f) => f.startsWith("Franchiseur :")), "Franchiseur :");
+  const livraison = val(profil.find((f) => f.startsWith("Mode de livraison :")), "Mode de livraison :");
+  const modeles = val(profil.find((f) => f.includes(" loue les modèles")), " loue les modèles de scooter ");
+  const contacts = val(profil.find((f) => f.startsWith("Les contacts de ")), " sont : ");
+  const risqueTxt = val(profil.find((f) => f.startsWith("⚠️")), "⚠️ Risque signalé : ");
+  // Les faits de CONTRATS (déjà rédigés en prose : « Le contrat CO… se termine
+  // le … ») sont gardés tels quels, après la phrase de présentation.
+  const faitsContrats = profil.filter((f) => f.startsWith("Le contrat") || f.startsWith("Contrat ") || f.startsWith("Numéros de contrat") || f.startsWith("La période totale") || f.startsWith("Immatriculations"));
+  const morceaux: string[] = [];
+  // Phrase de présentation : qui est ce compte, en une phrase fluide.
+  if (statut || ville || secteur) {
+    morceaux.push(
+      nom + " est " + (statut === "Client" ? "un client" : statut === "Prospect" ? "un prospect" : statut === "Suspect" ? "un suspect à qualifier" : "un compte")
+        + (franchiseur && franchiseur !== "Indépendant" ? " du réseau " + franchiseur : franchiseur === "Indépendant" ? " indépendant" : "")
+        + (secteur ? " — " + secteur.toLowerCase() : "")
+        + (ville ? " — basé à " + ville : "") + "."
+    );
+  }
+  if (livraison) morceaux.push("Pour ses livraisons, il compte sur le " + livraison.toLowerCase() + ".");
+  if (modeles) morceaux.push("Côté flotte, il loue des scooters " + modeles + ".");
+  if (contacts) morceaux.push(contacts.includes(", ") ? "Les personnes à connaître chez " + nom + " : " + contacts + "." : contacts + " est la personne à connaître chez " + nom + ".");
+  if (risqueTxt) morceaux.push("⚠️ Point de vigilance : " + risqueTxt.toLowerCase() + " — à voir avec le SAV.");
+  morceaux.push(...faitsContrats);
+  if (derniere) {
+    const h = derniere.heure || (/^[0-9]{1,2}:[0-9]{2}$/.test(derniere.date || "") ? derniere.date : "");
+    morceaux.push("Dernier échange le " + (derniere.dateISO || derniere.date) + (h ? " à " + h : "") + " (" + META_ACT[derniere.type || "note"].libelle.toLowerCase() + ") : « " + derniere.texte.slice(0, 160) + (derniere.texte.length > 160 ? "…" : "") + " »");
+  }
+  if (appels.length) {
+    morceaux.push(appels.length === 1
+      ? "L'IA a analysé un appel avec ce compte" + (dernierAppel && dernierAppel.resumeIA ? ", le dernier en date indique : « " + dernierAppel.resumeIA.slice(0, 140) + (dernierAppel.resumeIA.length > 140 ? "…" : "") + " »" : "")
+      : "L'IA a analysé " + appels.length + " appels avec ce compte" + (dernierAppel && dernierAppel.resumeIA ? ", le dernier en date indique : « " + dernierAppel.resumeIA.slice(0, 140) + (dernierAppel.resumeIA.length > 140 ? "…" : "") + " »" : ""));
+  }
+  if (prochaine && prochaine.action) {
+    morceaux.push("Côté pipeline, la prochaine étape est « " + prochaine.action + " »" + (prochaine.echeance ? " prévue le " + prochaine.echeance : "") + (prochaine.nom ? " sur le deal « " + prochaine.nom + " »" : ""));
+  }
+  const texte = morceaux.length
+    ? morceaux.filter(Boolean).map((s) => s.replace(/\.\s*$/, "")).join(". ").replace(/\s+/g, " ") + "."
+    : "Rien à raconter pour l'instant : cette fiche est toute neuve. Consigne une note ou un appel, et le résumé s'écrira tout seul !";
+  // ── Recommandations locales : reformulations de FAITS de la fiche, jamais d invention. ──
+  const recommandations: string[] = [];
+  if (prochaine && prochaine.action) recommandations.push("Prochaine action prévue : " + prochaine.action + (prochaine.echeance ? " (le " + prochaine.echeance + ")" : "") + (prochaine.nom ? " — deal « " + prochaine.nom + " »" : "") + ".");
+  if (dernierAppel && dernierAppel.sentiment === "négatif") recommandations.push("Sentiment négatif au dernier appel : rappeler pour lever l'objection avant de faire avancer le deal.");
+  if (dernierAppel && dernierAppel.sentiment === "positif") recommandations.push("Dernier appel bien perçu" + (scoreMoyen ? " (score moyen " + scoreMoyen + "/5)" : "") + " : capitaliser sur cette dynamique pour proposer la prochaine étape.");
+  const risque = (faits || []).find((f) => f.indexOf("⚠️") === 0);
+  if (risque) recommandations.push(risque + " Coordonner avec le SAV avant toute relance commerciale.");
+  if (!prochaine || !prochaine.action) recommandations.push("Aucune action de suivi définie : fixer la prochaine étape (appel, devis ou visite).");
+  return { texte, sentiment, couleurSentiment, sources: events.length, nbAppels: appels.length, sentimentDominant, scoreMoyen, dernierAppel, recommandations };
 }
 
 /* ---- « Posez une question » façon Breeze HubSpot : l'utilisateur interroge
@@ -1610,63 +1679,173 @@ const repondreLocalement = (question: string, faits: string[]): { reponse: strin
   return { reponse: faits[iMeilleur], trouve: true };
 };
 
-/* Carte affichée en bas de la colonne droite des fiches Entreprise/Contact :
-   badge IA, date de génération + nombre de sources, paragraphe synthétisé
-   et ligne « Sentiment ». */
+/* Carte « Résumé de la fiche » v3 : synthèse locale enrichie (narrative, appels
+   analysés Ringover, sentiment, recommandations), GÉNÉRÉE AUTOMATIQUEMENT à
+   l ouverture de la fiche puis complétée par Mistral via l endpoint serverless
+   /api/resume en production. Le canvas n expose pas cet endpoint : le fetch
+   échoue silencieusement et le moteur local reste affiché. */
 function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
-  nom: string;
-  events: { date: string; texte: string; type?: TypeActivite }[];
+  nom: string; events: EvResume[];
   prochaine?: { nom: string; action: string; echeance: string } | null;
-  faits: string[];
-  suggestions?: string[];
+  faits: string[]; suggestions?: string[];
 }) {
-  const r = genererResumeIA(nom, events, prochaine);
+  const r = genererResumeIA(nom, events, prochaine, faits);
   const [q, setQ] = useState("");
-  const [rep, setRep] = useState<{ reponse: string; trouve: boolean; qPosee: string } | null>(null);
-  const poser = (question: string) => {
-    setQ(question);
-    setRep({ ...repondreLocalement(question, faits), qPosee: question });
-  };
-  // Date du jour au format long français, comme « Généré le 14 octobre 2026 ».
+  // Conversation complète façon chat : chaque question ET réponse reste à
+  // l'écran (bulles user à droite, réponses IA à gauche) tant que la fiche
+  // est ouverte — plus de réponse unique remplacée à chaque question.
+  const [messages, setMessages] = useState<{ id: number; de: "moi" | "ia"; texte: string; locale?: boolean }[]>([{ id: 0, de: "ia", texte: "Salut 👋 Je connais cette fiche par cœur — pose-moi ta question : contrats, contacts, appels, pipeline…", locale: true }]);
+  const [ia, setIa] = useState<{ resume: string; recommandations: string[]; sentiment?: string } | null>(null);
+  const [enCours, setEnCours] = useState(false);
+  const [cleIA, setCleIA] = useState(0); // « ✨ Régénérer » relance la génération Mistral
   const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+  // Contexte des appels analysés envoyé à l IA (en production) : résumés,
+  // sentiments, scores et transcriptions tronquées — les VRAIS faits de la fiche.
+  const contexteAppels = events
+    .filter((x) => x.type === "appel" && !!(x.resumeIA || x.transcription))
+    .slice(0, 5)
+    .map((x) => "Appel du " + (x.dateISO || x.date) + (x.heure ? " à " + x.heure : "") + (x.sentiment ? ", sentiment " + x.sentiment : "") + (x.scoreIA ? ", score " + x.scoreIA + "/5" : "") + (x.resumeIA ? " — résumé : " + x.resumeIA : "") + (x.transcription ? " — transcription : " + x.transcription.slice(0, 1500) : ""));
+  // Historique des 10 dernières activités de la fiche (tout type confondu) :
+  // l IA reçoit la fiche ENTIÈRE — À propos (faits), appels analysés ET timeline.
+  const contexteActivites = events.slice(0, 10)
+    .map((x) => "Le " + (x.dateISO || x.date) + (x.heure ? " à " + x.heure : "") + " — " + (x.type || "note") + " : " + x.texte);
+  const questionIA = async (question?: string) => {
+    setEnCours(true);
+    try {
+      const reponse = await fetch("/api/resume", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: question ? "question" : "resume", nom, faits: faits.filter(Boolean), appels: contexteAppels, activites: contexteActivites, historique: messages.slice(-6).map((m) => (m.de === "moi" ? "Utilisateur : " : "IA : ") + m.texte), question: question || null }) });
+      if (!reponse.ok) return null;
+      const d = await reponse.json();
+      if (question) return { question: true, reponse: String(d.reponse || "") };
+      return { question: false, resume: String(d.resume || ""), recommandations: Array.isArray(d.recommandations) ? d.recommandations.map((x: unknown) => String(x)) : [], sentiment: d.sentiment ? String(d.sentiment) : undefined };
+    } catch { return null; /* endpoint absent (canvas) ou réseau : moteur local, aucune panne */ }
+    finally { setEnCours(false); }
+  };
+  // GÉNÉRATION AUTOMATIQUE à l ouverture de la fiche : le résumé local
+  // s affiche instantanément, puis la version Mistral (production) complète
+  // les sections. Rejouable via le bouton « ✨ Régénérer ».
+  useEffect(() => {
+    let vivant = true;
+    (async () => {
+      const d = await questionIA();
+      if (vivant && d && !d.question && d.resume) setIa({ resume: d.resume, recommandations: d.recommandations, sentiment: d.sentiment });
+    })();
+    return () => { vivant = false; };
+  }, [nom, cleIA]);
+  const poser = (question: string) => {
+    const qPosee = question.trim();
+    if (!qPosee) return;
+    setQ("");
+    // La question part dans la conversation, et une bulle réponse LOCALE
+    // (calculée instantanément sur les faits) s'affiche immédiatement.
+    const idReponse = Date.now();
+    const locale = repondreLocalement(qPosee, faits);
+    setMessages((m) => [...m, { id: idReponse + 1, de: "moi", texte: qPosee }, { id: idReponse, de: "ia", texte: locale.reponse, locale: true }]);
+    // La réponse Mistral (production) remplace la bulle locale dès qu'elle
+    // arrive — même id, contenu enrichi, la conversation reste lisible.
+    (async () => {
+      const d = await questionIA(qPosee);
+      if (d && d.question && d.reponse) setMessages((m) => m.map((x) => (x.id === idReponse ? { ...x, texte: d.reponse, locale: false } : x)));
+    })();
+  };
+  const texteResume = ia && ia.resume ? ia.resume : r.texte;
+  const recos = ia && ia.recommandations.length > 0 ? ia.recommandations : r.recommandations;
+  const couleurSentiment = ia && ia.sentiment === "positif" ? "#57c26b" : ia && ia.sentiment === "négatif" ? "#ef4444" : r.couleurSentiment;
   return (
     <CarteFiche titre="Résumé de la fiche"
-      action={<span className="rounded-full px-2 py-0.5 text-[9.5px] font-black text-white"
-        style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>✨ IA</span>}>
-      <div className="mb-1.5 text-[10px] text-slate-400">Généré le {generee} · {r.sources} source{r.sources > 1 ? "s" : ""}</div>
-      <p className="text-[12.5px] leading-relaxed text-slate-600">{r.texte}</p>
-      {/* Ligne sentiment, comme dans le résumé HubSpot de la capture. */}
-      <div className="mt-2 flex items-center gap-1.5 rounded-xl bg-slate-50 px-2 py-1.5">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: r.couleurSentiment }} />
-        <span className="text-[11px] font-bold text-slate-500">Sentiment : <span style={{ color: r.couleurSentiment }}>{r.sentiment}</span></span>
+      action={<span className="flex items-center gap-1">
+        <span className="rounded-full px-2 py-0.5 text-[9.5px] font-black text-white"
+          style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>✨ IA</span>
+        {ia && <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[9.5px] font-black text-white">Mistral AI</span>}
+      </span>}>
+      <div className="mb-1.5 flex items-center gap-2 text-[10px] text-slate-400">
+        <span>Généré le {generee} · {r.sources} source{r.sources > 1 ? "s" : ""}</span>
+        <button type="button" onClick={() => { setIa(null); setCleIA((x) => x + 1); }}
+          className="font-black text-cyan-600 hover:underline" title="Relancer la génération du résumé par l IA">✨ Régénérer</button>
+        {enCours && <span>· génération IA…</span>}
       </div>
-      {/* Zone « Posez une question » façon Breeze HubSpot : réponse cherchée
-          LOCALEMENT dans les faits de la fiche (pas de modèle dans le canvas). */}
-      <div className="mt-2.5 border-t border-slate-100 pt-2.5">
-        <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-slate-400">Posez une question sur cette fiche</div>
-        <div className="flex gap-1.5">
-          <input value={q} onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
-            placeholder="ex. Quand se termine le contrat ?"
-            className="min-w-0 flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
-          <button type="button" onClick={() => { if (q.trim()) setRep({ ...repondreLocalement(q, faits), qPosee: q }); }}
-            className="shrink-0 rounded-lg px-2.5 py-1.5 text-[12px] font-black text-white"
-            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Demander</button>
+      <p className="text-[12.5px] leading-relaxed text-slate-600">{texteResume}</p>
+      {/* Ligne sentiment : priorité au sentiment renvoyé par l IA. */}
+      <div className="mt-2 flex items-center gap-1.5 rounded-xl bg-slate-50 px-2 py-1.5">
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: couleurSentiment }} />
+        <span className="text-[11px] font-bold text-slate-500">Sentiment : <span style={{ color: couleurSentiment }}>{ia && ia.sentiment ? ia.sentiment : r.sentiment}</span></span>
+      </div>
+      {/* Appels analysés par l IA (webhook Ringover) : nombre, sentiment dominant,
+          score moyen, résumé du dernier appel. */}
+      {r.nbAppels > 0 && (
+        <div className="mt-2 rounded-xl border border-emerald-100 bg-emerald-50/60 px-2.5 py-2">
+          <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-bold">
+            <span>📞 {r.nbAppels} appel{r.nbAppels > 1 ? "s" : ""} analysé{r.nbAppels > 1 ? "s" : ""}</span>
+            <span className={"rounded-full px-2 py-0.5 " + (r.sentimentDominant === "positif" ? "bg-emerald-100 text-emerald-700" : r.sentimentDominant === "négatif" ? "bg-rose-100 text-rose-700" : "bg-slate-200 text-slate-600")}>Sentiment global : {r.sentimentDominant}</span>
+            {r.scoreMoyen > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">Score moyen : {r.scoreMoyen}/5</span>}
+          </div>
+          {r.dernierAppel && r.dernierAppel.resumeIA && <div className="mt-1 text-[11.5px] leading-relaxed text-slate-700">Dernier appel : {r.dernierAppel.resumeIA}</div>
+          }
+          {r.dernierAppel && r.dernierAppel.sujets && <div className="mt-0.5 text-[11px] text-slate-500">Sujets / signaux : {r.dernierAppel.sujets}</div>
+          }
         </div>
-        {(suggestions || []).length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
+      )}
+      {/* Recommandations : issues de l IA (production) ou du moteur local. */}
+      {recos.length > 0 && (
+        <div className="mt-2">
+          <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">✅ À faire &amp; recommandations</div>
+          <ul className="ml-1 list-disc space-y-0.5 pl-3 text-[11.5px] leading-relaxed text-slate-600 marker:text-slate-300">
+            {recos.map((x, i) => <li key={i}>{x}</li>)}
+          </ul>
+        </div>
+      )}
+      {/* Fenêtre de conversation « Breeze » : en-tête avec avatar + nom + statut,
+          fil de bulles scrollable (user à droite, IA à gauche), champ arrondi
+          avec bouton d'envoi intégré. La réponse locale s'affiche immédiatement,
+          la réponse Mistral la remplace en production. */}
+      <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200 shadow-sm">
+        <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2"
+          style={{ background: "linear-gradient(135deg,#f0fdf4,#f0f9ff)" }}>
+          <span className="flex h-7 w-7 items-center justify-center rounded-full text-[12px] font-black text-white shadow"
+            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>✨</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11.5px] font-black text-slate-700">Assistant de la fiche</div>
+            <div className="flex items-center gap-1 text-[9.5px] font-semibold text-slate-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              {ia ? "Connecté à Mistral AI · voit toute la fiche" : "Voit toute la fiche · réponses locales"}
+            </div>
+          </div>
+          {messages.length > 1 && (
+            <button type="button" onClick={() => setMessages([{ id: 0, de: "ia", texte: "Salut 👋 Je connais cette fiche par cœur — pose-moi ta question : contrats, contacts, appels, pipeline…", locale: true }])}
+              className="shrink-0 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[9.5px] font-black text-slate-400 hover:text-slate-600">↺ Effacer</button>
+          )}
+        </div>
+        <div className="flex max-h-72 flex-col gap-2 overflow-y-auto bg-slate-50/50 px-3 py-3">
+          {messages.map((m) => m.de === "moi" ? (
+            <div key={m.id} className="flex justify-end">
+              <div className="max-w-[85%] rounded-2xl rounded-br-md px-3 py-1.5 text-[12px] leading-relaxed text-white shadow-sm"
+                style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>{m.texte}</div>
+            </div>
+          ) : (
+            <div key={m.id} className="flex items-start justify-start gap-1.5">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white text-[9px] shadow-sm"
+                style={{ color: "#4f9ee8" }}>✨</span>
+              <div className={"max-w-[85%] rounded-2xl rounded-bl-md px-3 py-1.5 text-[12px] leading-relaxed shadow-sm " + (m.locale && m.texte.indexOf("Je n'ai rien trouvé") === 0 ? "bg-amber-50 text-amber-700" : "bg-white text-slate-700")}>{m.texte}</div>
+            </div>
+          ))}
+        </div>
+        {(suggestions || []).length > 0 && messages.filter((m) => m.de === "moi").length < 2 && (
+          <div className="flex flex-wrap gap-1 border-t border-slate-100 bg-white px-3 pt-2">
             {(suggestions || []).map((s) => (
               <button key={s} type="button" onClick={() => poser(s)}
                 className="rounded-full border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-500 hover:border-cyan-300 hover:text-cyan-600">{s}</button>
             ))}
           </div>
         )}
-        {rep && (
-          <div className={"mt-2 rounded-xl px-2.5 py-2 text-[12px] leading-relaxed " + (rep.trouve ? "bg-slate-50 text-slate-600" : "bg-amber-50 text-amber-700")}>
-            <span className="mr-1">✨</span>{rep.qPosee ? <span className="font-black text-slate-400">{"« " + rep.qPosee + " » — "}</span> : null}{rep.reponse}
-          </div>
-        )}
-        <div className="mt-1.5 text-[9.5px] text-slate-300">Réponses calculées localement à partir de la fiche — branchement API Mistral en production.</div>
+        <div className="flex items-center gap-1.5 bg-white px-2.5 py-2">
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") poser(q); }}
+            placeholder="Pose ta question sur cette fiche…"
+            className="min-w-0 flex-1 rounded-full border border-slate-200 bg-slate-50 px-3.5 py-1.5 text-[12px] outline-none focus:border-cyan-400" />
+          <button type="button" onClick={() => poser(q)} disabled={!q.trim()}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[13px] text-white disabled:opacity-40"
+            style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }} title="Envoyer">➤</button>
+        </div>
+        <div className="bg-white px-3 pb-2 text-[9px] text-slate-300">{ia ? "Conversation Mistral AI — l'IA voit toute la fiche et vos échanges précédents." : "Réponses calculées à partir de la fiche — conversation enrichie par Mistral AI en production."}</div>
       </div>
     </CarteFiche>
   );
