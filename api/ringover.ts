@@ -74,7 +74,7 @@ export default async function handler(req: any, res: any) {
   // ── Détails + transcription via l'API publique Ringover (le webhook seul est muet) ──
   if (RING) {
     try {
-      const h = { Authorization: "Bearer " + RING };
+      const h = { Authorization: RING }; // Ringover attend la clé SANS le préfixe "Bearer" (cf. doc officielle)
       const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + appelId, { headers: h });
       console.log("Ringover calls statut:", r1.status);
       if (r1.ok) {
