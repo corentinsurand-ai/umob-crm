@@ -239,7 +239,7 @@ type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape";
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string  /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -1682,6 +1682,30 @@ function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite &
             <div className="min-w-0 flex-1">
               <div className="text-[10px] font-black uppercase tracking-wider" style={{ color: meta.couleur }}>{meta.libelle}</div>
               <div className="text-[12.5px] leading-relaxed text-slate-700">{ev.texte}</div>
+              {(ev.type === "appel" && !!(ev.resumeIA || ev.transcription || ev.sentiment)) && (
+                <div className="mt-1.5 rounded-lg border border-emerald-100 bg-emerald-50/60 px-2.5 py-2">
+                  <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-bold">
+                    {!!ev.sentiment && (
+                      <span className={"rounded-full px-2 py-0.5 " + (ev.sentiment === "positif" ? "bg-emerald-100 text-emerald-700" : ev.sentiment === "négatif" ? "bg-rose-100 text-rose-700" : "bg-slate-200 text-slate-600")}>{"Sentiment : " + ev.sentiment}</span>
+                    )}
+                    {!!ev.scoreIA && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">{"Score appel : " + ev.scoreIA + "/5"}</span>
+                    )}
+                    <span className="text-slate-400">✨ analyse IA de l'appel Ringover</span>
+                  </div>
+                  {!!ev.resumeIA && <div className="mt-1 text-[12px] leading-relaxed text-slate-700">{ev.resumeIA}</div>}
+                  {!!ev.sujets && <div className="mt-1 text-[11px] text-slate-500">{"Sujets / signaux : " + ev.sujets}</div>}
+                  {!!ev.transcription && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[11px] font-semibold text-cyan-600">📄 Transcription de l'appel</summary>
+                      <div className="mt-1 whitespace-pre-wrap text-[11.5px] leading-relaxed text-slate-600">{ev.transcription}</div>
+                    </details>
+                  )}
+                  {!!ev.urlEnregistrement && (
+                    <a href={ev.urlEnregistrement} target="_blank" rel="noreferrer" className="mt-1 inline-block text-[11px] font-semibold text-cyan-600 hover:underline">▶️ Écouter l'enregistrement</a>
+                  )}
+                </div>
+              )}
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                 <span className="font-bold">{ev.dateISO || ev.date}</span>
                 {/* Badge d'échéance pour les tâches et réunions planifiées. */}
