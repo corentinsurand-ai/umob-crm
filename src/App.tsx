@@ -572,7 +572,7 @@ const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", 
 // Valeurs du champ « Risque » (source Sheet SAV : Statut_risque_client,
 // Impayes, Procedure_collective). L'option vide « — » de ChampSelect vaut
 // « aucun risque signalé ».
-const OPTIONS_RISQUE = ["Impayé", "À risque", "Procédure collective", "Impayé + Procédure collective"];
+const OPTIONS_RISQUE = ["Impayé", "Mauvais payeur", "À risque", "Sous surveillance", "Procédure collective", "Impayé + Procédure collective"];
 
 /* ── Statut du cycle de vie : Suspect → Prospect → Client ───────────────────
    C'est le seul champ que l'humain maîtrise totalement : ni les API ni l'IA
@@ -1367,7 +1367,11 @@ function Modale({
               <button type="button" onClick={() => setEnt((x) => ({ ...x, contrats: [...(x.contrats || []), { pack: "", modele: "", num: "", dateDebut: "", dateFin: "", immats: "", etat: "" }] }))}
                 className="col-span-2 rounded-lg border border-dashed border-slate-300 py-1.5 text-[12px] font-bold text-cyan-600 hover:bg-cyan-50">+ Ajouter un contrat</button>
               <div><label className={label}>Risque (source SAV)</label>
-                <ChampSelect valeur={ent.risque} options={OPTIONS_RISQUE} onChange={(v) => setEnt({ ...ent, risque: v })} /></div>
+                {/* Risque : champ texte LIBRE avec suggestions (datalist) — le
+                    SAV peut écrire des statuts non standard (ex. « Mauvais
+                    payeur »), qu'un menu fermé empêchait de saisir. */}
+                <input className={champ} value={ent.risque} list="options-risque" onChange={(e) => setEnt({ ...ent, risque: e.target.value })} placeholder="ex. Impayé, Mauvais payeur…" />
+                <datalist id="options-risque">{OPTIONS_RISQUE.map((o) => <option key={o} value={o} />)}</datalist></div>
               <div className="col-span-2"><label className={label}>Notes</label>
                 <textarea rows={2} className={champ + " resize-none"} value={ent.notes} onChange={(e) => setEnt({ ...ent, notes: e.target.value })} /></div>
             </div>
