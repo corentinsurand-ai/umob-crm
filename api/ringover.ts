@@ -13,7 +13,12 @@
 
 export default async function handler(req: any, res: any) {
   if (req.method === "GET") {
-    return res.status(200).json({ ok: true, service: "ringover-webhook", indice: "configure ce fichier comme cible du webhook Ringover" });
+    const e2 = process.env;
+    return res.status(200).json({ ok: true, service: "ringover-webhook", diag: {
+      SUPABASE_URL: !!e2.SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: !!e2.SUPABASE_SERVICE_ROLE_KEY,
+      RINGOVER_API_KEY: !!e2.RINGOVER_API_KEY, MISTRAL_API_KEY: !!e2.MISTRAL_API_KEY,
+      RINGOVER_NOS_NUMEROS: !!e2.RINGOVER_NOS_NUMEROS
+    } });
   }
   const env = process.env;
   const SUP: string = env.SUPABASE_URL || "";
