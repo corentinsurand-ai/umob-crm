@@ -75,29 +75,61 @@ export default async function handler(req: any, res: any) {
   if (RING) {
     try {
       const h = { Authorization: RING }; // Ringover attend la clé SANS le préfixe "Bearer" (cf. doc officielle)
+      // L'API /v2/calls/{call_id} renvoie {list_count, list: [...]} (constaté en prod)
       const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + appelId, { headers: h });
       console.log("Ringover calls statut:", r1.status);
+      let appel: any = null;
       if (r1.ok) {
         const c: any = await r1.json();
-        console.log("Ringover calls JSON:", JSON.stringify(c).slice(0, 2500));
-        const cc = c.data || c;
-        const pick = (o: any, cles: string[]): string => { for (const k of cles) { const v = o?.[k]; if (v) return String(v); } return ""; };
-        if (!caller) caller = pick(cc, ["caller_number", "from", "from_number", "source_number", "caller", "source"]);
-        if (!receiver) receiver = pick(cc, ["receiver_number", "to", "to_number", "destination_number", "callee", "destination"]);
-        if (!enregistrement) enregistrement = pick(cc, ["recording_url", "record_url", "url_recording", "recording"]);
-        if (!duration) duration = Number(pick(cc, ["duration", "call_duration", "length"])) || 0;
+        console.log("Ringover calls JSON:", JSON.stringify(c).slice(0, 4000));
+        appel = (Array.isArray(c.list) && c.list.length) ? c.list[0] : (c.data || null);
+        if (!appel && Array.isArray(c) && c.length) appel = c[0];
       }
-      const r2 = await fetch("https://public-api.ringover.com/v2/empower/call/" + appelId, { headers: h });
-      console.log("Ringover empower statut:", r2.status);
-      if (r2.ok) {
-        const e: any = await r2.json();
-        console.log("Ringover empower JSON:", JSON.stringify(e).slice(0, 2500));
+      if (appel) {
+        const pick = (o: any, cles: string[]): string => { for (const k of cles) { const v = o?.[k]; if (v) return String(v); } return ""; };
+        if (!caller) caller = pick(appel, ["caller_number", "from", "from_number", "source_number", "caller", "source", "number_a", "calling_number"]);
+        if (!receiver) receiver = pick(appel, ["receiver_number", "to", "to_number", "destination_number", "callee", "destination", "number_b", "called_number"]);
+        if (!enregistrement) enregistrement = pick(appel, ["recording_url", "record_url", "url_recording", "recording"]);
+        if (!duration) duration = Number(pick(appel, ["duration", "call_duration", "length"])) || 0;
+        console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, enregistrement: !!enregistrement }));
+      }
+      // Empower : la transcription se récupère via un calluuid obtenu depuis le
+      // channel (doc: POST empower/platform/:platform/channel/:channelId puis
+      // GET empower/call/:calluuid). On tente call_id puis channel_id en secours.
+      const canal = String(d.channel_id ?? (appel && appel.channel_id) ?? "");
+      const lireEmpower = async (uuid: string) => {
+        const r = await fetch("https://public-api.ringover.com/v2/empower/call/" + uuid, { headers: h });
+        console.log("Ringover empower statut:", r.status, "uuid:", uuid);
+        if (!r.ok) return "";
+        const e: any = await r.json();
+        console.log("Ringover empower JSON:", JSON.stringify(e).slice(0, 4000));
         const ee = e.data || e;
-        if (typeof ee.transcription === "string") transcription = ee.transcription;
-        else if (Array.isArray(ee.transcriptions)) transcription = ee.transcriptions.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-        else if (Array.isArray(ee.messages)) transcription = ee.messages.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-        else if (typeof ee.summary === "string") transcription = ee.summary;
-        else if (Array.isArray(ee.summaries)) transcription = ee.summaries.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
+        if (typeof ee.transcription === "string") return ee.transcription;
+        if (Array.isArray(ee.transcriptions)) return ee.transcriptions.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
+        if (Array.isArray(ee.messages)) return ee.messages.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
+        if (typeof ee.summary === "string") return ee.summary;
+        if (Array.isArray(ee.summaries)) return ee.summaries.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
+        if (typeof ee.text === "string") return ee.text;
+        return "";
+      };
+      if (!transcription) {
+        // 1) résoudre le calluuid depuis le canal, si possible
+        if (canal) {
+          try {
+            const rp = await fetch("https://public-api.ringover.com/v2/empower/platform/ringover/channel/" + canal, { method: "POST", headers: h });
+            console.log("Ringover empower channel statut:", rp.status);
+            if (rp.ok) {
+              const jp: any = await rp.json();
+              console.log("Ringover empower channel JSON:", JSON.stringify(jp).slice(0, 1500));
+              const uu = (jp.data || jp || {}).calluuid || (jp.data || jp || {}).call_uuid || (jp.data || jp || {}).uuid || "";
+              if (uu) transcription = await lireEmpower(String(uu));
+            }
+          } catch (e) { console.log("Empower channel erreur:", e); }
+        }
+        // 2) secours : le call_id du webhook fonctionne parfois directement
+        if (!transcription) {
+          try { transcription = await lireEmpower(appelId); } catch (e) { console.log("Empower call erreur:", e); }
+        }
       }
     } catch (e) { console.log("Ringover API erreur:", e); }
   }
