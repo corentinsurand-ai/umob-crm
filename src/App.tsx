@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
-import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis } from "./devis";
+import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, telechargerPdfDevis } from "./devis";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
@@ -2391,16 +2391,14 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             {/* Les notes libres s'affichent en encart sous les propriétés. */}
               {e.notes && <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-2.5 text-[12.5px] leading-relaxed text-slate-600">{e.notes}</p>}
             </CarteFiche>
-          </div>
 
-          {/* Colonne centrale : Activités (composer + timeline), comme le
-              bandeau central de la fiche HubSpot. */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             {/* Devis archivés depuis le module Devis (bouton « 💾 Sauvegarder
-                sur la fiche entreprise ») : le brouillon complet est conservé,
-                « Rouvrir » le recharge tel quel dans le module Devis. */}
+                sur la fiche entreprise »), sous « À propos ». « Rouvrir »
+                recharge le brouillon tel quel dans le module Devis ;
+                « Mail + PDF » télécharge le devis en PDF (mis en page, sans
+                données internes) et ouvre un e-mail court à compléter. */}
             {(e.devisHistorique?.length ?? 0) > 0 && (
-              <div className="mb-4 rounded-2xl border border-emerald-200 bg-white p-3">
+              <div className="mt-3">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[13px] font-black text-slate-700">🧾 Devis</div>
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{e.devisHistorique!.length}</span>
@@ -2409,20 +2407,23 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                   {e.devisHistorique!.map((dv) => {
                     const mailCt = (contacts.find((c) => (c.email || "").trim())?.email || "").trim();
                     return (
-                      <div key={dv.id} className="rounded-xl border border-slate-200 p-2.5 text-[12.5px]">
+                      <div key={dv.id} className="rounded-xl border border-slate-200 p-2.5 text-[11.5px]">
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-slate-700">{dv.resume?.numOffre || "Devis"}</span>
-                          <span className="text-[11px] font-semibold text-slate-400">{dv.dateFr}</span>
+                          <span className="text-[10px] font-semibold text-slate-400">{dv.dateFr}</span>
                         </div>
                         <p className="mt-0.5 text-slate-600">
                           {dv.resume?.nbChassis ?? 0} scooter(s) · {dv.resume?.duree ?? "—"} mois · <span className="font-bold">{fmtEur(dv.resume?.loyerMensuelHT ?? 0)} HT/mois</span>
                         </p>
                         {dv.commentaire && <p className="mt-1 whitespace-pre-wrap border-l-2 border-emerald-300 pl-2 italic text-slate-500">{dv.commentaire}</p>}
-                        <div className="mt-1.5 flex gap-1.5">
-                          <button onClick={() => onRouvrirDevis(dv.brouillon)} className="rounded-xl border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          <button onClick={() => onRouvrirDevis(dv.brouillon)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
                           <button
-                            onClick={() => { window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(dv.mail?.corps || "")}`; }}
-                            className="rounded-xl border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50">✉️ E-mail</button>
+                            onClick={() => {
+                              const nomPdf = telechargerPdfDevis(dv.resume);
+                              window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(`Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n° ${dv.resume?.numOffre || ""} pour ${e.nom}, valable jusqu'au ${dv.resume?.dateValiditeFr || dv.dateFr}.\n\nBien cordialement,\n${dv.resume?.commercial || ""}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78`)}`;
+                            }}
+                            className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">✉️ Mail + PDF</button>
                         </div>
                       </div>
                     );
@@ -2430,6 +2431,11 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Colonne centrale : Activités (composer + timeline), comme le
+              bandeau central de la fiche HubSpot. */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
             <div className="mt-3">

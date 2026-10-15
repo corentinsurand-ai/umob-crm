@@ -231,6 +231,9 @@ export interface DevisBrouillon {
 export interface DevisResume {
   numOffre: string; societe: string; commercial: string; duree: number; nbChassis: number;
   loyerMensuelHT: number; loyerMensuelTTC: number; miseService: number;
+  // Champs pour le PDF joint à l'e-mail. Optionnels : les archives créées avant
+  // leur ajout ne les portent pas (le PDF retombe alors sur le total).
+  dateEmission?: string; dateValiditeFr?: string; miseADispoTot?: number; fraisDossierTot?: number;
   articles: { nom: string; q: number; loyerU: number }[];
   packs: { nom: string; qte: number; loyer: number; total: number }[];
 }
@@ -240,6 +243,126 @@ export interface MailDevis { destinataire: string; objet: string; corps: string;
 export interface SauvegardeDevis { societe: string; commentaire: string; brouillon: DevisBrouillon; resume: DevisResume; mail: MailDevis; }
 // Ce qui est archivé sur la fiche entreprise (id + horodatage ajoutés par App.tsx).
 export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string };
+
+// ==================== PDF DU DEVIS (génération native, zéro dépendance) ====================
+// Le devis client est mis en page « à la main » dans un PDF minimaliste
+// (Helvetica standard, encodage WinAnsi), construit octet par octet dans le
+// navigateur : pas de librairie externe, pas d'appel réseau. Version CLIENT
+// uniquement — jamais de grille, reprise ou commission (R10). Les emojis et
+// caractères hors WinAnsi sont exclus (le texte du PDF reste sobre).
+export function genererPdfDevis(r: DevisResume): Blob {
+  const W = 595.28, H = 841.89, M = 54; // A4 portrait, marge 54 pt
+  const fr = (n: number) => (Math.round((n || 0) * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+  // Accentuations spécifiques WinAnsi (€, apostrophe courbe, tirets…) ;
+  // le reste passe en latin-1 tel quel, caractères exotiques → « ? ».
+  const WIN: Record<string, string> = { "\u20AC": "\u0080", "\u2019": "\u0092", "\u2018": "\u0091", "\u2013": "\u0096", "\u2014": "\u0097", "\u2022": "\u0095", "\u2026": "\u0085", "\u00A0": " " };
+  const esc = (s: string) => {
+    let o = "";
+    for (const ch of String(s ?? "")) {
+      const m = WIN[ch];
+      if (m !== undefined) { o += m; continue; }
+      const c = ch.codePointAt(0) ?? 63;
+      o += c >= 32 && c <= 255 ? String.fromCharCode(c) : "?";
+    }
+    return o.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+  };
+  const cmds: string[] = [];
+  let y = 0;
+  const T = (x: number, yy: number, s: string, size = 9, bold = false, col = 0) => {
+    const g = col === 1 ? 0.45 : col === 2 ? 0.32 : 0;
+    cmds.push(`BT /${bold ? "F2" : "F1"} ${size} Tf ${g} g ${x.toFixed(2)} ${(H - yy).toFixed(2)} Td (${esc(s)}) Tj ET`);
+  };
+  // Alignement à droite approximé (métrique Helvetica ~0,50-0,56 em/caractère).
+  const R = (right: number, yy: number, s: string, size = 9, bold = false, col = 0) => T(right - s.length * size * (bold ? 0.56 : 0.5), yy, s, size, bold, col);
+  const L = (yy: number, w = 0.7, g = 0.85) => cmds.push(`${g} G ${w} w ${M} ${(H - yy).toFixed(2)} m ${(W - M).toFixed(2)} ${(H - yy).toFixed(2)} l S`);
+
+  // ── En-tête ──
+  y = 64; T(M, y, "U'MOB", 21, true, 2); R(W - M, y, "OFFRE A LA LOCATION", 12, true);
+  y += 15; T(M, y, "53 avenue Carnot - 69250 Neuville-sur-Saone - 04 82 29 96 78 - www.umob.fr", 8, false, 1);
+  y += 11; R(W - M, y, `N. ${r.numOffre || "-"}`, 9, false, 1);
+  y += 11; R(W - M, y, `Valable jusqu'au ${r.dateValiditeFr || "-"}`, 9, false, 1);
+  y += 12; L(y);
+  // ── Destinataire / modalités ──
+  y += 17; T(M, y, "DESTINATAIRE", 7.5, true, 1); T(W / 2 + 20, y, "MODALITE", 7.5, true, 1);
+  y += 13; T(M, y, r.societe || "-", 10.5, true); T(W / 2 + 20, y, `Mensuel a echoir - ${r.duree} mois`, 10.5);
+  y += 15; T(M, y, "VOTRE COMMERCIAL", 7.5, true, 1); T(W / 2 + 20, y, "EMIS LE", 7.5, true, 1);
+  y += 13; T(M, y, r.commercial || "-", 10.5); T(W / 2 + 20, y, r.dateEmission || "-", 10.5);
+  y += 14; L(y);
+  // ── Tableaux (matériel, prestations) ──
+  const table = (titre: string, lignes: { nom: string; qte: number; u: number; tot: number }[]) => {
+    y += 19; T(M, y, titre, 10, true, 2);
+    if (!lignes.length) return;
+    y += 14; T(M, y, "Designation", 7.5, true, 1); T(372, y, "Qte", 7.5, true, 1); R(452, y, "Loyer U. HT", 7.5, true, 1); R(W - M, y, "Loyer total HT", 7.5, true, 1);
+    y += 4; L(y, 0.5, 0.9);
+    for (const l of lignes) {
+      y += 12.5;
+      T(M, y, l.nom.length > 62 ? l.nom.slice(0, 61) + "..." : l.nom, 9);
+      T(372, y, String(l.qte), 9);
+      R(452, y, fr(l.u), 9);
+      R(W - M, y, fr(l.tot), 9, true);
+      y += 3.5; L(y, 0.4, 0.93);
+    }
+  };
+  table("LE MATERIEL - LOYERS MENSUELS HT", (r.articles || []).map((a) => ({ nom: a.nom, qte: a.q, u: a.loyerU, tot: a.loyerU * a.q })));
+  if ((r.packs || []).length) table("LES PRESTATIONS - LOYERS MENSUELS HT", r.packs.map((p) => ({ nom: p.nom, qte: p.qte, u: p.loyer, tot: p.total })));
+  // ── Mise en service ──
+  y += 19; T(M, y, "MISE EN SERVICE (COMPTANT)", 10, true, 2);
+  y += 14;
+  if (typeof r.miseADispoTot === "number" && typeof r.fraisDossierTot === "number") {
+    T(M, y, `Mise a disposition (immatriculation & livraison) x ${r.nbChassis}`, 9); R(W - M, y, fr(r.miseADispoTot), 9);
+    y += 12.5; T(M, y, `Frais de dossier x ${r.nbChassis}`, 9); R(W - M, y, fr(r.fraisDossierTot), 9);
+    y += 12.5;
+  }
+  T(M, y, "Total mise en service", 9, true); R(W - M, y, fr(r.miseService), 9, true);
+  // ── Totaux ──
+  y += 18; L(y);
+  y += 17; R(W - M, y, `Total mensuel HT : ${fr(r.loyerMensuelHT)}`, 10);
+  y += 14; R(W - M, y, `TVA 20 % : ${fr((r.loyerMensuelTTC || 0) - (r.loyerMensuelHT || 0))}`, 10);
+  y += 14; R(W - M, y, `Total TTC/mois : ${fr(r.loyerMensuelTTC)}`, 11, true);
+  y += 16; R(W - M, y, `Contrat ${r.duree} loyers TTC : ${fr((r.loyerMensuelTTC || 0) * r.duree)}`, 10, true);
+  // ── Pied de page ──
+  y = H - 96; L(y);
+  y += 14; T(M, y, "Sous reserve de validation par U'MOB apres analyse financiere du dossier du locataire.", 8, false, 1);
+  y += 13; T(M, y, "Bon pour accord - Le : .......................    Signature :", 8.5, false);
+
+  // ── Assemblage du fichier PDF (objets + xref calculés au fil de l'eau) ──
+  const contenu = cmds.join("\n");
+  const objets = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    `<< /Length ${contenu.length} >>\nstream\n${contenu}\nendstream`,
+  ];
+  const morceaux: string[] = []; let pos = 0; const offsets: number[] = [];
+  const push = (s: string) => { morceaux.push(s); pos += s.length; };
+  push("%PDF-1.4\n");
+  objets.forEach((o, i) => { offsets.push(pos); push(`${i + 1} 0 obj\n${o}\nendobj\n`); });
+  const xrefPos = pos;
+  let xref = `xref\n0 ${objets.length + 1}\n0000000000 65535 f \n`;
+  offsets.forEach((o) => { xref += String(o).padStart(10, "0") + " 00000 n \n"; });
+  push(xref + `trailer\n<< /Size ${objets.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`);
+  const binaire = morceaux.join("");
+  const octets = new Uint8Array(binaire.length);
+  for (let i = 0; i < binaire.length; i++) octets[i] = binaire.charCodeAt(i) & 0xff;
+  return new Blob([octets], { type: "application/pdf" });
+}
+
+// Télécharge le PDF du devis dans le navigateur (déclenché par un clic) et
+// renvoie le nom du fichier — utilisé par l'envoi mail (pièce à joindre) et
+// par la fiche entreprise.
+export function telechargerPdfDevis(r: DevisResume): string {
+  const nom = `Devis-Umob-${(r.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf`;
+  try {
+    const url = URL.createObjectURL(genererPdfDevis(r));
+    const a = document.createElement("a");
+    a.href = url; a.download = nom;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch { /* échec du téléchargement : sans bloquer l'ouverture du mail */ }
+  return nom;
+}
 
 // ==================== MODULE ====================
 export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete }: {
@@ -442,9 +565,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   const rnd2 = (n: number) => Math.round(n * 100) / 100;
   const construireResume = (): DevisResume => ({
     numOffre, societe, commercial, duree, nbChassis,
+    dateEmission, dateValiditeFr,
     loyerMensuelHT: rnd2(loyerMensuelHT),
     loyerMensuelTTC: rnd2(loyerMensuelHT + tvaMens),
     miseService: rnd2(miseService),
+    miseADispoTot: rnd2(miseADispo * nbChassis),
+    fraisDossierTot: rnd2(fraisDossier * nbChassis),
     articles: lignes.filter((l) => l.q > 0).map((l) => ({ nom: l.nom, q: l.q, loyerU: rnd2(estChassisLigne(l) ? l.loyerUNet + empilageParScooter : l.loyerUNet) })),
     packs: packsLignes.map((p) => ({ nom: p.nom, qte: p.qte, loyer: rnd2(p.loyer), total: rnd2(p.total) })),
   });
@@ -496,9 +622,14 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     else setRetourAction(`❌ « ${societe || "—"} » n'existe pas dans le CRM. Utilise 🔍 Chercher un compte (étape 1) ou crée la fiche d'abord.`);
   };
   const envoyerMail = () => {
-    const mail = construireMail(construireResume());
-    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(mail.objet)}&body=${encodeURIComponent(mail.corps)}`;
-    setRetourAction(mail.destinataire ? `✉️ E-mail préparé pour ${mail.destinataire} — vérifie et envoie depuis ta messagerie.` : "✉️ E-mail préparé — aucun e-mail connu pour ce compte, renseigne le destinataire.");
+    const resume = construireResume();
+    // Le devis complet part en PDF (téléchargé) : le corps du mail reste court,
+    // on ne colle plus tout le devis en texte brut dans la messagerie.
+    const nomPdf = telechargerPdfDevis(resume);
+    const mail = construireMail(resume);
+    const corpsCourt = `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
+    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(mail.objet)}&body=${encodeURIComponent(corpsCourt)}`;
+    setRetourAction(`📄 PDF « ${nomPdf} » généré et téléchargé — joins-le en pièce jointe du message qui vient de s'ouvrir (aucune donnée interne n'y figure).`);
   };
   const copierTexte = async () => {
     try { await navigator.clipboard.writeText(construireMail(construireResume()).corps); setRetourAction("📋 Texte du devis copié — prêt à coller dans un e-mail ou un message."); }
@@ -1217,13 +1348,13 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                 </Field>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={sauvegarder} disabled={!societe.trim()}>💾 Sauvegarder sur la fiche entreprise</Button>
-                  <Button variant="outline" onClick={envoyerMail}>✉️ Envoyer par mail</Button>
+                  <Button variant="outline" onClick={envoyerMail}>✉️ Envoyer par mail + PDF</Button>
                   <Button variant="outline" onClick={copierTexte}>📋 Copier le texte du devis</Button>
                 </div>
                 {retourAction && <p className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{retourAction}</p>}
                 <p className="text-xs text-slate-400">
                   Le devis complet (brouillon ré-ouvrable) est archivé avec le commentaire — on le relance depuis la fiche entreprise → « 🚀 Rouvrir ».
-                  L'e-mail part de ta messagerie : aucune donnée interne (grille, reprise, commission) n'y figure.
+                  « ✉️ Envoyer par mail » télécharge le devis en PDF (mis en page, sans données internes) et ouvre ta messagerie avec un message court : il ne reste qu'à joindre le PDF.
                 </p>
               </CardContent>
             </Card>
