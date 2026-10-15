@@ -219,7 +219,7 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
           <div className="flex items-start justify-between gap-2 flex-wrap">
             <div>
               <div className="text-sm font-bold text-slate-800">{actif.entreprise.nomCommercial || actif.entreprise.nom}</div>
-              <div className="text-[11px] text-slate-400">{actif.a.date} {actif.a.heure || ""} · {actif.contactDe(actif.entreprise.id) || "contact à qualifier"} · {(actif.entreprise.ville || "ville à qualifier")}</div>
+              <div className="text-[11px] text-slate-400">{actif.a.date} {actif.a.heure || ""} · {d.contactDe(actif.entreprise.id) || "contact à qualifier"} · {(actif.entreprise.ville || "ville à qualifier")}</div>
             </div>
             <div className="flex items-center gap-2">
               {badgeSentiment(actif.a.sentiment)}
