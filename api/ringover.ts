@@ -82,7 +82,9 @@ export default async function handler(req: any, res: any) {
     }, etapes: [] };
     if (!RING) { diag.erreur = "RINGOVER_API_KEY absente"; return res.status(200).json(diag); }
     const h = { Authorization: RING };
-    const params = new URL(req.url || "http://localhost/api/ringover").searchParams;
+    // req.url peut être un chemin relatif chez Vercel → toujours fournir une base
+    const urlReq = new URL(req.url || "/", "http://localhost");
+    const params = urlReq.searchParams;
     const pid = (params.get("call_id") || "").trim();
     const pch = (params.get("channel_id") || "").trim();
     if (pid) diag.parametre = { call_id: pid, channel_id: pch || null };
