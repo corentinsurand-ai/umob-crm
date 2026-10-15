@@ -1,15 +1,13 @@
 // ── Webhook Ringover → CRM U'mob ────────────────────────────────────────────
 // Fonction serverless Vercel : Ringover pousse ici ses événements d'appel.
 //
-// GET  /api/ringover        → diagnostic complet (sans appel téléphonique) :
-//                             lit les derniers appels via l'API, teste les routes
-//                             de transcription/enregistrement documentées et
-//                             renvoie les statuts + extraits. Calibrage réel.
+// GET  /api/ringover        → diagnostic complet :
+//   sans paramètre : lit les derniers appels via l'API et teste les routes.
+//   ?call_id=...&channel_id=... : teste directement les routes sur CET appel.
 // POST /api/ringover        → traitement d'un événement webhook Ringover :
 //   1. journalise le payload brut
 //   2. ignore le bruit (ringing, answered, contact…)
 //   3. récupère détails (numéros, durée, enregistrement) via GET /v2/calls/{id}
-//      (réponse documentée : {list_count, list:[...]})
 //   4. récupère la transcription (routes documentées, testées dans l'ordre)
 //   5. analyse IA Mistral + extraction des indications de l'appelant
 //   6. rattache à une fiche (matching numéro) ou crée un Suspect ; fusion tardive
@@ -18,13 +16,6 @@
 //   - Base URL : https://public-api.ringover.com/v2
 //   - Auth     : header "Authorization: <api-key>" (SANS préfixe Bearer)
 //   - Rate limit : 2 req/s par clé → petites pauses entre les requêtes
-//   - Permissions : Calls/Empower R/W par clé ; Monitoring ON = toute l'équipe
-//   - Transcriptions : accès contrôlé par un réglage au niveau de l'ÉQUIPE
-//   - Liste des calls : GET /v2/calls → {list_count, list:[{cdr_id, call_id,
-//     channel_id, direction, from_number, to_number, duration, ...}]}
-//   - Sections doc : calls (get call by id, recording by channel), transcriptions
-//     (list / get single by call ID), empower (call details by uuid, summary,
-//     key moments, call uuid from platform+channel)
 // Variables d'environnement Vercel : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //   RINGOVER_API_KEY, MISTRAL_API_KEY, RINGOVER_NOS_NUMEROS,
 //   RINGOVER_EMPOWER_PLATFORM (optionnel : nom de plateforme Empower)
@@ -83,7 +74,7 @@ export default async function handler(req: any, res: any) {
   const PLATEFORME_EMPOWER: string = env.RINGOVER_EMPOWER_PLATFORM || "";
 
   if (req.method === "GET") {
-    // ── DIAGNOSTIC : teste les routes documentées sur le dernier appel réel ──
+    // ── DIAGNOSTIC : teste les routes documentées sur un appel réel ──
     const diag: any = { ok: true, service: "ringover-webhook-diag", variables: {
       SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, RINGOVER_API_KEY: !!RING,
       MISTRAL_API_KEY: !!MIST, RINGOVER_NOS_NUMEROS: !!env.RINGOVER_NOS_NUMEROS,
@@ -91,72 +82,92 @@ export default async function handler(req: any, res: any) {
     }, etapes: [] };
     if (!RING) { diag.erreur = "RINGOVER_API_KEY absente"; return res.status(200).json(diag); }
     const h = { Authorization: RING };
+    const params = new URL(req.url || "http://localhost/api/ringover").searchParams;
+    const pid = (params.get("call_id") || "").trim();
+    const pch = (params.get("channel_id") || "").trim();
+    if (pid) diag.parametre = { call_id: pid, channel_id: pch || null };
     try {
       // 1) derniers appels (doc : GET /v2/calls, pagination limit_count)
+      let dernier: any = null;
+      const mapAppel = (c: any) => ({ call_id: c.call_id, channel_id: c.channel_id, direction: c.direction, from: c.from_number, to: c.to_number, duration: c.duration, start: c.start_time, end: c.end_time, tags: c.tags, disponible: Object.keys(c).slice(0, 40) });
       const r0 = await fetch("https://public-api.ringover.com/v2/calls?limit_count=5", { headers: h });
       diag.etapes.push({ route: "GET /v2/calls?limit_count=5", statut: r0.status });
       if (r0.ok) {
         const j0: any = await r0.json();
         const liste = j0.list || [];
-        diag.derniersAppels = liste.map((c: any) => ({ call_id: c.call_id, channel_id: c.channel_id, direction: c.direction, from: c.from_number, to: c.to_number, duration: c.duration, start: c.start_time, end: c.end_time, tags: c.tags, disponible: Object.keys(c).slice(0, 40) }));
-        const dernier = liste[0];
-        if (dernier) {
-          const cid = String(dernier.call_id);
-          const chid = String(dernier.channel_id || "");
-          // 2) détail d'un appel (doc : get a specific call by ID)
+        diag.derniersAppels = liste.map(mapAppel);
+        dernier = liste[0] || null;
+        if (!dernier) {
+          // liste vide : essai avec filtre date (48 dernières heures)
           await attendre(400);
-          const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + cid, { headers: h });
-          const j1 = r1.ok ? await r1.json() : null;
-          diag.etapes.push({ route: "GET /v2/calls/" + cid, statut: r1.status, champs: j1 ? Object.keys(j1.list ? j1.list[0] || {} : j1) : null });
-          // 3) routes transcription candidates (doc : get a single transcription by call ID)
-          const essaisTranscription = [
-            "https://public-api.ringover.com/v2/calls/" + cid + "/transcription",
-            "https://public-api.ringover.com/v2/transcriptions/" + cid,
-            "https://public-api.ringover.com/v2/transcriptions?call_id=" + cid,
-          ];
-          for (const url of essaisTranscription) {
-            await attendre(400);
-            try {
-              const rt = await fetch(url, { headers: h });
-              const corpsBrut = rt.ok ? (await rt.text()).slice(0, 1200) : "";
-              diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rt.status, corps: corpsBrut });
-            } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+          const depuis = Math.floor(Date.now() / 1000) - 172800;
+          const r0b = await fetch("https://public-api.ringover.com/v2/calls?limit_count=10&date_from=" + depuis, { headers: h });
+          diag.etapes.push({ route: "GET /v2/calls?limit_count=10&date_from=48h", statut: r0b.status });
+          if (r0b.ok) {
+            const lb = (await r0b.json()).list || [];
+            diag.derniersAppels = lb.map(mapAppel);
+            dernier = lb[0] || null;
+          } else {
+            diag.etapes.push({ route: "GET /v2/calls?date_from", corps: (await r0b.text()).slice(0, 400) });
           }
-          // 4) enregistrement par canal (doc : get call recording for a specific channel)
-          if (chid) {
-            const essaisRecording = [
-              "https://public-api.ringover.com/v2/calls/" + chid + "/recording",
-              "https://public-api.ringover.com/v2/calls/" + cid + "/recording",
-            ];
-            for (const url of essaisRecording) {
-              await attendre(400);
-              try {
-                const rr = await fetch(url, { headers: h });
-                diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rr.status, typeContenu: rr.headers.get("content-type") || "" });
-              } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
-            }
-          }
-          // 5) Empower (doc : call details by uuid, summary, call uuid from platform+channel)
-          const essaisEmpower = [
-            "https://public-api.ringover.com/v2/empower/call/" + cid,
-            "https://public-api.ringover.com/v2/empower/call/" + cid + "/summary",
-            "https://public-api.ringover.com/v2/empower/call/" + cid + "/moments",
-          ];
-          if (PLATEFORME_EMPOWER && chid) essaisEmpower.push("https://public-api.ringover.com/v2/empower/call-uuid/platform/" + PLATEFORME_EMPOWER + "/channel/" + chid);
-          for (const url of essaisEmpower) {
-            await attendre(400);
-            try {
-              const re = await fetch(url, { headers: h });
-              const corpsBrut = re.ok ? (await re.text()).slice(0, 1200) : "";
-              diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: re.status, corps: corpsBrut });
-            } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
-          }
-        } else {
-          diag.note = "aucun appel dans l'historique (passe un appel avant de relancer le diagnostic)";
         }
       } else {
-        const corpsBrut = (await r0.text()).slice(0, 400);
-        diag.etapes.push({ route: "GET /v2/calls", statut: r0.status, corps: corpsBrut });
+        diag.etapes.push({ route: "GET /v2/calls", statut: r0.status, corps: (await r0.text()).slice(0, 400) });
+      }
+      // paramètre explicite prioritaire
+      if (pid && !(dernier && String(dernier.call_id) === pid)) dernier = { call_id: pid, channel_id: pch || "" };
+
+      if (dernier) {
+        const cid = String(dernier.call_id);
+        const canaux = [...new Set([String(dernier.channel_id || ""), pch].filter(Boolean))];
+        // 2) détail d'un appel (doc : get a specific call by ID)
+        await attendre(400);
+        const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + cid, { headers: h });
+        const j1 = r1.ok ? await r1.json() : null;
+        diag.etapes.push({ route: "GET /v2/calls/" + cid, statut: r1.status, champs: j1 ? Object.keys(j1.list ? j1.list[0] || {} : j1) : null, corpsBrut: j1 ? JSON.stringify(j1).slice(0, 1500) : null });
+        // 3) routes transcription candidates (doc : get a single transcription by call ID)
+        const essaisTranscription = [
+          "https://public-api.ringover.com/v2/calls/" + cid + "/transcription",
+          "https://public-api.ringover.com/v2/transcriptions/" + cid,
+          "https://public-api.ringover.com/v2/transcriptions?call_id=" + cid,
+          "https://public-api.ringover.com/v2/calls/" + cid + "/transcriptions",
+        ];
+        for (const url of essaisTranscription) {
+          await attendre(400);
+          try {
+            const rt = await fetch(url, { headers: h });
+            const corpsBrut = rt.ok ? (await rt.text()).slice(0, 1200) : "";
+            diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rt.status, corps: corpsBrut });
+          } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+        }
+        // 4) enregistrement par canal (doc : get call recording for a specific channel)
+        for (const chid of canaux) {
+          for (const url of ["https://public-api.ringover.com/v2/calls/" + chid + "/recording", "https://public-api.ringover.com/v2/calls/" + cid + "/recording"]) {
+            await attendre(400);
+            try {
+              const rr = await fetch(url, { headers: h });
+              const corpsBrut = rr.ok ? (await rr.text()).slice(0, 400) : "";
+              diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rr.status, typeContenu: rr.headers.get("content-type") || "", corps: corpsBrut });
+            } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+          }
+        }
+        // 5) Empower (doc : call details by uuid, summary, call uuid from platform+channel)
+        const essaisEmpower = [
+          "https://public-api.ringover.com/v2/empower/call/" + cid,
+          "https://public-api.ringover.com/v2/empower/call/" + cid + "/summary",
+          "https://public-api.ringover.com/v2/empower/call/" + cid + "/moments",
+        ];
+        if (PLATEFORME_EMPOWER && canaux.length) essaisEmpower.push("https://public-api.ringover.com/v2/empower/call-uuid/platform/" + PLATEFORME_EMPOWER + "/channel/" + canaux[0]);
+        for (const url of essaisEmpower) {
+          await attendre(400);
+          try {
+            const re = await fetch(url, { headers: h });
+            const corpsBrut = re.ok ? (await re.text()).slice(0, 1200) : "";
+            diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: re.status, corps: corpsBrut });
+          } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+        }
+      } else {
+        diag.note = "aucun appel dans l'historique et aucun paramètre call_id — visite /api/ringover?call_id=... (le call_id figure dans les logs du webhook) ou passe un appel";
       }
     } catch (e: any) { diag.erreurGlobal = String(e).slice(0, 200); }
     return res.status(200).json(diag);
