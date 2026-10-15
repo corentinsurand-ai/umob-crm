@@ -153,11 +153,24 @@ const trouverClientSheet = (clients: ClientSheet[], nomLegal: string, enseigne: 
     const paren = (c.nom.match(/\(([^)]*)\)/) || [])[1] || "";
     const nL = norme(nomLegal), baseL = norme(nomLegal.split(" (")[0].trim()), ens = norme(enseigne), v = norme(ville), vC = norme(c.ville); // l’INSEE renvoie le nom complet avec l’enseigne entre parenthèses : on compare aussi la base seule
     const villesOK = v === "" || vC === "" || v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v)));
-    return villesOK && ((
-      (baseL !== "" && (baseL === norme(base) || baseL === norme(c.nom))) || (nL !== "" && (nL === norme(base) || nL === norme(c.nom)))
-    ) || (
-      ens !== "" && ens.length >= 5 && (ens === norme(base) || ens === norme(paren) || norme(c.nom).includes(ens))
-    ));
+    // Ville CORROBORÉE : une marque de franchise (Domino's, Pizza Hut…) est
+    // portée par des dizaines de sociétés différentes — elle n'identifie JAMAIS
+    // un client à elle seule. Pour une enseigne de franchise on exige que la
+    // ville de la suggestion soit confirmée par le client Sheet : soit sa
+    // colonne Ville (les deux présentes et compatibles), soit la ville
+    // embarquée dans son « Nom client » (ex. « X (DOMINO'S PIZZA BORDEAUX) »).
+    // Corrige les faux badges du type « FPS12 — Bordeaux » matché sur
+    // « GRAPP (DOMINO'S PIZZA ANGOULEME) » alors que la colonne Ville est vide.
+    const villeStricte = v !== "" && vC !== "" && (v === vC || (v.length >= 4 && vC.length >= 4 && (v.startsWith(vC) || vC.startsWith(v))));
+    const villeDansNom = v !== "" && norme(paren).includes(v);
+    const franchise = franchiseurDepuis(enseigne) !== "";
+    return (villesOK && (
+      (baseL !== "" && (baseL === norme(base) || baseL === norme(c.nom))) || (nL !== "" && (nL === norme(base) || nL === norme(c.nom))) || (ens !== "" && ens.length >= 5 && ens === norme(base))
+    )) || (
+      ens !== "" && ens.length >= 5 && (franchise
+        ? (villeStricte || villeDansNom) && (ens === norme(paren) || norme(c.nom).includes(ens))
+        : villesOK && (ens === norme(paren) || norme(c.nom).includes(ens)))
+    );
   });
 // (b accepte un Contact OU un ContactSimple de l'annuaire : seuls ces 4 champs comptent)
 const memePersonne = (a: { prenom: string; nom: string; email: string; tel: string }, b: { prenom: string; nom: string; email: string; tel: string }) =>
