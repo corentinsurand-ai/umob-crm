@@ -362,8 +362,12 @@ export default async function handler(req: any, res: any) {
       if (OPTIONS_MODE_LIVRAISON.includes(mv)) { e.modeLivraison = mv; m = true; }
     }
     if (extr.besoin) {
+      // UNE seule ligne "Besoin exprimé" par fiche : les replays de l'analyse produisent
+      // des variantes quasi identiques du même besoin — on REMPLACE, on n'accumule jamais.
       const ligne = "Besoin exprimé (appel du " + (a.dateISO || "") + ") : " + String(extr.besoin).slice(0, 300);
-      if (!(e.notes || "").includes(ligne)) { e.notes = (e.notes ? e.notes + "\n" : "") + ligne; m = true; }
+      const autres = String(e.notes || "").split("\n").filter((l: string) => !l.startsWith("Besoin exprimé (") && l.trim());
+      const nouvelles = autres.length ? autres.join("\n") + "\n" + ligne : ligne;
+      if (String(e.notes || "") !== nouvelles) { e.notes = nouvelles; m = true; }
     }
     return m;
   };
