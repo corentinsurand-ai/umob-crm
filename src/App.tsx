@@ -1084,10 +1084,10 @@ function Modale({
               const fusion = [...prev];
               for (const sc of cliS.contacts) {
                 const meme = fusion.find((p) => norme(p.prenom) === norme(sc.prenom) && norme(p.nom) === norme(sc.nom));
-                if (mem) {
-                  if (!mem.tel && sc.tel) mem.tel = sc.tel;
-                  if (!mem.email && sc.email) mem.email = sc.email;
-                  if (!mem.role && sc.role) mem.role = sc.role;
+                if (meme) {
+                  if (!meme.tel && sc.tel) meme.tel = sc.tel;
+                  if (!meme.email && sc.email) meme.email = sc.email;
+                  if (!meme.role && sc.role) meme.role = sc.role;
                 } else {
                   fusion.push({ prenom: sc.prenom, nom: sc.nom, role: sc.role || "Contact (Sheet)", email: sc.email, tel: sc.tel, coche: true });
                 }
