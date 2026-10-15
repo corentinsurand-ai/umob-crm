@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
+import { DevisModule, DevisBrouillon } from "./devis";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
@@ -324,7 +325,7 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
 interface Deal { id: string; nom: string; entrepriseId: string; contactId: string; montant: number; etape: Etape; action: string; echeance: string; notes: string; fait: boolean }
 
 // L'état global de l'application : la base de données entière tient dans cet objet.
-interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[] }
+interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[]; devis?: DevisBrouillon | null }
 
 // Couleur officielle de chaque étape (réutilisée partout : kanban, badges, fiches…).
 const ETAPES: { nom: Etape; couleur: string }[] = [
@@ -3719,7 +3720,7 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
 
 /* ============================== APP ============================== */
 
-type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda";
+type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis";
 // Clé localStorage de la dernière page visitée (vue + fiche ouverte) : un
 // refresh (F5 / Ctrl+F5) doit REVENIR sur la page où l'on était, pas sur l'accueil.
 const CLE_NAV = "umob-crm-nav";
@@ -4023,7 +4024,7 @@ export default function App() {
   };
 
   // Icônes de la navigation (barre latérale + version mobile).
-  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅" };
+  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾" };
 
   // Les vues principales, dans l'ordre de la barre latérale.
   const onglets = [
@@ -4033,6 +4034,7 @@ export default function App() {
     ["deals", "Deals"],
     ["pipeline", "Pipeline"],
     ["agenda", "Agenda"],
+    ["devis", "Devis"],
   ] as const;
 
   // Le bouton « + » du header crée l'objet cohérent avec la vue affichée.
@@ -4094,11 +4096,13 @@ export default function App() {
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Rechercher…"
               className="w-44 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+            {vue !== "devis" && (
             <button onClick={() => setCible(boutonAjout[vue])}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
               + {vue === "entreprises" ? "Entreprise" : vue === "contacts" ? "Contact" : "Deal"}
             </button>
+            )}
           </div>
         </div>
         {/* Navigation mobile : chips défilables (équivalent de la sidebar). */}
@@ -4138,6 +4142,7 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
+            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} />}
           </>
         )}
       </main>
