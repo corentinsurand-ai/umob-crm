@@ -13,7 +13,7 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 //   entreprises (ex. Pierre Piron, gérant de 15 Domino's = 1 contact, 15 liens)
 // Entreprise ←(entrepriseId)─ Deal    : un deal est rattaché à une entreprise…
 // Contact    ←(contactId)─── Deal    : …et à un contact précis de cette entreprise
-// ── Un CONTRAT Locam individuel (source : lignes du Sheet « Infos Service
+// ── Un CONTRAT individuel (source : lignes du Sheet « Infos Service
 // Client », regroupées par n° de contrat — une ligne du Sheet = un scooter,
 // donc un contrat peut couvrir plusieurs immatriculations). Un client à 2
 // contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRE,
@@ -21,9 +21,9 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // contrat réel. ──
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
-  // ── Contrat & flotte (source : Sheet « Infos Service Client » / Locam) ──
+  // ── Contrat & flotte (source : Sheet « Infos Service Client ») ──
   // Renseignés pour les SOCIÉTÉS CLIENTES : pack choisi, période du contrat,
-  // nombre de véhicules, n° de contrat Locam, immatriculations. Comme tous les
+  // nombre de véhicules, immatriculations. Comme tous les
   // champs auto-remplis : modifiables, et vides si la source ne sait rien.
   pack: string; dateDebut: string; dateFin: string; nbVehicules: string; contratLocam: string; immatriculations: string;
   // ── Modèle(s) de scooter U'mob loué(s) par le client (Infinity Pro /
@@ -31,7 +31,7 @@ interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: 
   // Sheet « Infos Service Client » ; sélection manuelle sinon (jamais
   // d'invention, cases toujours modifiables). ──
   modeles: string[];
-  // ── Contrats individuels (un bloc par contrat Locam). Les anciennes fiches
+  // ── Contrats individuels (un bloc par contrat). Les anciennes fiches
   // agrégées (pack/dates uniques) sont migrées en 1 contrat à l'ouverture. ──
   contrats: ContratLigne[];
   // ── Risque SAV (source : colonnes Statut_risque_client / Impayes /
@@ -122,7 +122,7 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
     }
     for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
-    // ── Regroupement par CONTRAT (n° Locam) : plusieurs lignes du Sheet
+    // ── Regroupement par CONTRAT (n° interne, jamais affiché) : plusieurs lignes du Sheet
     // partagent le même n° (une ligne par scooter). ──
     for (const c of clients) {
       const groupes = new Map<string, ContratLigne>();
@@ -223,8 +223,13 @@ const modeleDepuis = (p: string): string => {
   const t = MODELE_DEPUIS.find(([k]) => n.includes(k));
   return t ? t[1] : "";
 };
+// Affichage lisible d'un pack : on retire le préfixe « Modèle » et on place
+// le « + » DERRIÈRE la valeur — « Modèle Confort + 48 » → « Confort 48+ »,
+// « Modèle Zen 36 » → « Zen 36 ». Ne touche pas aux données, juste à l'affichage.
+const affPack = (p: string): string =>
+  (p || "").replace(/^Mod[eè]le\s+/i, "").replace(/\s*\+\s*([0-9]+)/, " $1+").replace(/\s+/g, " ").trim();
 // ── Fusion des contrats individuels vers les champs agrégés historiques
-// (pack, période globale min/max, n° Locam, immatriculations, nb véhicules) :
+// (pack, période globale min/max, immatriculations, nb véhicules) :
 // la fiche garde ses compteurs de synthèse, mais la VÉRITÉ vit dans
 // `contrats` — un bloc par contrat avec ses propres dates. ──
 const fusionnerContrats = (cs: ContratLigne[]): { pack: string; dateDebut: string; dateFin: string; nbVehicules: string; contratLocam: string; immatriculations: string } => {
@@ -238,7 +243,7 @@ const fusionnerContrats = (cs: ContratLigne[]): { pack: string; dateDebut: strin
   const immatsUniques = uniq(v.flatMap((c) => (c.immats || "").split(",")));
   return {
     pack: uniq(v.map((c) => c.pack)).join(" · "),
-    contratLocam: uniq(v.map((c) => c.num)).join(", "),
+    contratLocam: "",
     dateDebut: debuts.length ? fmt(Math.min(...debuts)) : "",
     dateFin: fins.length ? fmt(Math.max(...fins)) : "",
     immatriculations: immatsUniques.join(", "),
@@ -303,9 +308,9 @@ const SEED: Etat = {
     { id: "e8", statut: "Suspect", nom: "Wok City", nomCommercial: "Wok City — Lyon 8e", secteur: "Restauration", ville: "Lyon 8e", site: "wok-city.fr", tel: "04 78 00 55 71", franchiseur: "Indépendant", modeLivraison: "Scooter électrique", activite: "Restauration rapide", notes: "" },
     { id: "e9", statut: "Suspect", nom: "S.A.R.L DP Lyon 3", nomCommercial: "Domino's Pizza — Lyon 3e", secteur: "Restauration", ville: "Lyon 3e", site: "dominos.fr", tel: "04 78 55 21 09", franchiseur: "Domino's Pizza", modeLivraison: "Scooter électrique", activite: "Restauration rapide", notes: "" },
     /* ════ CLIENTS RÉELS — importés du Sheet « Infos Service Client » (14/10/2026) ════
-       Chaque ligne = un code client du Sheet (contrats Locam) : pack choisi,
+       Chaque ligne = un code client du Sheet (contrats) : pack choisi,
        période (min début → max fin des contrats du client), nombre de véhicules
-       uniques, n° de contrat(s) Locam, immatriculations. Mode de livraison
+       uniques, immatriculations. Mode de livraison
        « Scooter électrique » pour tous : c'est le produit réellement loué
        (COMPACT PRO / INFINITY PRO / S4-S5 Delivery = scooters U'mob, colonne
        Libellé Produit du Sheet). Activité renseignée d'après l'enseigne
@@ -313,68 +318,68 @@ const SEED: Etat = {
        alimenté par les colonnes Statut_risque_client / Impayes /
        Procedure_collective du Sheet. Franchiseur laissé VIDE : le Sheet ne
        le connaît pas (règle anti-fausses-infos). Contacts réels rattachés. */
-    { id: "e10", statut: "Client", nom: "GAF", nomCommercial: "Boîte à Pizza Annemasse", secteur: "Restauration", ville: "Annemasse", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral + 48", dateDebut: "15/03/2024", dateFin: "05/04/2028", nbVehicules: "2", contratLocam: "CO01559", immatriculations: "GQ-591-NL, GQ-692-NL", risque: "Impayé", notes: "Code client C0010 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
-    { id: "e11", statut: "Client", nom: "LA GROTTA AZZURA", nomCommercial: "La Grotte", secteur: "Restauration", ville: "Saint-Étienne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration traditionnelle", pack: "Modèle Intégral + 48", dateDebut: "26/06/2024", dateFin: "10/08/2028", nbVehicules: "3", contratLocam: "CO01677", immatriculations: "GX-881-RL, GX-801-RL, GX-742-RL", notes: "Code client C0033 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e12", statut: "Client", nom: "JMBS", nomCommercial: "Cosmo Sushi", secteur: "Restauration", ville: "Mandelieu-la-Napoule", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral 48 · Modèle Intégral + 48", dateDebut: "26/03/2021", dateFin: "10/09/2027", nbVehicules: "4", contratLocam: "CO01398, CO01397", immatriculations: "FY-042-CC, GH-367-WG, GH-412-WG, GH-441-WG", notes: "Code client C0046 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Fréjus (JHE Fréjus Sushi, mêmes gérants)." },
-    { id: "e13", statut: "Client", nom: "NKM SARL", nomCommercial: "Dol's Pizza", secteur: "Restauration", ville: "Dole", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "13/01/2025", dateFin: "29/08/2030", nbVehicules: "8", contratLocam: "CO01844, CO02220", immatriculations: "HA-008-QX, HA-035-QX, HA-905-QW, HA-945-QW, HA-974-QW, HL-239-NP, HL-209-NP, HL-281-NP", notes: "Code client C0071 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e14", statut: "Client", nom: "H2 ASSOCIÉS", nomCommercial: "Pizza All Over World", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "01/05/2023", dateFin: "30/06/2027", nbVehicules: "2", contratLocam: "CO02104", immatriculations: "GN-036-XF, GN-082-XF", notes: "Code client C0109 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e15", statut: "Client", nom: "ALVAREZ MARC", nomCommercial: "Bella Pizza", secteur: "Restauration", ville: "Thonon-les-Bains", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/10/2024", dateFin: "30/11/2028", nbVehicules: "1", contratLocam: "CO01765", immatriculations: "GZ-706-MH", notes: "Code client C0111 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e16", statut: "Client", nom: "SUSHI NOGENT DÉVELOPPEMENT", nomCommercial: "Sushi Shop", secteur: "Restauration", ville: "Nogent-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "22/02/2023", dateFin: "10/04/2027", nbVehicules: "4", contratLocam: "CO01206", immatriculations: "GM-463-FL, GM-490-FL, GM-510-FL, GM-526-FL", notes: "Code client C0113 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e17", statut: "Client", nom: "AVENIR PIZZA", nomCommercial: "Pizza Time", secteur: "Restauration", ville: "Le Bourget", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "23/02/2023", dateFin: "09/04/2027", nbVehicules: "2", contratLocam: "CO00605", immatriculations: "GM-669-FZ, GM-703-FZ", notes: "Code client C0123 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e18", statut: "Client", nom: "STYLE BURGER", nomCommercial: "Delim's Burger", secteur: "Restauration", ville: "Épinay-sur-Seine", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "10/06/2021", dateFin: "30/08/2027", nbVehicules: "3", contratLocam: "CO00645, CO01159", immatriculations: "FZ-440-WL, GQ-416-AJ, GQ-485-AJ", notes: "Code client C0135 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e19", statut: "Client", nom: "DOCRIVE", nomCommercial: "Class'Croute Paris 19", secteur: "Restauration", ville: "Paris", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 36 · Modèle Confort + 48", dateDebut: "01/01/2018", dateFin: "08/03/2027", nbVehicules: "4", contratLocam: "CO00923, CO00922", immatriculations: "ES-134-WF, ES-138-WF, ES-139-WF, GL-082-XH", risque: "Procédure collective", notes: "Code client C0143 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e20", statut: "Client", nom: "VIGILANTI JEAN CLAUDE", nomCommercial: "Fratelli Pizzas", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "12/11/2025", dateFin: "10/02/2030", nbVehicules: "2", contratLocam: "CO02086", immatriculations: "HG-937-LK, HG-968-LK", notes: "Code client C0152 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e21", statut: "Client", nom: "TTF CORPORATION", nomCommercial: "Pizza Hut", secteur: "Restauration", ville: "Pontault-Combault", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "28/09/2023", dateFin: "21/07/2030", nbVehicules: "4", contratLocam: "CO01357, CO01494, CO02192", immatriculations: "GR-862-JA, GR-825-JA, GT-902-JA, HK-231-TS", notes: "Code client C0162 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e22", statut: "Client", nom: "BON PLAN", nomCommercial: "Spidzza Grand Mère", secteur: "Restauration", ville: "Valence", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "VP · Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "01/03/2019", dateFin: "20/04/2030", nbVehicules: "5", contratLocam: "CO00075, CO01162, CO02136", immatriculations: "FD-069-TL, FJ-579-KQ, GA-162-TM, FB-680-XL, HH-138-TT", risque: "Impayé", notes: "Code client C0199 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
-    { id: "e23", statut: "Client", nom: "CCR", nomCommercial: "Mister Pizza", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "12/11/2025", dateFin: "12/05/2030", nbVehicules: "5", contratLocam: "CO02085, CO02155", immatriculations: "HG-720-LT, HG-682-LT, HG-640-LT, HJ-902-PJ, HJ-553-PJ", notes: "Code client C0210 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e24", statut: "Client", nom: "AHI (AHIKA) LYON 7", nomCommercial: "", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral + 48", dateDebut: "16/07/2024", dateFin: "15/08/2028", nbVehicules: "1", contratLocam: "CO01694", immatriculations: "GY-681-EE", notes: "Code client C0212 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e25", statut: "Client", nom: "MAHE.COM", nomCommercial: "Pizza Le 33", secteur: "Restauration", ville: "Grasse", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "20/09/2021", dateFin: "30/09/2025", nbVehicules: "4", contratLocam: "CO00114", immatriculations: "GB-389-RF, GB-766-RF, GB-156-RG, GB-279-RG", notes: "Code client C0213 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e26", statut: "Client", nom: "RICA", nomCommercial: "Mister Pizza", secteur: "Restauration", ville: "Le Cannet", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "11/01/2024", dateFin: "30/05/2030", nbVehicules: "12", contratLocam: "CO01506, CO01943, CO02099, CO02164", immatriculations: "GT-150-NE, HC-881-WP, HC-812-WP, HG-191-SY, HG-230-SY, HG-148-SY, HG-094-SY, HG-025-SY, HG-935-SX, HG-851-SX, HJ-564-XC, HJ-486-XC", notes: "Code client C0229 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Cannes." },
-    { id: "e27", statut: "Client", nom: "JSD SUSHIS", nomCommercial: "Sushi Or Not Sushi", secteur: "Restauration", ville: "Marseille", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "20/12/2018", dateFin: "20/10/2023", nbVehicules: "1", contratLocam: "CO01322", immatriculations: "FB-799-SD", risque: "Impayé + Procédure collective", notes: "Code client C0232 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e28", statut: "Client", nom: "TCHIKO", nomCommercial: "Pizza Time Poissy", secteur: "Restauration", ville: "Poissy", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "07/03/2022", dateFin: "20/12/2028", nbVehicules: "4", contratLocam: "CO00879, CO01775", immatriculations: "GB-027-QV, GZ-604-WC, GZ-578-WC, GZ-552-WC", notes: "Code client C0245 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e29", statut: "Client", nom: "CARNOT", nomCommercial: "Mister Pizza Cannes", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/02/2025", dateFin: "28/03/2029", nbVehicules: "15", contratLocam: "CO01875", immatriculations: "HB-023-HJ, HB-051-HJ, HB-091-HJ, HB-130-HJ, HB-171-HJ, HB-223-HJ, HB-676-HH, HB-720-HH, HB-757-HH, HB-798-HH, HB-831-HH, HB-961-HH, HB-297-HJ, HB-450-HJ, HB-928-HH", notes: "Code client C0251 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e30", statut: "Client", nom: "ADG", nomCommercial: "Mister Pizza Cannes", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "26/04/2023", dateFin: "27/02/2029", nbVehicules: "8", contratLocam: "CO00993, CO01573, CO01861", immatriculations: "GN-245-LJ, GV-228-TW, HB-344-MM, HB-314-MM, HB-276-MM, HB-257-MM, HB-216-MM, HB-162-MM", notes: "Code client C0252 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e31", statut: "Client", nom: "VTN.INC", nomCommercial: "La Boîte à Pizza Muret", secteur: "Restauration", ville: "Muret", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "30/04/2024", dateFin: "20/06/2028", nbVehicules: "3", contratLocam: "CO01611", immatriculations: "GW-563-LK, GW-627-LK, GW-695-LK", notes: "Code client C0256 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e32", statut: "Client", nom: "FRANK", nomCommercial: "Pizza Time Franconville", secteur: "Restauration", ville: "Franconville", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 36", dateDebut: "26/06/2024", dateFin: "31/07/2029", nbVehicules: "2", contratLocam: "CO01671, CO02201", immatriculations: "GX-634-QR, HK-970-ZE", notes: "Code client C0259 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e33", statut: "Client", nom: "DAFNEY", nomCommercial: "Pizza Time St-Ouen-l'Aumône", secteur: "Restauration", ville: "Saint-Ouen-l'Aumône", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "11/02/2019", dateFin: "30/10/2026", nbVehicules: "3", contratLocam: "CO00904, CO00903", immatriculations: "FD-205-SB, GJ-828-KV, GJ-849-KV", notes: "Code client C0260 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e34", statut: "Client", nom: "LOIRE SUSHI", nomCommercial: "Eat Sushi", secteur: "Restauration", ville: "Saint-Étienne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral 48 · Modèle Intégral + 48", dateDebut: "18/05/2022", dateFin: "28/02/2028", nbVehicules: "3", contratLocam: "CO00596, CO01522", immatriculations: "GG-700-HQ, GT-109-SW, GT-083-SW", notes: "Code client C0268 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e35", statut: "Client", nom: "CHEZ PINO", nomCommercial: "", secteur: "Restauration", ville: "Valence", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "28/03/2024", dateFin: "02/09/2030", nbVehicules: "3", contratLocam: "CO01572, CO02222", immatriculations: "GV-297-YF, HL-892-NN, HL-811-NN", notes: "Code client C0270 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Portes-lès-Valence." },
-    { id: "e36", statut: "Client", nom: "SEBA", nomCommercial: "Pizza Time Champs-sur-Marne", secteur: "Restauration", ville: "Champs-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "16/01/2025", dateFin: "15/02/2029", nbVehicules: "2", contratLocam: "CO01854", immatriculations: "HB-693-FB, HB-738-FB", notes: "Code client C0272 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e37", statut: "Client", nom: "ALLO PIZZA KELLY BURGER", nomCommercial: "", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "10/02/2025", dateFin: "09/03/2029", nbVehicules: "4", contratLocam: "CO01889", immatriculations: "HB-423-SK, HB-465-SK, HB-497-SK, HB-532-SK", notes: "Code client C0281 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e38", statut: "Client", nom: "SIMHA 7", nomCommercial: "Zapi Sushi", secteur: "Restauration", ville: "Nogent-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "15/05/2026", dateFin: "14/07/2030", nbVehicules: "2", contratLocam: "CO02190", immatriculations: "HK-666-SH, HK-773-SH", notes: "Code client C0284 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e39", statut: "Client", nom: "MORENO US", nomCommercial: "Mega Pizza", secteur: "Restauration", ville: "Metz", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/06/2023", dateFin: "20/02/2028", nbVehicules: "2", contratLocam: "CO01114, CO01507", immatriculations: "GH-141-LA, GT-807-KQ", notes: "Code client C0297 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e40", statut: "Client", nom: "KEVIN", nomCommercial: "Indian Star", secteur: "Restauration", ville: "Beausoleil", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/07/2024", dateFin: "20/12/2029", nbVehicules: "3", contratLocam: "CO01688, CO02065", immatriculations: "GX-192-TC, HG-776-DS, HG-801-DS", notes: "Code client C0306 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e41", statut: "Client", nom: "CHAMEROY", nomCommercial: "L'Antiboise", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48 · Modèle Confort + 48", dateDebut: "25/06/2024", dateFin: "30/12/2029", nbVehicules: "3", contratLocam: "CO01659, CO02067", immatriculations: "GX-912-FA, HG-722-EM, HG-635-EM", notes: "Code client C0307 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e42", statut: "Client", nom: "M BAREK", nomCommercial: "Le D'Lys Tacos", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "28/09/2023", dateFin: "20/10/2029", nbVehicules: "3", contratLocam: "CO01356, CO02018", immatriculations: "GR-073-DR, HE-340-SW, HE-385-SW", notes: "Code client C0308 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e43", statut: "Client", nom: "MA-ROSE", nomCommercial: "Pizza Time Taverny", secteur: "Restauration", ville: "Taverny", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 36", dateDebut: "24/10/2024", dateFin: "23/11/2027", nbVehicules: "2", contratLocam: "CO01768", immatriculations: "GZ-020-HH, GZ-936-HG", notes: "Code client C0309 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e44", statut: "Client", nom: "LES 2 FRÈRES", nomCommercial: "Specialitaly", secteur: "Restauration", ville: "Menton", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "27/04/2023", dateFin: "27/05/2027", nbVehicules: "2", contratLocam: "CO01229", immatriculations: "GN-497-LH, GN-532-LH", risque: "À risque", notes: "Code client C0320 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
-    { id: "e45", statut: "Client", nom: "GMA", nomCommercial: "La Boîte à Pizza Cugnaux", secteur: "Restauration", ville: "Cugnaux", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "25/04/2019", dateFin: "30/04/2023", nbVehicules: "4", contratLocam: "CO00209", immatriculations: "FF-967-QV, FF-043-QW, FF-134-QW, FF-223-QW", risque: "Procédure collective", notes: "Code client C0321 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e46", statut: "Client", nom: "SUSHI WAKO", nomCommercial: "Wako", secteur: "Restauration", ville: "Le Vésinet", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 48", dateDebut: "15/09/2020", dateFin: "14/09/2024", nbVehicules: "1", contratLocam: "CO00749", immatriculations: "FS-603-RR", risque: "À risque", notes: "Code client C0336 — importé du Sheet « Infos Service Client » (14/10/2026). Autres sites : Nanterre, Puteaux. ⚠️ À risque (source Sheet SAV)." },
-    { id: "e47", statut: "Client", nom: "MER", nomCommercial: "Mister Pizza Nice Californie", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "15/06/2026", dateFin: "14/08/2030", nbVehicules: "10", contratLocam: "CO02209", immatriculations: "HL-992-FA, HL-072-FB, HL-034-FB, HL-949-FA, HL-334-FB, HL-129-FB, HL-491-FB, HL-573-FB, HL-420-FB, HL-199-FB", notes: "Code client C0338 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Vence." },
-    { id: "e48", statut: "Client", nom: "MEV", nomCommercial: "Allo Japonais", secteur: "Restauration", ville: "Poitiers", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48 · Modèle Zen + 50", dateDebut: "28/12/2023", dateFin: "25/10/2030", nbVehicules: "3", contratLocam: "CO01490, CO02249", immatriculations: "GT-511-DN, HM-129-KS, HM-116-KS", risque: "À risque", notes: "Code client C0339 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
-    { id: "e49", statut: "Client", nom: "STAR CHICKEN", nomCommercial: "", secteur: "Restauration", ville: "Albi", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/06/2023", dateFin: "22/06/2027", nbVehicules: "1", contratLocam: "CO01107", immatriculations: "GH-258-SN", risque: "Impayé", notes: "Code client C0350 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e50", statut: "Client", nom: "COSTES RESTAURATION", nomCommercial: "Tutti Pizza — Montauban Voltaire", secteur: "Restauration", ville: "Montauban", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "13/01/2025", dateFin: "02/10/2030", nbVehicules: "2", contratLocam: "CO01845, CO02239", immatriculations: "HA-866-YL, HM-050-CT", notes: "Code client C0359 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e51", statut: "Client", nom: "SYSM", nomCommercial: "Mister Pizza Mandelieu", secteur: "Restauration", ville: "Mandelieu-la-Napoule", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "30/06/2023", dateFin: "20/01/2030", nbVehicules: "9", contratLocam: "CO01361, CO02082", immatriculations: "GQ-937-BF, GQ-892-BF, HG-633-HG, HG-658-HG, HG-686-HG, HG-711-HG, HG-736-HG, HG-765-HG, HG-605-HG", notes: "Code client C0360 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e52", statut: "Client", nom: "JAIVASAVI", nomCommercial: "La Galaxie", secteur: "Restauration", ville: "Saint-Vallier-de-Thiey", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "03/04/2025", dateFin: "20/05/2029", nbVehicules: "1", contratLocam: "CO01924", immatriculations: "HC-338-QQ", notes: "Code client C0361 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e53", statut: "Client", nom: "ALIDA", nomCommercial: "Jassmin Pizza", secteur: "Restauration", ville: "Villecresnes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "10/10/2019", dateFin: "10/10/2023", nbVehicules: "1", contratLocam: "CO00813", immatriculations: "FK-829-NE", risque: "Impayé", notes: "Code client C0362 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e54", statut: "Client", nom: "BOBUN BOULEVARD", nomCommercial: "", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "07/11/2022", dateFin: "20/04/2027", nbVehicules: "1", contratLocam: "CO01438", immatriculations: "GM-279-EZ", risque: "Impayé", notes: "Code client C0368 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
-    { id: "e55", statut: "Client", nom: "ABDELHAFID GAZZAH", nomCommercial: "Stop Pizza 2", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48", dateDebut: "16/02/2023", dateFin: "20/03/2027", nbVehicules: "1", contratLocam: "CO01386", immatriculations: "GM-957-CW", notes: "Code client C0376 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e56", statut: "Client", nom: "BING ME", nomCommercial: "Arigato", secteur: "Restauration", ville: "Bruges", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 48 · Modèle Zen + 48", dateDebut: "10/08/2022", dateFin: "10/01/2028", nbVehicules: "2", contratLocam: "CO00839, CO01467", immatriculations: "GH-698-YA, GS-034-RA", risque: "À risque", notes: "Code client C0387 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
-    { id: "e57", statut: "Client", nom: "AEW CANNES", nomCommercial: "Asiakeo", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "22/07/2022", dateFin: "22/08/2026", nbVehicules: "1", contratLocam: "CO00254", immatriculations: "GH-399-PH", notes: "Code client C0388 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e58", statut: "Client", nom: "NOSANTOKUNOSUSHIS", nomCommercial: "Samouraï Sushi Dijon", secteur: "Restauration", ville: "Dijon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/06/2024", dateFin: "20/07/2028", nbVehicules: "1", contratLocam: "CO01644", immatriculations: "GX-913-FZ", notes: "Code client C0392 — importé du Sheet « Infos Service Client » (14/10/2026)." },
-    { id: "e59", statut: "Client", nom: "AU FOURNIL DE STEPH", nomCommercial: "Allo Pizza Sète", secteur: "Restauration", ville: "Sète", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "05/02/2026", dateFin: "04/04/2030", nbVehicules: "2", contratLocam: "CO02141", immatriculations: "HH-119-ZQ, HH-179-ZQ", notes: "Code client C0397 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e10", statut: "Client", nom: "GAF", nomCommercial: "Boîte à Pizza Annemasse", secteur: "Restauration", ville: "Annemasse", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral + 48", dateDebut: "15/03/2024", dateFin: "05/04/2028", nbVehicules: "2", contratLocam: "", immatriculations: "GQ-591-NL, GQ-692-NL", risque: "Impayé", notes: "Code client C0010 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
+    { id: "e11", statut: "Client", nom: "LA GROTTA AZZURA", nomCommercial: "La Grotte", secteur: "Restauration", ville: "Saint-Étienne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration traditionnelle", pack: "Modèle Intégral + 48", dateDebut: "26/06/2024", dateFin: "10/08/2028", nbVehicules: "3", contratLocam: "", immatriculations: "GX-881-RL, GX-801-RL, GX-742-RL", notes: "Code client C0033 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e12", statut: "Client", nom: "JMBS", nomCommercial: "Cosmo Sushi", secteur: "Restauration", ville: "Mandelieu-la-Napoule", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral 48 · Modèle Intégral + 48", dateDebut: "26/03/2021", dateFin: "10/09/2027", nbVehicules: "4", contratLocam: "", immatriculations: "FY-042-CC, GH-367-WG, GH-412-WG, GH-441-WG", notes: "Code client C0046 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Fréjus (JHE Fréjus Sushi, mêmes gérants)." },
+    { id: "e13", statut: "Client", nom: "NKM SARL", nomCommercial: "Dol's Pizza", secteur: "Restauration", ville: "Dole", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "13/01/2025", dateFin: "29/08/2030", nbVehicules: "8", contratLocam: "", immatriculations: "HA-008-QX, HA-035-QX, HA-905-QW, HA-945-QW, HA-974-QW, HL-239-NP, HL-209-NP, HL-281-NP", notes: "Code client C0071 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e14", statut: "Client", nom: "H2 ASSOCIÉS", nomCommercial: "Pizza All Over World", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "01/05/2023", dateFin: "30/06/2027", nbVehicules: "2", contratLocam: "", immatriculations: "GN-036-XF, GN-082-XF", notes: "Code client C0109 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e15", statut: "Client", nom: "ALVAREZ MARC", nomCommercial: "Bella Pizza", secteur: "Restauration", ville: "Thonon-les-Bains", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/10/2024", dateFin: "30/11/2028", nbVehicules: "1", contratLocam: "", immatriculations: "GZ-706-MH", notes: "Code client C0111 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e16", statut: "Client", nom: "SUSHI NOGENT DÉVELOPPEMENT", nomCommercial: "Sushi Shop", secteur: "Restauration", ville: "Nogent-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "22/02/2023", dateFin: "10/04/2027", nbVehicules: "4", contratLocam: "", immatriculations: "GM-463-FL, GM-490-FL, GM-510-FL, GM-526-FL", notes: "Code client C0113 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e17", statut: "Client", nom: "AVENIR PIZZA", nomCommercial: "Pizza Time", secteur: "Restauration", ville: "Le Bourget", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "23/02/2023", dateFin: "09/04/2027", nbVehicules: "2", contratLocam: "", immatriculations: "GM-669-FZ, GM-703-FZ", notes: "Code client C0123 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e18", statut: "Client", nom: "STYLE BURGER", nomCommercial: "Delim's Burger", secteur: "Restauration", ville: "Épinay-sur-Seine", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "10/06/2021", dateFin: "30/08/2027", nbVehicules: "3", contratLocam: "", immatriculations: "FZ-440-WL, GQ-416-AJ, GQ-485-AJ", notes: "Code client C0135 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e19", statut: "Client", nom: "DOCRIVE", nomCommercial: "Class'Croute Paris 19", secteur: "Restauration", ville: "Paris", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 36 · Modèle Confort + 48", dateDebut: "01/01/2018", dateFin: "08/03/2027", nbVehicules: "4", contratLocam: "", immatriculations: "ES-134-WF, ES-138-WF, ES-139-WF, GL-082-XH", risque: "Procédure collective", notes: "Code client C0143 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e20", statut: "Client", nom: "VIGILANTI JEAN CLAUDE", nomCommercial: "Fratelli Pizzas", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "12/11/2025", dateFin: "10/02/2030", nbVehicules: "2", contratLocam: "", immatriculations: "HG-937-LK, HG-968-LK", notes: "Code client C0152 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e21", statut: "Client", nom: "TTF CORPORATION", nomCommercial: "Pizza Hut", secteur: "Restauration", ville: "Pontault-Combault", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "28/09/2023", dateFin: "21/07/2030", nbVehicules: "4", contratLocam: "", immatriculations: "GR-862-JA, GR-825-JA, GT-902-JA, HK-231-TS", notes: "Code client C0162 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e22", statut: "Client", nom: "BON PLAN", nomCommercial: "Spidzza Grand Mère", secteur: "Restauration", ville: "Valence", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "VP · Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "01/03/2019", dateFin: "20/04/2030", nbVehicules: "5", contratLocam: "", immatriculations: "FD-069-TL, FJ-579-KQ, GA-162-TM, FB-680-XL, HH-138-TT", risque: "Impayé", notes: "Code client C0199 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
+    { id: "e23", statut: "Client", nom: "CCR", nomCommercial: "Mister Pizza", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "12/11/2025", dateFin: "12/05/2030", nbVehicules: "5", contratLocam: "", immatriculations: "HG-720-LT, HG-682-LT, HG-640-LT, HJ-902-PJ, HJ-553-PJ", notes: "Code client C0210 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e24", statut: "Client", nom: "AHI (AHIKA) LYON 7", nomCommercial: "", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral + 48", dateDebut: "16/07/2024", dateFin: "15/08/2028", nbVehicules: "1", contratLocam: "", immatriculations: "GY-681-EE", notes: "Code client C0212 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e25", statut: "Client", nom: "MAHE.COM", nomCommercial: "Pizza Le 33", secteur: "Restauration", ville: "Grasse", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "20/09/2021", dateFin: "30/09/2025", nbVehicules: "4", contratLocam: "", immatriculations: "GB-389-RF, GB-766-RF, GB-156-RG, GB-279-RG", notes: "Code client C0213 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e26", statut: "Client", nom: "RICA", nomCommercial: "Mister Pizza", secteur: "Restauration", ville: "Le Cannet", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "11/01/2024", dateFin: "30/05/2030", nbVehicules: "12", contratLocam: "", immatriculations: "GT-150-NE, HC-881-WP, HC-812-WP, HG-191-SY, HG-230-SY, HG-148-SY, HG-094-SY, HG-025-SY, HG-935-SX, HG-851-SX, HJ-564-XC, HJ-486-XC", notes: "Code client C0229 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Cannes." },
+    { id: "e27", statut: "Client", nom: "JSD SUSHIS", nomCommercial: "Sushi Or Not Sushi", secteur: "Restauration", ville: "Marseille", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "20/12/2018", dateFin: "20/10/2023", nbVehicules: "1", contratLocam: "", immatriculations: "FB-799-SD", risque: "Impayé + Procédure collective", notes: "Code client C0232 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e28", statut: "Client", nom: "TCHIKO", nomCommercial: "Pizza Time Poissy", secteur: "Restauration", ville: "Poissy", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "07/03/2022", dateFin: "20/12/2028", nbVehicules: "4", contratLocam: "", immatriculations: "GB-027-QV, GZ-604-WC, GZ-578-WC, GZ-552-WC", notes: "Code client C0245 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e29", statut: "Client", nom: "CARNOT", nomCommercial: "Mister Pizza Cannes", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/02/2025", dateFin: "28/03/2029", nbVehicules: "15", contratLocam: "", immatriculations: "HB-023-HJ, HB-051-HJ, HB-091-HJ, HB-130-HJ, HB-171-HJ, HB-223-HJ, HB-676-HH, HB-720-HH, HB-757-HH, HB-798-HH, HB-831-HH, HB-961-HH, HB-297-HJ, HB-450-HJ, HB-928-HH", notes: "Code client C0251 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e30", statut: "Client", nom: "ADG", nomCommercial: "Mister Pizza Cannes", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48 · Modèle Confort + 48", dateDebut: "26/04/2023", dateFin: "27/02/2029", nbVehicules: "8", contratLocam: "", immatriculations: "GN-245-LJ, GV-228-TW, HB-344-MM, HB-314-MM, HB-276-MM, HB-257-MM, HB-216-MM, HB-162-MM", notes: "Code client C0252 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e31", statut: "Client", nom: "VTN.INC", nomCommercial: "La Boîte à Pizza Muret", secteur: "Restauration", ville: "Muret", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "30/04/2024", dateFin: "20/06/2028", nbVehicules: "3", contratLocam: "", immatriculations: "GW-563-LK, GW-627-LK, GW-695-LK", notes: "Code client C0256 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e32", statut: "Client", nom: "FRANK", nomCommercial: "Pizza Time Franconville", secteur: "Restauration", ville: "Franconville", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 36", dateDebut: "26/06/2024", dateFin: "31/07/2029", nbVehicules: "2", contratLocam: "", immatriculations: "GX-634-QR, HK-970-ZE", notes: "Code client C0259 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e33", statut: "Client", nom: "DAFNEY", nomCommercial: "Pizza Time St-Ouen-l'Aumône", secteur: "Restauration", ville: "Saint-Ouen-l'Aumône", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "11/02/2019", dateFin: "30/10/2026", nbVehicules: "3", contratLocam: "", immatriculations: "FD-205-SB, GJ-828-KV, GJ-849-KV", notes: "Code client C0260 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e34", statut: "Client", nom: "LOIRE SUSHI", nomCommercial: "Eat Sushi", secteur: "Restauration", ville: "Saint-Étienne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Intégral 48 · Modèle Intégral + 48", dateDebut: "18/05/2022", dateFin: "28/02/2028", nbVehicules: "3", contratLocam: "", immatriculations: "GG-700-HQ, GT-109-SW, GT-083-SW", notes: "Code client C0268 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e35", statut: "Client", nom: "CHEZ PINO", nomCommercial: "", secteur: "Restauration", ville: "Valence", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "28/03/2024", dateFin: "02/09/2030", nbVehicules: "3", contratLocam: "", immatriculations: "GV-297-YF, HL-892-NN, HL-811-NN", notes: "Code client C0270 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Portes-lès-Valence." },
+    { id: "e36", statut: "Client", nom: "SEBA", nomCommercial: "Pizza Time Champs-sur-Marne", secteur: "Restauration", ville: "Champs-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "16/01/2025", dateFin: "15/02/2029", nbVehicules: "2", contratLocam: "", immatriculations: "HB-693-FB, HB-738-FB", notes: "Code client C0272 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e37", statut: "Client", nom: "ALLO PIZZA KELLY BURGER", nomCommercial: "", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "10/02/2025", dateFin: "09/03/2029", nbVehicules: "4", contratLocam: "", immatriculations: "HB-423-SK, HB-465-SK, HB-497-SK, HB-532-SK", notes: "Code client C0281 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e38", statut: "Client", nom: "SIMHA 7", nomCommercial: "Zapi Sushi", secteur: "Restauration", ville: "Nogent-sur-Marne", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "15/05/2026", dateFin: "14/07/2030", nbVehicules: "2", contratLocam: "", immatriculations: "HK-666-SH, HK-773-SH", notes: "Code client C0284 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e39", statut: "Client", nom: "MORENO US", nomCommercial: "Mega Pizza", secteur: "Restauration", ville: "Metz", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/06/2023", dateFin: "20/02/2028", nbVehicules: "2", contratLocam: "", immatriculations: "GH-141-LA, GT-807-KQ", notes: "Code client C0297 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e40", statut: "Client", nom: "KEVIN", nomCommercial: "Indian Star", secteur: "Restauration", ville: "Beausoleil", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/07/2024", dateFin: "20/12/2029", nbVehicules: "3", contratLocam: "", immatriculations: "GX-192-TC, HG-776-DS, HG-801-DS", notes: "Code client C0306 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e41", statut: "Client", nom: "CHAMEROY", nomCommercial: "L'Antiboise", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48 · Modèle Confort + 48", dateDebut: "25/06/2024", dateFin: "30/12/2029", nbVehicules: "3", contratLocam: "", immatriculations: "GX-912-FA, HG-722-EM, HG-635-EM", notes: "Code client C0307 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e42", statut: "Client", nom: "M BAREK", nomCommercial: "Le D'Lys Tacos", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "28/09/2023", dateFin: "20/10/2029", nbVehicules: "3", contratLocam: "", immatriculations: "GR-073-DR, HE-340-SW, HE-385-SW", notes: "Code client C0308 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e43", statut: "Client", nom: "MA-ROSE", nomCommercial: "Pizza Time Taverny", secteur: "Restauration", ville: "Taverny", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 36", dateDebut: "24/10/2024", dateFin: "23/11/2027", nbVehicules: "2", contratLocam: "", immatriculations: "GZ-020-HH, GZ-936-HG", notes: "Code client C0309 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e44", statut: "Client", nom: "LES 2 FRÈRES", nomCommercial: "Specialitaly", secteur: "Restauration", ville: "Menton", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "27/04/2023", dateFin: "27/05/2027", nbVehicules: "2", contratLocam: "", immatriculations: "GN-497-LH, GN-532-LH", risque: "À risque", notes: "Code client C0320 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
+    { id: "e45", statut: "Client", nom: "GMA", nomCommercial: "La Boîte à Pizza Cugnaux", secteur: "Restauration", ville: "Cugnaux", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "25/04/2019", dateFin: "30/04/2023", nbVehicules: "4", contratLocam: "", immatriculations: "FF-967-QV, FF-043-QW, FF-134-QW, FF-223-QW", risque: "Procédure collective", notes: "Code client C0321 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e46", statut: "Client", nom: "SUSHI WAKO", nomCommercial: "Wako", secteur: "Restauration", ville: "Le Vésinet", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 48", dateDebut: "15/09/2020", dateFin: "14/09/2024", nbVehicules: "1", contratLocam: "", immatriculations: "FS-603-RR", risque: "À risque", notes: "Code client C0336 — importé du Sheet « Infos Service Client » (14/10/2026). Autres sites : Nanterre, Puteaux. ⚠️ À risque (source Sheet SAV)." },
+    { id: "e47", statut: "Client", nom: "MER", nomCommercial: "Mister Pizza Nice Californie", secteur: "Restauration", ville: "Nice", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "15/06/2026", dateFin: "14/08/2030", nbVehicules: "10", contratLocam: "", immatriculations: "HL-992-FA, HL-072-FB, HL-034-FB, HL-949-FA, HL-334-FB, HL-129-FB, HL-491-FB, HL-573-FB, HL-420-FB, HL-199-FB", notes: "Code client C0338 — importé du Sheet « Infos Service Client » (14/10/2026). Autre site : Vence." },
+    { id: "e48", statut: "Client", nom: "MEV", nomCommercial: "Allo Japonais", secteur: "Restauration", ville: "Poitiers", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48 · Modèle Zen + 50", dateDebut: "28/12/2023", dateFin: "25/10/2030", nbVehicules: "3", contratLocam: "", immatriculations: "GT-511-DN, HM-129-KS, HM-116-KS", risque: "À risque", notes: "Code client C0339 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
+    { id: "e49", statut: "Client", nom: "STAR CHICKEN", nomCommercial: "", secteur: "Restauration", ville: "Albi", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "23/06/2023", dateFin: "22/06/2027", nbVehicules: "1", contratLocam: "", immatriculations: "GH-258-SN", risque: "Impayé", notes: "Code client C0350 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e50", statut: "Client", nom: "COSTES RESTAURATION", nomCommercial: "Tutti Pizza — Montauban Voltaire", secteur: "Restauration", ville: "Montauban", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "13/01/2025", dateFin: "02/10/2030", nbVehicules: "2", contratLocam: "", immatriculations: "HA-866-YL, HM-050-CT", notes: "Code client C0359 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e51", statut: "Client", nom: "SYSM", nomCommercial: "Mister Pizza Mandelieu", secteur: "Restauration", ville: "Mandelieu-la-Napoule", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "30/06/2023", dateFin: "20/01/2030", nbVehicules: "9", contratLocam: "", immatriculations: "GQ-937-BF, GQ-892-BF, HG-633-HG, HG-658-HG, HG-686-HG, HG-711-HG, HG-736-HG, HG-765-HG, HG-605-HG", notes: "Code client C0360 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e52", statut: "Client", nom: "JAIVASAVI", nomCommercial: "La Galaxie", secteur: "Restauration", ville: "Saint-Vallier-de-Thiey", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "03/04/2025", dateFin: "20/05/2029", nbVehicules: "1", contratLocam: "", immatriculations: "HC-338-QQ", notes: "Code client C0361 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e53", statut: "Client", nom: "ALIDA", nomCommercial: "Jassmin Pizza", secteur: "Restauration", ville: "Villecresnes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "10/10/2019", dateFin: "10/10/2023", nbVehicules: "1", contratLocam: "", immatriculations: "FK-829-NE", risque: "Impayé", notes: "Code client C0362 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e54", statut: "Client", nom: "BOBUN BOULEVARD", nomCommercial: "", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "07/11/2022", dateFin: "20/04/2027", nbVehicules: "1", contratLocam: "", immatriculations: "GM-279-EZ", risque: "Impayé", notes: "Code client C0368 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ Impayé (source Sheet SAV)." },
+    { id: "e55", statut: "Client", nom: "ABDELHAFID GAZZAH", nomCommercial: "Stop Pizza 2", secteur: "Restauration", ville: "Antibes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen + 48", dateDebut: "16/02/2023", dateFin: "20/03/2027", nbVehicules: "1", contratLocam: "", immatriculations: "GM-957-CW", notes: "Code client C0376 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e56", statut: "Client", nom: "BING ME", nomCommercial: "Arigato", secteur: "Restauration", ville: "Bruges", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Zen 48 · Modèle Zen + 48", dateDebut: "10/08/2022", dateFin: "10/01/2028", nbVehicules: "2", contratLocam: "", immatriculations: "GH-698-YA, GS-034-RA", risque: "À risque", notes: "Code client C0387 — importé du Sheet « Infos Service Client » (14/10/2026). ⚠️ À risque (source Sheet SAV)." },
+    { id: "e57", statut: "Client", nom: "AEW CANNES", nomCommercial: "Asiakeo", secteur: "Restauration", ville: "Cannes", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort 48", dateDebut: "22/07/2022", dateFin: "22/08/2026", nbVehicules: "1", contratLocam: "", immatriculations: "GH-399-PH", notes: "Code client C0388 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e58", statut: "Client", nom: "NOSANTOKUNOSUSHIS", nomCommercial: "Samouraï Sushi Dijon", secteur: "Restauration", ville: "Dijon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48", dateDebut: "04/06/2024", dateFin: "20/07/2028", nbVehicules: "1", contratLocam: "", immatriculations: "GX-913-FZ", notes: "Code client C0392 — importé du Sheet « Infos Service Client » (14/10/2026)." },
+    { id: "e59", statut: "Client", nom: "AU FOURNIL DE STEPH", nomCommercial: "Allo Pizza Sète", secteur: "Restauration", ville: "Sète", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 50", dateDebut: "05/02/2026", dateFin: "04/04/2030", nbVehicules: "2", contratLocam: "", immatriculations: "HH-119-ZQ, HH-179-ZQ", notes: "Code client C0397 — importé du Sheet « Infos Service Client » (14/10/2026)." },
     /* ══ Cas de TEST multi-contrats (données réelles du Sheet, ajoutées 14/10 pour
-       valider les blocs « un contrat = ses propres dates »). 3 contrats Locam,
-       flotte MIXTE : 4 Compact Pro (CO01749) + 2 Daily Pro (CO01748) + 1 Daily
-       Pro (CO02245). Statut risque Sheet = « Sous surve » (valeur hors menu,
+       valider les blocs « un contrat = ses propres dates »). 3 contrats,
+       flotte MIXTE : 4 Compact Pro + 2 Daily Pro + 1 Daily
+       Pro. Statut risque Sheet = « Sous surve » (valeur hors menu,
        laissée en note). ══ */
-    { id: "e60", statut: "Client", nom: "LM PIZZA PUCE", nomCommercial: "LM Pizza Puce — Lyon 4e", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "30/04/2024", dateFin: "11/10/2030", nbVehicules: "7", contratLocam: "CO01748, CO01749, CO02245", immatriculations: "GW-830-NW, GW-890-NW, GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG, HM-816-GW", modeles: ["Compact Pro", "Daily Pro"],
+    { id: "e60", statut: "Client", nom: "LM PIZZA PUCE", nomCommercial: "LM Pizza Puce — Lyon 4e", secteur: "Restauration", ville: "Lyon", site: "", tel: "", franchiseur: "", modeLivraison: "Scooter électrique", activite: "Restauration rapide", pack: "Modèle Confort + 48 · Modèle Confort + 50", dateDebut: "30/04/2024", dateFin: "11/10/2030", nbVehicules: "7", contratLocam: "", immatriculations: "GW-830-NW, GW-890-NW, GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG, HM-816-GW", modeles: ["Compact Pro", "Daily Pro"],
       contrats: [
-        { pack: "Modèle Confort + 48", modele: "Daily Pro", num: "CO01748", dateDebut: "30/04/2024", dateFin: "10/06/2028", immats: "GW-830-NW, GW-890-NW", etat: "2" },
-        { pack: "Modèle Confort + 48", modele: "Compact Pro", num: "CO01749", dateDebut: "27/06/2024", dateFin: "26/07/2028", immats: "GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG", etat: "2" },
-        { pack: "Modèle Confort + 50", modele: "Daily Pro", num: "CO02245", dateDebut: "12/08/2026", dateFin: "11/10/2030", immats: "HM-816-GW", etat: "2" },
+        { pack: "Modèle Confort + 48", modele: "Daily Pro", num: "", dateDebut: "30/04/2024", dateFin: "10/06/2028", immats: "GW-830-NW, GW-890-NW", etat: "2" },
+        { pack: "Modèle Confort + 48", modele: "Compact Pro", num: "", dateDebut: "27/06/2024", dateFin: "26/07/2028", immats: "GX-336-VG, GX-519-VG, GX-644-VG, GX-758-VG", etat: "2" },
+        { pack: "Modèle Confort + 50", modele: "Daily Pro", num: "", dateDebut: "12/08/2026", dateFin: "11/10/2030", immats: "HM-816-GW", etat: "2" },
       ],
-      notes: "Code client C2119 — SIREN 925301327 · 5 Place Commandant Arnaud, 69004 Lyon. ⚠️ « Sous surveillance » (source Sheet SAV). 3 contrats Locam actifs, flotte mixte Compact Pro / Daily Pro." },
+      notes: "Code client C2119 — SIREN 925301327 · 5 Place Commandant Arnaud, 69004 Lyon. ⚠️ « Sous surveillance » (source Sheet SAV). 3 contrats actifs, flotte mixte Compact Pro / Daily Pro." },
   ],
   contacts: [
     { id: "c1", prenom: "Julien", nom: "Faure", role: "Gérant", email: "j.faure@rotisserie-du-rhone.fr", tel: "06 12 44 87 21", entrepriseIds: ["e1"] },
@@ -476,7 +481,7 @@ function normaliser(s: Etat): Etat {
     risque: "",
     modeles: [],
     ...x,
-    contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: x.contratLocam || "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
+    contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
     activites: (x.activites || []).slice(),
   }));
   // Migration contacts : l'ancien champ unique `entrepriseId` devient un
@@ -980,7 +985,7 @@ function Modale({
   const remplirDepuisSheet = (f: { nom: string; nomCommercial: string; ville: string }) => {
     chargerClientsSheet().then(({ clients }) => {
       const cliS = trouverClientSheet(clients, f.nom, (f.nomCommercial.split(" — ")[0] || f.nomCommercial), f.ville);
-      if (cliS) setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+      if (cliS) setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
     });
   };
   const enrichir = async () => {
@@ -1013,7 +1018,7 @@ function Modale({
         // l’utilisateur vérifie avant d’enregistrer ; sans match, tout reste vide).
         const cliS = trouverClientSheet(clientsSheet, fiche.nom, (fiche.nomCommercial.split(" — ")[0] || fiche.nomCommercial), fiche.ville);
         if (cliS) {
-          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes, dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: cliS.contrats, immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
         }
         // Sheet illisible : partage retiré ou Google bloque l’accès anonyme.
         // On le DIT au lieu de laisser croire qu’aucune société n’est cliente.
@@ -1260,7 +1265,7 @@ function Modale({
               <div><label className={label}>Activité</label>
                 <ChampSelect valeur={ent.activite} options={OPTIONS_ACTIVITE} onChange={(v) => setEnt({ ...ent, activite: v })} /></div>
               {/* ── Contrat & flotte : renseignés pour les clients (source :
-                  Sheet « Infos Service Client » / contrats Locam). Éditables
+                  Sheet « Infos Service Client »). Éditables
                   à la main, comme tous les champs du CRM. ── */}
               <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Modèles de scooter (U'mob)</div>
               <div className="col-span-2"><label className={label}>Modèle(s) loué(s) par ce client</label>
@@ -1281,19 +1286,17 @@ function Modale({
                 </div>
                 <div className="mt-1 text-[10.5px] text-slate-400">Pré-cochés automatiquement si le client figure dans le Sheet « Infos Service Client » (colonne Libellé Produit) — sinon sélection manuelle.</div>
               </div>
-              <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Contrat & flotte (Locam) — un bloc par contrat</div>
+              <div className="col-span-2 mt-1 rounded-lg bg-slate-50 px-2 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Contrat & flotte — un bloc par contrat</div>
               {(ent.contrats || []).map((k, i) => (
                 <div key={i} className="col-span-2 rounded-xl border border-slate-200 bg-slate-50/60 p-2">
                   <div className="mb-1.5 flex items-center justify-between">
-                    <span className="text-[11px] font-black text-slate-500">Contrat {i + 1}{k.num ? " — " + k.num : ""}{k.etat ? " · " + k.etat : ""}</span>
+                    <span className="text-[11px] font-black text-slate-500">Contrat {i + 1}{k.etat ? " · " + k.etat : ""}</span>
                     <button type="button" onClick={() => setEnt((x) => ({ ...x, contrats: (x.contrats || []).filter((_, j) => j !== i) }))}
                       className="text-[11px] font-bold text-red-400 hover:underline">✕ Retirer</button>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div><label className={label}>Pack</label>
-                      <input className={champ} value={k.pack} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, pack: e.target.value } : k2) }))} placeholder="ex. Modèle Confort + 48" /></div>
-                    <div><label className={label}>N° Locam</label>
-                      <input className={champ} value={k.num} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, num: e.target.value } : k2) }))} placeholder="ex. CO01559" /></div>
+                      <input className={champ} value={affPack(k.pack)} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, pack: e.target.value } : k2) }))} placeholder="ex. Confort 48+" /></div>
                     <div><label className={label}>Début</label>
                       <input className={champ} value={k.dateDebut} onChange={(e) => setEnt((x) => ({ ...x, contrats: (x.contrats || []).map((k2, j) => j === i ? { ...k2, dateDebut: e.target.value } : k2) }))} placeholder="ex. 15/03/2024" /></div>
                     <div><label className={label}>Fin</label>
@@ -1588,7 +1591,7 @@ function genererResumeIA(nom: string, events: EvResume[], prochaine?: { nom: str
   // ── Profil « À propos » de la fiche : les faits de PROPRIÉTÉS (statut, ville,
   //   secteur, franchiseur, risque, modèles, contrats, flotte, contacts) —
   //   pas les faits d'activité, déjà cités par la narrative ci-dessous.
-  const cleProfil = [" a le statut «", " est situé à ", "Secteur :", "Activité :", "Franchiseur :", "⚠️ Risque signalé", " loue les modèles", "Mode de livraison :", " contrats Locam.", " contrat Locam.", " exploite ", "Les contacts de "];
+  const cleProfil = [" a le statut «", " est situé à ", "Secteur :", "Activité :", "Franchiseur :", "⚠️ Risque signalé", " loue les modèles", "Mode de livraison :", " contrats.", " contrat.", " exploite ", "Les contacts de "];
   const profil = (faits || []).filter((f) => cleProfil.some((c) => f.includes(c))).slice(0, 10);
   // ── Paragraphe narratif : profil (À propos + contrats + flotte + contacts),
   //     puis dernière activité, appels analysés, action en attente. ──
@@ -2058,7 +2061,7 @@ function ComposerActivites({ onAjouter, contacts, deals }: {
 
 // En-tête des pages record : bandeau dégradé, avatar initiales chevauchant le
 // bandeau, nom + infos clés, et boutons d'action passés par le parent.
-function EnteteFiche({ initiales, nom, sous, boutons }: { initiales: string; nom: string; sous: string; boutons: React.ReactNode }) {
+function EnteteFiche({ initiales, nom, sous, badge, boutons }: { initiales: string; nom: string; sous: string; badge?: React.ReactNode; boutons: React.ReactNode }) {
   return (
     <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="h-12" style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }} />
@@ -2072,6 +2075,7 @@ function EnteteFiche({ initiales, nom, sous, boutons }: { initiales: string; nom
         <div className="min-w-0 flex-1">
           <div className="text-[17px] font-black text-slate-800">{nom}</div>
           <div className="truncate text-[12px] text-slate-400">{sous}</div>
+          {badge}
         </div>
         <div className="flex flex-wrap items-center gap-2">{boutons}</div>
       </div>
@@ -2081,6 +2085,71 @@ function EnteteFiche({ initiales, nom, sous, boutons }: { initiales: string; nom
 
 /* ---- Page record ENTREPRISE : colonne principale (À propos + Activités),
         colonne droite (Résumé + Contacts + Deals), comme une fiche HubSpot. ---- */
+// ── Synchronisation Sheet à l'OUVERTURE de la fiche entreprise : à chaque fois
+// qu'on ouvre une page entreprise qui a des contrats et un statut, le CRM relit
+// le Sheet « Infos Service Client » et réaligne les données SOURCÉES SHEET
+// (pack, dates, flotte, modèles, contrats, risque, statut Client) sur la
+// dernière version publiée. Anti-invention maintenu : si le Sheet ne connaît
+// pas la société ou est illisible, on ne touche à RIEN. Les champs saisis à la
+// main (notes, contacts, deals, activités) ne sont jamais écrasés. ──
+function SyncSheetOuverture({ ent, onModifie }: { ent: Entreprise; onModifie: (patch: Partial<Entreprise>) => void }) {
+  const [sync, setSync] = useState<"enCours" | "ok" | "rien" | "ko">("enCours");
+  useEffect(() => {
+    let annule = false;
+    (async () => {
+      // Seules les fiches « avec contrats et statut » concernent le Sheet :
+      // pas de contrats ni de statut Client → rien à réaligner.
+      if (!((ent.contrats || []).length > 0 || ent.pack || ent.statut === "Client")) { if (!annule) setSync("rien"); return; }
+      // Le CSV public de Google peut être refusé par intermittence (limite de
+      // débit) : on retente une 2e fois après un court délai avant d'abandonner.
+      let clients: ClientSheet[] = [];
+      let lectureOk = false;
+      for (let essai = 0; essai < 2 && !lectureOk && !annule; essai++) {
+        const r = await chargerClientsSheet();
+        clients = r.clients; lectureOk = r.lectureOk;
+        if (!lectureOk) await new Promise((d) => setTimeout(d, 1200));
+      }
+      if (!lectureOk || annule) { if (!annule) setSync("ko"); return; }
+      const cliS = trouverClientSheet(clients, ent.nom, (ent.nomCommercial.split(" — ")[0] || ent.nomCommercial), ent.ville);
+      if (!cliS) { if (!annule) setSync("rien"); return; }
+      // Réalignement UNIQUEMENT des champs dont le Sheet est la source, et
+      // seulement si quelque chose a changé (pas de commit inutile, pas de
+      // boucle : le patch ne redéclenche pas l'effet, qui ne vit qu'au montage).
+      const patch: Partial<Entreprise> = {
+        statut: "Client",
+        pack: cliS.packs, modeles: cliS.modeles,
+        contrats: cliS.lignes.map((l) => ({ ...l, num: "" })),
+        dateDebut: cliS.dateDebut, dateFin: cliS.dateFin,
+        nbVehicules: cliS.nbVehicules, immatriculations: cliS.immats,
+        risque: cliS.risque,
+      };
+      const change =
+        ent.statut !== "Client" || ent.pack !== cliS.packs ||
+        (ent.modeles || []).join("|") !== cliS.modeles.join("|") ||
+        ent.dateDebut !== cliS.dateDebut || ent.dateFin !== cliS.dateFin ||
+        ent.nbVehicules !== cliS.nbVehicules || ent.immatriculations !== cliS.immats ||
+        ent.risque !== cliS.risque ||
+        (ent.contrats || []).map((k) => [k.pack, k.modele, k.dateDebut, k.dateFin, k.immats, k.etat].join("|")).join("§") !==
+          cliS.lignes.map((l) => [l.pack, l.modele, l.dateDebut, l.dateFin, l.immats, l.etat].join("|")).join("§");
+      if (change) onModifie(patch);
+      if (!annule) setSync("ok");
+    })();
+    return () => { annule = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ent.id]);
+  const LIBELLES: Record<typeof sync, string> = {
+    enCours: "↻ Vérification Sheet…", ok: "✓ À jour avec le Sheet", rien: "", ko: "⚠ Sheet indisponible — réessaie en rouvrant la fiche",
+  };
+  const lib = LIBELLES[sync];
+  if (!lib) return null;
+  return (
+    <span className="text-[10px] font-bold text-slate-400"
+      title="Contrats et statut resynchronises sur le Sheet a chaque ouverture.">
+      {lib}
+    </span>
+  );
+}
+
 function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie }: {
   etat: Etat; id: string;
   onRetour: () => void;
@@ -2196,15 +2265,15 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 contrat est renseigné (les prospects n'ont pas de contrat).
                 Chaque ligne est éditable sur place (même mécanisme inline
                 que le panneau À propos). Source des données auto : Sheet
-                « Infos Service Client » (packs, dates, véhicules, Locam). */}
-            {(e.pack || e.contratLocam || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
-              <CarteFiche titre="🛵 Contrat & flotte">
+                « Infos Service Client » (packs, dates, véhicules). */}
+            {(e.pack || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
+              <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} onModifie={onModifie} />}>
                 <div className="space-y-2">
                   {e.risque && (
-                    <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
                       <span className="text-[13px]">⚠️</span>
-                      <span className="text-[12px] font-bold text-red-600">{e.risque}</span>
-                      <span className="ml-auto text-[10px] font-medium text-red-400">source SAV</span>
+                      <span className="text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
+                      <span className="ml-auto shrink-0 text-[10px] font-medium text-red-400">source SAV</span>
                     </div>
                   )}
                   {(e.modeles || []).length > 0 && (
@@ -2217,20 +2286,16 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                   )}
                   {(e.contrats || []).map((k, i) => (
                     <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-2">
-                      <div className="mb-1 text-[11px] font-black text-slate-500">Contrat {i + 1}{k.num ? " — " + k.num : ""}{k.etat ? " · " + k.etat : ""}</div>
+                      <div className="mb-1 text-[11px] font-black text-slate-500">Contrat {i + 1}{k.etat ? " · " + k.etat : ""}</div>
                       <div className="grid grid-cols-2 gap-2">
-                        <PropTexte label="Pack" valeur={k.pack} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
-                        <PropTexte label="N° Locam" valeur={k.num} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, num: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
+                        <PropTexte label="Pack" valeur={affPack(k.pack)} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
                         <PropTexte label="Début" valeur={k.dateDebut} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateDebut: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
                         <PropTexte label="Fin" valeur={k.dateFin} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateFin: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
                         <div className="col-span-2"><PropTexte label="Immatriculations" valeur={k.immats} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, immats: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} /></div>
                       </div>
                     </div>
                   ))}
-                  <div className="flex gap-3">
-                    <div className="min-w-0 flex-1"><Prop label="Véhicules" valeur={e.nbVehicules} /></div>
-                    <div className="min-w-0 flex-1"><PropSelect label="Risque" valeur={e.risque} options={OPTIONS_RISQUE} onChange={(v) => onModifie({ risque: v })} /></div>
-                  </div>
+                  <div><Prop label="Véhicules" valeur={e.nbVehicules} /></div>
                 </div>
               </CarteFiche>
             )}
@@ -2293,11 +2358,10 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 e.modeLivraison ? "Mode de livraison : " + e.modeLivraison + "." : "",
                 e.risque ? "⚠️ Risque signalé : " + e.risque + "." : "",
                 (e.modeles || []).length > 0 ? e.nom + " loue les modèles de scooter " + e.modeles.join(" et ") + "." : "",
-                (e.contrats || []).length > 0 ? e.nom + " a " + e.contrats.length + (e.contrats.length > 1 ? " contrats" : " contrat") + " Locam." : "",
-                ...(e.contrats || []).map((k) => "Le contrat " + k.num + " se termine le " + k.dateFin + "."),
-                ...(e.contrats || []).map((k) => "Contrat " + k.num + " (" + k.pack + ") : du " + k.dateDebut + " au " + k.dateFin + (k.immats ? ", immatriculations " + k.immats : "") + "."),
+                (e.contrats || []).length > 0 ? e.nom + " a " + e.contrats.length + (e.contrats.length > 1 ? " contrats" : " contrat") + "." : "",
+                ...(e.contrats || []).map((k) => "Le contrat " + (affPack(k.pack) || "sans nom") + " se termine le " + k.dateFin + "."),
+                ...(e.contrats || []).map((k) => "Contrat " + (affPack(k.pack) || "") + " : du " + k.dateDebut + " au " + k.dateFin + (k.immats ? ", immatriculations " + k.immats : "") + "."),
                 e.dateDebut && e.dateFin ? "La période totale des contrats va du " + e.dateDebut + " au " + e.dateFin + "." : "",
-                e.contratLocam ? "Numéros de contrat Locam : " + e.contratLocam + "." : "",
                 e.nbVehicules ? e.nom + " exploite " + e.nbVehicules + " véhicule(s)." : "",
                 e.immatriculations ? "Immatriculations de la flotte : " + e.immatriculations + "." : "",
                 (etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).length > 0 ? "Les contacts de " + e.nom + " sont : " + etat.contacts.filter((x) => x.entrepriseIds.includes(e.id)).map((x) => x.prenom + " " + x.nom).join(", ") + "." : ""),
@@ -3637,7 +3701,7 @@ export default function App() {
         <div className="mb-1 text-center text-[16px] font-black text-slate-800">Bienvenue dans ton CRM 🎉</div>
         <p className="mb-5 text-center text-[13px] leading-relaxed text-slate-500">
           La base est vide pour l'instant. Tu peux importer les <b>50 clients réels</b> du
-          Sheet « Infos Service Client » (contrats Locam, flotte, risques SAV, 51 contacts),
+          Sheet « Infos Service Client » (contrats, flotte, risques SAV, 51 contacts),
           ou partir de zéro. Aucune décision n'est irréversible.
         </p>
         <div className="flex flex-col gap-2 sm:flex-row">
