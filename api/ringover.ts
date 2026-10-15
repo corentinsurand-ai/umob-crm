@@ -112,23 +112,50 @@ export default async function handler(req: any, res: any) {
         if (typeof ee.text === "string") return ee.text;
         return "";
       };
+      // Résumé Empower (route dédiée de la doc) : GET empower/call/:uuid/summary
+      const lireSummary = async (uuid: string): Promise<string> => {
+        try {
+          const rs2 = await fetch("https://public-api.ringover.com/v2/empower/call/" + uuid + "/summary", { headers: h });
+          console.log("Ringover summary statut:", rs2.status, "uuid:", uuid);
+          if (!rs2.ok) return "";
+          const js2: any = await rs2.json();
+          console.log("Ringover summary JSON:", JSON.stringify(js2).slice(0, 2000));
+          const ss2 = js2.data || js2;
+          if (typeof ss2 === "string") return ss2;
+          if (typeof ss2.summary === "string") return ss2.summary;
+          if (Array.isArray(ss2.summaries)) return ss2.summaries.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
+          if (Array.isArray(ss2.list)) return ss2.list.map((t: any) => String(t.text || t.content || t.summary || "")).filter(Boolean).join("\n");
+          return "";
+        } catch (e) { console.log("Summary erreur:", e); return ""; }
+      };
+      // Empower — 3 stratégies, dans l'ordre (cf. doc Ringover) :
+      // a) call_id directement comme calluuid (doc : possible quand on possède le call_ID)
+      // b) résumé via la route dédiée /summary
+      // c) résolution du calluuid via le canal (POST platform/:platformname/channel/:id),
+      //    platformname étant le nom de VOTRE plateforme Empower (variable optionnelle
+      //    RINGOVER_EMPOWER_PLATFORM côté Vercel)
+      const plateformeEmpower: string = env.RINGOVER_EMPOWER_PLATFORM || "";
       if (!transcription) {
-        // 1) résoudre le calluuid depuis le canal, si possible
-        if (canal) {
+        if (!transcription) {
+          try { transcription = await lireEmpower(appelId); } catch (e) { console.log("Empower call erreur:", e); }
+        }
+        if (!transcription) {
+          try { transcription = await lireSummary(appelId); } catch (e) { console.log("Summary erreur:", e); }
+        }
+        if (!transcription && canal && plateformeEmpower) {
           try {
-            const rp = await fetch("https://public-api.ringover.com/v2/empower/platform/ringover/channel/" + canal, { method: "POST", headers: h });
+            const rp = await fetch("https://public-api.ringover.com/v2/empower/platform/" + plateformeEmpower + "/channel/" + canal, { method: "POST", headers: h });
             console.log("Ringover empower channel statut:", rp.status);
             if (rp.ok) {
               const jp: any = await rp.json();
               console.log("Ringover empower channel JSON:", JSON.stringify(jp).slice(0, 1500));
               const uu = (jp.data || jp || {}).calluuid || (jp.data || jp || {}).call_uuid || (jp.data || jp || {}).uuid || "";
-              if (uu) transcription = await lireEmpower(String(uu));
+              if (uu) {
+                transcription = await lireEmpower(String(uu));
+                if (!transcription) transcription = await lireSummary(String(uu));
+              }
             }
           } catch (e) { console.log("Empower channel erreur:", e); }
-        }
-        // 2) secours : le call_id du webhook fonctionne parfois directement
-        if (!transcription) {
-          try { transcription = await lireEmpower(appelId); } catch (e) { console.log("Empower call erreur:", e); }
         }
       }
     } catch (e) { console.log("Ringover API erreur:", e); }
