@@ -533,7 +533,7 @@ const label = "mb-1 block text-[11px] font-bold text-slate-500";
    e-mails) ou par une recherche internet automatique sur l'entreprise.
    L'IA n'aura qu'à choisir dans la liste au lieu d'inventer du texte. */
 const OPTIONS_FRANCHISEUR = ["Indépendant", "Domino's Pizza", "Burger King", "McDonald's", "KFC", "Subway", "Pizza Hut", "O'Tacos", "La Boîte à Pizza"];
-const OPTIONS_MODE_LIVRAISON = ["Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Mixte"];
+const OPTIONS_MODE_LIVRAISON = ["Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Uber Eats / Deliveroo", "Mixte"];
 const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", "Livraison de repas", "Boulangerie / Pâtisserie", "Commerce floral", "Alimentation bio", "Commerce de détail", "Services", "Autre"];
 // Valeurs du champ « Risque » (source Sheet SAV : Statut_risque_client,
 // Impayes, Procedure_collective). L'option vide « — » de ChampSelect vaut
