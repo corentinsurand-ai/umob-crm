@@ -225,11 +225,32 @@ export interface DevisBrouillon {
   locamRenouvellement: { contrat: string; montant: string; date: string };
 }
 
+// ==================== ARCHIVAGE SUR FICHE ENTREPRISE ====================
+// Résumé figé au moment de la sauvegarde — calculs CLIENT uniquement :
+// jamais de commission, ni grille, ni détail de reprise/empilage (R10).
+export interface DevisResume {
+  numOffre: string; societe: string; commercial: string; duree: number; nbChassis: number;
+  loyerMensuelHT: number; loyerMensuelTTC: number; miseService: number;
+  articles: { nom: string; q: number; loyerU: number }[];
+  packs: { nom: string; qte: number; loyer: number; total: number }[];
+}
+// Texte du devis prêt à partir par e-mail (version client, sans données internes).
+export interface MailDevis { destinataire: string; objet: string; corps: string; }
+// Ce que le module transmet au CRM au moment de la sauvegarde.
+export interface SauvegardeDevis { societe: string; commentaire: string; brouillon: DevisBrouillon; resume: DevisResume; mail: MailDevis; }
+// Ce qui est archivé sur la fiche entreprise (id + horodatage ajoutés par App.tsx).
+export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string };
+
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
+  // Sauvegarde du devis sur la fiche entreprise du CRM. Retourne false si la
+  // société saisie n'existe pas dans le CRM (le module l'affiche à l'utilisateur).
+  onSauvegarder?: (s: SauvegardeDevis) => boolean;
+  // E-mail de contact du compte (premier contact avec e-mail), "" si inconnu.
+  emailSociete?: (nom: string) => string;
 }) {
   const b: Partial<DevisBrouillon> = brouillon ?? {};
 
@@ -274,6 +295,33 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
   const [locamRenouvellement, setLocamRenouvellement] = useState<{ contrat: string; montant: string; date: string }>(
     b.locamRenouvellement ?? { contrat: "", montant: "", date: "" }
   );
+
+  // ── Archivage & envoi (étape « Devis client ») ──
+  const [commentaire, setCommentaire] = useState("");
+  const [retourAction, setRetourAction] = useState("");
+  const [microActif, setMicroActif] = useState(false);
+  const microRef = useRef<any>(null);
+  const microDispo = typeof window !== "undefined" && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  // Dictée du commentaire : Web Speech API (Chrome/Edge), langue fr-FR.
+  // Arrêt propre au démontage du module pour ne pas laisser un micro ouvert.
+  const basculerMicro = () => {
+    if (microActif) { microRef.current?.stop?.(); return; }
+    const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!Ctor) return;
+    const rec = new Ctor();
+    rec.lang = "fr-FR"; rec.continuous = true; rec.interimResults = false;
+    rec.onresult = (ev: any) => {
+      let morceau = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) if (ev.results[i].isFinal) morceau += ev.results[i][0].transcript;
+      if (morceau.trim()) setCommentaire((c) => (c ? c.trim() + " " : "") + morceau.trim());
+    };
+    rec.onend = () => setMicroActif(false);
+    rec.onerror = () => setMicroActif(false);
+    microRef.current = rec;
+    rec.start();
+    setMicroActif(true);
+  };
+  useEffect(() => () => { microRef.current?.stop?.(); }, []);
 
   // Sauvegarde du brouillon dans l'état global du CRM (une seule fois par modification)
   const premier = useRef(true);
@@ -387,6 +435,75 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
   const miseService = (miseADispo + fraisDossier) * nbChassis;
   const loyerMensuelHT = loyerNet + packsTotal - remiseSuppMensuelle + empilageMensuelTotal;
   const tvaMens = loyerMensuelHT * TVA;
+
+  // ── Snapshot du devis : résumé figé + texte e-mail. Version CLIENT
+  // uniquement — jamais de commission, ni grille, ni détail d'empilage (R10). ──
+  const estChassisLigne = (l: { cat: string; nom: string }) => l.cat === "Châssis" || l.nom.startsWith("Châssis") || l.nom.startsWith("Scooter S5");
+  const rnd2 = (n: number) => Math.round(n * 100) / 100;
+  const construireResume = (): DevisResume => ({
+    numOffre, societe, commercial, duree, nbChassis,
+    loyerMensuelHT: rnd2(loyerMensuelHT),
+    loyerMensuelTTC: rnd2(loyerMensuelHT + tvaMens),
+    miseService: rnd2(miseService),
+    articles: lignes.filter((l) => l.q > 0).map((l) => ({ nom: l.nom, q: l.q, loyerU: rnd2(estChassisLigne(l) ? l.loyerUNet + empilageParScooter : l.loyerUNet) })),
+    packs: packsLignes.map((p) => ({ nom: p.nom, qte: p.qte, loyer: rnd2(p.loyer), total: rnd2(p.total) })),
+  });
+  const construireMail = (resume: DevisResume): MailDevis => ({
+    destinataire: emailSociete?.(societe) ?? "",
+    objet: `Offre de location U'mob — ${societe || "proposition"} (n° ${resume.numOffre})`,
+    corps: [
+      "Bonjour,",
+      "",
+      `Suite à notre échange, veuillez trouver notre offre de location pour ${societe || "votre société"}.`,
+      "",
+      `Offre n° ${resume.numOffre} — valable jusqu'au ${dateValiditeFr}`,
+      "",
+      "── LE MATÉRIEL (loyers mensuels HT) ──",
+      ...(resume.articles.length ? resume.articles.map((a) => `• ${a.nom} × ${a.q} — ${eurM(a.loyerU)}/mois/u — ${eurM(rnd2(a.loyerU * a.q))}/mois`) : ["(aucun matériel)"]),
+      "",
+      ...(resume.packs.length ? ["── LES PRESTATIONS (loyers mensuels HT) ──", ...resume.packs.map((p) => `• ${p.nom} × ${p.qte} — ${eurM(p.loyer)}/mois/u — ${eurM(p.total)}/mois`), ""] : []),
+      "── MISE EN SERVICE (comptant) ──",
+      `• Mise à disposition (immatriculation & livraison) × ${nbChassis} — ${eurM(rnd2(miseADispo * nbChassis))}`,
+      `• Frais de dossier × ${nbChassis} — ${eurM(rnd2(fraisDossier * nbChassis))}`,
+      `• Total mise en service — ${eurM(resume.miseService)}`,
+      "",
+      `Total mensuel HT : ${eurM(resume.loyerMensuelHT)}`,
+      `TVA 20 % : ${eurM(rnd2(resume.loyerMensuelTTC - resume.loyerMensuelHT))}`,
+      `Total TTC/mois : ${eurM(resume.loyerMensuelTTC)}`,
+      `Contrat ${resume.duree} loyers TTC : ${eur(rnd2(resume.loyerMensuelTTC * resume.duree))}`,
+      "",
+      "Cette offre est émise sous réserve de validation par U'MOB après analyse financière du dossier du locataire.",
+      "",
+      "Bien cordialement,",
+      commercial || "L'équipe U'mob",
+      "U'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr",
+    ].join("\n"),
+  });
+  // Brouillon complet au moment T (même contenu que celui remonté via onBrouillon).
+  const brouillonCourant = (): DevisBrouillon => ({
+    step, societe, anciennete, mode, duree, grille, renouvellement,
+    qtes, remises, packsCoches, coupDePoing, remiseLibre, commercial,
+    miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
+  });
+
+  // ── Actions d'archivage & d'envoi ──
+  const sauvegarder = () => {
+    const resume = construireResume();
+    const mail = construireMail(resume);
+    const ok = onSauvegarder?.({ societe, commentaire: commentaire.trim(), brouillon: brouillonCourant(), resume, mail });
+    if (ok === undefined) setRetourAction("⚠️ Sauvegarde indisponible hors CRM.");
+    else if (ok) { setRetourAction(`✅ Devis ${resume.numOffre} sauvegardé sur la fiche « ${societe} » — visible dans la section 🧾 Devis et la timeline de l'entreprise.`); setCommentaire(""); }
+    else setRetourAction(`❌ « ${societe || "—"} » n'existe pas dans le CRM. Utilise 🔍 Chercher un compte (étape 1) ou crée la fiche d'abord.`);
+  };
+  const envoyerMail = () => {
+    const mail = construireMail(construireResume());
+    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(mail.objet)}&body=${encodeURIComponent(mail.corps)}`;
+    setRetourAction(mail.destinataire ? `✉️ E-mail préparé pour ${mail.destinataire} — vérifie et envoie depuis ta messagerie.` : "✉️ E-mail préparé — aucun e-mail connu pour ce compte, renseigne le destinataire.");
+  };
+  const copierTexte = async () => {
+    try { await navigator.clipboard.writeText(construireMail(construireResume()).corps); setRetourAction("📋 Texte du devis copié — prêt à coller dans un e-mail ou un message."); }
+    catch { setRetourAction("⚠️ Copie impossible sur ce navigateur — utilise ✉️ Envoyer par mail."); }
+  };
 
   const ajouterArticle = (nom: string) => {
     if (!nom) return;
@@ -1069,6 +1186,45 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
                 <p className="text-xs text-slate-500">Mise en service comptant : <span className="font-mono">{eurM(miseService)}</span> ({nbChassis} scooters)</p>
                 {totalEmpileGlobal !== 0 && <p className="text-xs text-slate-500">Reprise : <span className="font-mono">{eurM(totalEmpileGlobal)}</span> empilés HT{montantLocam > 0 && totalEmpile > 0 ? " (flotte + Locam)" : montantLocam > 0 ? " (contrat Locam)" : ""} → +<span className="font-mono">{eurM(empilageParScooter)}</span>/mois/scooter lissé dans les loyers châssis (invisible client).</p>}
                 <p className="text-xs text-slate-400">Commission non affichée (R10) — calcul géré hors module. Audit : outil séparé.</p>
+              </CardContent>
+            </Card>
+
+            {/* ============ ARCHIVAGE & ENVOI : fiche entreprise + e-mail ============ */}
+            <Card className="border-emerald-200 lg:col-span-3">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">💾 Archiver & envoyer
+                  <Badge variant="outline" className="text-[10px] bg-white">fiche entreprise du CRM</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Field label="Commentaire (interne — conservé avec le devis sur la fiche)" hint="Contexte de la négo, points d'attention… au clavier ou en dictée.">
+                  <div className="flex gap-1.5 items-start">
+                    <textarea
+                      value={commentaire}
+                      onChange={(e) => setCommentaire(e.target.value)}
+                      rows={2}
+                      placeholder="Ex. : client sensible au prix, demande une reprise de ses 2 anciens scooters…"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                    />
+                    {microDispo ? (
+                      <Button variant={microActif ? "default" : "outline"} onClick={basculerMicro} className="shrink-0" title="Dicter le commentaire">
+                        {microActif ? "⏹ Stop" : "🎤 Dicter"}
+                      </Button>
+                    ) : (
+                      <Button variant="outline" disabled className="shrink-0" title="Dictée non supportée par ce navigateur">🎤 Dicter</Button>
+                    )}
+                  </div>
+                </Field>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={sauvegarder} disabled={!societe.trim()}>💾 Sauvegarder sur la fiche entreprise</Button>
+                  <Button variant="outline" onClick={envoyerMail}>✉️ Envoyer par mail</Button>
+                  <Button variant="outline" onClick={copierTexte}>📋 Copier le texte du devis</Button>
+                </div>
+                {retourAction && <p className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{retourAction}</p>}
+                <p className="text-xs text-slate-400">
+                  Le devis complet (brouillon ré-ouvrable) est archivé avec le commentaire — on le relance depuis la fiche entreprise → « 🚀 Rouvrir ».
+                  L'e-mail part de ta messagerie : aucune donnée interne (grille, reprise, commission) n'y figure.
+                </p>
               </CardContent>
             </Card>
           </div>

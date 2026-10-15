@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
-import { DevisModule, DevisBrouillon } from "./devis";
+import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis } from "./devis";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
@@ -38,7 +38,13 @@ interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: 
   // ── Risque SAV (source : colonnes Statut_risque_client / Impayes /
   // Procedure_collective du Sheet « Infos Service Client »). Vide = aucun
   // risque signalé. Comme le statut, il reste corrigeable à la main. ──
-  risque: string; }
+  risque: string;
+  // ── Devis sauvegardés depuis le module Devis (bouton « 💾 Sauvegarder sur la
+  // fiche entreprise ») : brouillon complet ré-ouvrable + commentaire du
+  // commercial + résumé figé (loyers, packs…). Persisté avec le reste de
+  // l'état dans Supabase (jsonb) — rien à migrer côté base. ──
+  devisHistorique?: DevisArchive[];
+}
 // Les activités ne vivent QUE sur les entreprises : un contact n'a plus sa
 // propre liste d'activités (elles sont portées par ses entreprises, avec un
 // lien `contactId` pour les retrouver).
@@ -528,6 +534,8 @@ function normaliser(s: Etat): Etat {
     ...x,
     contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
     activites: (x.activites || []).slice(),
+    // Devis archivés : même logique de migration douce que les activités.
+    devisHistorique: (x.devisHistorique || []).slice(),
   }));
   // Migration contacts : l'ancien champ unique `entrepriseId` devient un
   // TABLEAU `entrepriseIds` (un contact peut appartenir à plusieurs
@@ -2282,7 +2290,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2290,6 +2298,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onActivite: (id: string, activite: Activite) => void; // journalise une activité SUR l'entreprise
   onModifie: (patch: Partial<Entreprise>) => void; // édition directe du panneau « À propos »
   onMajContacts: (mods: { id: string; tel?: string; email?: string; role?: string }[]) => void; // rattrapage Sheet des contacts
+  onRouvrirDevis: (b: DevisBrouillon) => void; // recharge un devis archivé dans le module Devis
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
@@ -2299,6 +2308,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   }
   // ── Agrégats dérivés de l'état (recalculés à chaque rendu, pas besoin de cache) ──
   const contacts = etat.contacts.filter((c) => c.entrepriseIds.includes(e.id));
+  // Format € compact pour les résumés de devis (2 décimales, style fr).
+  const fmtEur = (n: number) => n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
   const deals = etat.deals.filter((d) => d.entrepriseId === e.id);
   const actifs = deals.filter((d) => d.etape !== "Gagné" && d.etape !== "Perdu");
   const pipeline = actifs.reduce((s, d) => s + d.montant, 0);
@@ -2385,6 +2396,40 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           {/* Colonne centrale : Activités (composer + timeline), comme le
               bandeau central de la fiche HubSpot. */}
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            {/* Devis archivés depuis le module Devis (bouton « 💾 Sauvegarder
+                sur la fiche entreprise ») : le brouillon complet est conservé,
+                « Rouvrir » le recharge tel quel dans le module Devis. */}
+            {(e.devisHistorique?.length ?? 0) > 0 && (
+              <div className="mb-4 rounded-2xl border border-emerald-200 bg-white p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[13px] font-black text-slate-700">🧾 Devis</div>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{e.devisHistorique!.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {e.devisHistorique!.map((dv) => {
+                    const mailCt = (contacts.find((c) => (c.email || "").trim())?.email || "").trim();
+                    return (
+                      <div key={dv.id} className="rounded-xl border border-slate-200 p-2.5 text-[12.5px]">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-slate-700">{dv.resume?.numOffre || "Devis"}</span>
+                          <span className="text-[11px] font-semibold text-slate-400">{dv.dateFr}</span>
+                        </div>
+                        <p className="mt-0.5 text-slate-600">
+                          {dv.resume?.nbChassis ?? 0} scooter(s) · {dv.resume?.duree ?? "—"} mois · <span className="font-bold">{fmtEur(dv.resume?.loyerMensuelHT ?? 0)} HT/mois</span>
+                        </p>
+                        {dv.commentaire && <p className="mt-1 whitespace-pre-wrap border-l-2 border-emerald-300 pl-2 italic text-slate-500">{dv.commentaire}</p>}
+                        <div className="mt-1.5 flex gap-1.5">
+                          <button onClick={() => onRouvrirDevis(dv.brouillon)} className="rounded-xl border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
+                          <button
+                            onClick={() => { window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(dv.mail?.corps || "")}`; }}
+                            className="rounded-xl border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-600 hover:bg-slate-50">✉️ E-mail</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
             <div className="mt-3">
@@ -3869,6 +3914,45 @@ export default function App() {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
   };
 
+  // ── Module Devis : archivage sur la fiche entreprise ──
+  // Le module transmet le brouillon complet + un résumé figé + le texte du
+  // mail ; on rattache tout à la fiche (recherche par nom / nom commercial)
+  // et on journalise une note dans la timeline pour la traçabilité.
+  const trouverEntrepriseParNom = (nom: string) => {
+    const cible = (nom || "").trim().toLowerCase();
+    return cible ? etat.entreprises.find((x) => (x.nomCommercial || x.nom).trim().toLowerCase() === cible) : undefined;
+  };
+  const sauvegarderDevisSurFiche = (s: SauvegardeDevis): boolean => {
+    const ent = trouverEntrepriseParNom(s.societe);
+    if (!ent) return false;
+    const maintenant = new Date();
+    const archive: DevisArchive = { ...s, id: `dv-${maintenant.getTime()}`, dateISO: maintenant.toISOString(), dateFr: maintenant.toLocaleDateString("fr-FR") };
+    const texte = `Devis n° ${s.resume.numOffre} sauvegardé — ${s.resume.nbChassis} scooter(s), ${s.resume.loyerMensuelHT.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €/mois HT${s.commentaire ? ` — « ${s.commentaire} »` : ""}`;
+    setEtat((s2) => ({
+      ...s2,
+      entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
+        ...x,
+        devisHistorique: [archive, ...(x.devisHistorique ?? [])].slice(0, 30),
+        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+      } : x),
+    }));
+    return true;
+  };
+  // E-mail de contact du compte (premier contact de l'entreprise avec e-mail).
+  const emailDuCompte = (nom: string) => {
+    const ent = trouverEntrepriseParNom(nom);
+    if (!ent) return "";
+    const ct = etat.contacts.find((c) => c.entrepriseIds.includes(ent.id) && (c.email || "").trim());
+    return ct ? ct.email.trim() : "";
+  };
+  // Rouvrir un devis archivé : on le recharge comme brouillon courant du
+  // module Devis (qui se monte frais et relit ses champs) et on y navigue.
+  const rouvrirDevis = (b: DevisBrouillon) => {
+    setEtat((e) => ({ ...e, devis: b }));
+    setFiche(null);
+    setVue("devis");
+  };
+
   // RATTRAPAGE Sheet des contacts : complète tel/email/fonction MANQUANTS de
   // contacts existants (reconnus par id) — appelé à l'ouverture des fiches
   // entreprises par SyncSheetOuverture. Jamais d'écrasement d'une valeur déjà saisie.
@@ -4126,7 +4210,8 @@ export default function App() {
           <FicheEntreprise etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} onActivite={ajouterActivite}
             onModifie={(patch) => modifierEntreprise(fiche.id, patch)}
-            onMajContacts={majContacts} />
+            onMajContacts={majContacts}
+            onRouvrirDevis={rouvrirDevis} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
@@ -4142,7 +4227,7 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
-            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} />}
+            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} emailSociete={emailDuCompte} />}
           </>
         )}
       </main>
