@@ -318,7 +318,7 @@ function Prospection({ d, etat }: { d: ReturnType<typeof construire>; etat: Etat
             <div key={zone} className="rounded-xl bg-slate-50 p-3">
               <div className="flex justify-between text-xs mb-1.5">
                 <span className="font-semibold text-slate-800">{zone}</span>
-                <span className="text-slate-400">{z.nb} société{s > 1 && ""}{z.nb > 1 ? "s" : ""} · {z.appels} appel{z.appels > 1 ? "s" : ""}</span>
+                <span className="text-slate-400">{z.nb} société{z.nb > 1 ? "s" : ""} · {z.appels} appel{z.appels > 1 ? "s" : ""}</span>
               </div>
               <BarreMix m={z.mix} total={z.nb} />
             </div>
