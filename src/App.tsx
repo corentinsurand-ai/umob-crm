@@ -1987,7 +1987,7 @@ const valDate = (s: string, iso?: string) => {
 // Timeline d'activités des fiches. Chaque event peut être :
 //  - une activité de la fiche elle-même (note, appel… sans deal rattaché)
 //  - une activité d'un deal associé (porte une référence `deal` → lien cliquable)
-function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[] }) {
+function Chronologie({ events, onOuvre, contacts, deals, onSupprimer }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[]; onSupprimer?: (ev: Activite & { deal?: Deal }) => void }) {
   if (events.length === 0) {
     return (
       <div className="text-[12px] text-slate-400">
@@ -2006,7 +2006,10 @@ function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite &
         const ct = ev.contactId ? (contacts || []).find((x) => x.id === ev.contactId) : null;
         const dd = ev.dealId ? (deals || []).find((x) => x.id === ev.dealId) : null;
         return (
-          <div key={i} className="flex items-start gap-3 py-2.5">
+          <div key={i} className="group/act flex items-start gap-3 py-2.5">
+            {/* Poubelle : suppression de l'activité en cas d'erreur (visible au
+                survol de la ligne, confirmation demandée). Rendue uniquement si
+                le parent fournit un handler (fiche entreprise). */}
             {/* Pastille de l'icône : couleur du type à ~9% d'opacité (suffixe "18"). */}
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[12px]"
               style={{ background: `${meta.couleur}18` }}>{meta.icone}</span>
@@ -2053,6 +2056,13 @@ function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite &
                 )}
               </div>
             </div>
+            {onSupprimer && (
+              <button
+                onClick={() => { if (window.confirm(`Supprimer cette activité ?\n\n« ${(ev.texte || "").slice(0, 80)}${(ev.texte || "").length > 80 ? "…" : ""} »`)) onSupprimer(ev); }}
+                title="Supprimer cette activité"
+                className="shrink-0 self-center rounded-lg px-1.5 py-1 text-[12px] text-slate-300 opacity-0 transition-colors hover:bg-red-50 hover:text-red-500 group-hover/act:opacity-100"
+              >🗑️</button>
+            )}
           </div>
         );
       })}
@@ -2290,7 +2300,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onSupprimerDevis }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onSupprimerDevis, onSupprimerActivite }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2301,6 +2311,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onRouvrirDevis: (dv: DevisArchive) => void; // recharge un devis archivé dans le module Devis (lié à son original)
   onMarquerDevisEnvoye: (devisId: string) => void; // passe le devis au statut « Envoyé au client »
   onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
+  onSupprimerActivite: (ev: Activite) => void; // supprime une activité de la timeline (erreur de saisie)
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
@@ -2454,7 +2465,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
             <div className="mt-3">
-              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} />
+              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} />
             </div>
           </div>
 
@@ -3928,6 +3939,15 @@ export default function App() {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: [...x.activites, activite] } : x)) }));
   };
 
+  // Suppression d'une activité en cas d'erreur de saisie (poubelle de la
+  // timeline). Identification par RÉFÉRENCE d'objet : l'événement affiché EST
+  // l'objet stocké dans `entreprises[].activites` (même après tri), donc le
+  // filtrage par référence retire exactement la bonne ligne — fiable même si
+  // deux activités ont un contenu identique (pas d'identifiant dédié).
+  const supprimerActivite = (id: string, ev: Activite) => {
+    setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: x.activites.filter((a) => a !== ev) } : x)) }));
+  };
+
   // Édition directe depuis le panneau « À propos » de la fiche entreprise :
   // on n'applique que le PATCH (champs modifiés) sur l'objet existant, de façon
   // immuable. La sauvegarde Supabase suit toute seule via le useEffect.
@@ -4300,7 +4320,8 @@ export default function App() {
             onMajContacts={majContacts}
             onRouvrirDevis={rouvrirDevis}
             onMarquerDevisEnvoye={(devisId) => marquerDevisEnvoyeParId(fiche.id, devisId)}
-            onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)} />
+            onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)}
+            onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
