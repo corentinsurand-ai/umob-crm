@@ -242,7 +242,10 @@ export interface MailDevis { destinataire: string; objet: string; corps: string;
 // Ce que le module transmet au CRM au moment de la sauvegarde.
 export interface SauvegardeDevis { societe: string; commentaire: string; brouillon: DevisBrouillon; resume: DevisResume; mail: MailDevis; }
 // Ce qui est archivé sur la fiche entreprise (id + horodatage ajoutés par App.tsx).
-export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string };
+// statut : "enregistre" = simplement archivé sur la fiche ; "envoye" = le
+// devis est parti au client (mail + PDF). Les archives créées avant ce champ
+// n'en portent pas → affichées « Enregistré » par défaut.
+export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string; statut?: "enregistre" | "envoye"; dateEnvoiFr?: string };
 
 // Modèle de corps de mail pour l'envoi du devis (persisté dans l'état du CRM
 // via etat.modelesMailDevis → Supabase). Les variables {{...}} sont remplacées
@@ -474,7 +477,7 @@ export function telechargerPdfDevis(r: DevisResume): string {
 // utilisé pour passer le PDF à l'API d'envoi réel.
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -486,6 +489,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // Modèles de corps de mail pour l'envoi du devis (persistés dans le CRM).
   modelesMail?: ModeleMailDevis[];
   onModelesMail?: (m: ModeleMailDevis[]) => void;
+  // Signale au CRM qu'un devis vient d'être envoyé au client (mail + PDF) :
+  // le CRM marque « Envoyé » l'archive correspondante sur la fiche entreprise.
+  onDevisEnvoye?: (societe: string, numOffre: string) => void;
 }) {
   const b: Partial<DevisBrouillon> = brouillon ?? {};
 
@@ -757,6 +763,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     const objetFinal = objetMail ?? mail.objet;
     const corpsFinal = corpsMail ?? corpsCourtMail(resume);
     window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
+    // Le devis part au client : la fiche entreprise le marque « Envoyé ».
+    onDevisEnvoye?.(societe, resume.numOffre);
     setRetourAction(`✉️ Brouillon ouvert dans ton Outlook — ta signature par défaut (logo inclus) s'insère normalement ; sinon un clic dans Insertion → Signature. Joins le PDF « ${nomPdf} » (déjà téléchargé), relis, et envoie !`);
     setVoletMailOuvert(false);
   };
@@ -1677,3 +1685,4 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     </div>
   );
 }
+
