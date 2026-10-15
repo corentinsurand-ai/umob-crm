@@ -1994,7 +1994,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               <PropTexte label="Téléphone" valeur={e.tel} onChange={(v) => onModifie({ tel: v })} />
               <PropTexte label="Site web" valeur={e.site} onChange={(v) => onModifie({ site: v })} />
               {/* Champs calculés : lecture seule. */}
-              <Prop label="Contacts" valeur={String(contacts.length)} />
               <Prop label="Pipeline actif" valeur={`${pipeline} k€`} />
             </div>
             {/* Les notes libres s'affichent en encart sous les propriétés. */}
@@ -3343,6 +3342,11 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
 
 /* ============================== APP ============================== */
 
+type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda";
+// Clé localStorage de la dernière page visitée (vue + fiche ouverte) : un
+// refresh (F5 / Ctrl+F5) doit REVENIR sur la page où l'on était, pas sur l'accueil.
+const CLE_NAV = "umob-crm-nav";
+
 /* Composant racine : détient l'ÉTAT GLOBAL unique (`etat` = toute la base),
    le routeur interne (vue active, fiche ouverte, modale ouverte) et les
    mutations (sauver / supprimer / déplacer / journaliser une activité). */
@@ -3353,7 +3357,7 @@ export default function App() {
   const [erreurChargement, setErreurChargement] = useState<string | null>(null);
   const [sync, setSync] = useState<"ok" | "ecriture" | "erreur">("ok"); // état de synchronisation
   const charge = useRef(false);                              // vrai dès que l'état initial est arrivé
-  const [vue, setVue] = useState<"dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda">("dashboard"); // liste affichée
+  const [vue, setVue] = useState<VueCRM>("dashboard"); // liste affichée
   const [recherche, setRecherche] = useState("");     // recherche globale du header
   const [cible, setCible] = useState<Cible | null>(null); // modale ouverte (null = fermée)
   const [fiche, setFiche] = useState<FicheRef | null>(null); // page record ouverte (null = liste)
@@ -3371,14 +3375,45 @@ export default function App() {
   // pour laisser place à la fiche (comme HubSpot qui navigue d'une fiche à l'autre).
   const ouvrirFiche = (f: FicheRef) => { setFiche(f); setCible(null); };
 
+  // ── Persistance de la NAVIGATION : un refresh (F5 / Ctrl+F5) ne doit PAS
+  // renvoyer sur la page d'accueil. La vue et la fiche ouvertes sont mémorisées
+  // dans localStorage à chaque changement. On n'écrit PAS pendant le chargement
+  // initial : il faut d'abord RESTAURER la dernière page (voir ci-dessous),
+  // sinon les valeurs par défaut écraseraient la mémoire avant la restauration.
+  useEffect(() => {
+    if (chargement) return;
+    try { localStorage.setItem(CLE_NAV, JSON.stringify({ vue, fiche })); } catch { /* stockage indisponible : sans blocage */ }
+  }, [vue, fiche, chargement]);
+
   // Chargement initial : l'état complet vient de Supabase. Première ouverture
   // (aucune ligne en base) → écran d'initialisation — on ne pré-remplit
   // JAMAIS les données sans décision explicite.
   useEffect(() => {
     chargerEtat()
       .then((d) => {
-        if (d) setEtat(normaliser(d as Etat));
-        else setBaseVide(true);
+        if (d) {
+          const etatCharge = normaliser(d as Etat);
+          setEtat(etatCharge);
+          // ── Restauration de la dernière page visitée : APRÈS le chargement de
+          // la base, quand les ids existent vraiment. Une fiche supprimée depuis
+          // → retour accueil, jamais un écran vide. localStorage corrompu ou
+          // indisponible → accueil, sans blocage.
+          try {
+            const raw = localStorage.getItem(CLE_NAV);
+            if (raw) {
+              const nav = JSON.parse(raw) as { vue?: VueCRM; fiche?: FicheRef | null };
+              if (nav.vue) setVue(nav.vue);
+              if (nav.fiche) {
+                const f = nav.fiche;
+                const existe =
+                  (f.type === "entreprise" && etatCharge.entreprises.some((x) => x.id === f.id)) ||
+                  (f.type === "contact" && etatCharge.contacts.some((x) => x.id === f.id)) ||
+                  (f.type === "deal" && etatCharge.deals.some((x) => x.id === f.id));
+                if (existe) setFiche(f);
+              }
+            }
+          } catch { /* localStorage indisponible ou corrompu : accueil, sans blocage */ }
+        } else setBaseVide(true);
       })
       .catch((err: unknown) => setErreurChargement(err instanceof Error ? err.message : String(err)))
       .finally(() => { setChargement(false); charge.current = true; });
