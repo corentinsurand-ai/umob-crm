@@ -2018,7 +2018,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 Chaque ligne est éditable sur place (même mécanisme inline
                 que le panneau À propos). Source des données auto : Sheet
                 « Infos Service Client » (packs, dates, véhicules, Locam). */}
-            {(e.pack || e.contratLocam || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length) || (e.contrats && e.contrats.length)) && (
+            {(e.pack || e.contratLocam || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
               <CarteFiche titre="🛵 Contrat & flotte">
                 <div className="space-y-2">
                   {e.risque && (
