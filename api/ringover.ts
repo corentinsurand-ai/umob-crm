@@ -397,6 +397,8 @@ export default async function handler(req: any, res: any) {
   };
 
   // ── Tâche CRM automatique : transforme l'action recommandée en tâche planifiée ──
+  // Autonome : ses propres date/dateISO (p2/date/dateISO principaux sont déclarés plus bas,
+  // et ce helper est aussi appelé dans le chemin "fusion" AVANT leur déclaration)
   const creerTacheSuivante = (ent: any, a: any): boolean => {
     const actionTxt = String(ia.action || "").trim();
     if (!actionTxt || actionTxt.length < 5 || !ent) return false;
@@ -404,10 +406,14 @@ export default async function handler(req: any, res: any) {
     if ((ent.activites || []).some((x: any) => x.tacheDepuisAppel === appelId)) return false;
     let delai = Number(ia.delaiJours);
     if (!Number.isFinite(delai) || delai < 1 || delai > 14) delai = 2;
+    const n = new Date();
+    const q2 = (x: number) => (x < 10 ? "0" : "") + x;
     const ech = new Date(Date.now() + delai * 86400000);
     const tache: any = {
-      date, dateISO, type: "tache",
-      echeance: p2(ech.getDate()) + "/" + p2(ech.getMonth() + 1) + "/" + ech.getFullYear(),
+      date: q2(n.getHours()) + ":" + q2(n.getMinutes()),
+      dateISO: q2(n.getDate()) + "/" + q2(n.getMonth() + 1) + "/" + n.getFullYear(),
+      type: "tache",
+      echeance: q2(ech.getDate()) + "/" + q2(ech.getMonth() + 1) + "/" + ech.getFullYear(),
       texte: "✅ " + actionTxt.slice(0, 300) + " (suggérée par l'IA après l'appel)",
       tacheDepuisAppel: appelId,
     };
