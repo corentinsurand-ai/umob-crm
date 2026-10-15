@@ -245,17 +245,23 @@ export interface SauvegardeDevis { societe: string; commentaire: string; brouill
 export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string };
 
 // ==================== PDF DU DEVIS (génération native, zéro dépendance) ====================
-// Le devis client est mis en page « à la main » dans un PDF minimaliste
-// (Helvetica standard, encodage WinAnsi), construit octet par octet dans le
-// navigateur : pas de librairie externe, pas d'appel réseau. Version CLIENT
-// uniquement — jamais de grille, reprise ou commission (R10). Les emojis et
-// caractères hors WinAnsi sont exclus (le texte du PDF reste sobre).
+// Mise en page fidèle à l'écran « Devis client » du module : logo U'mob
+// vectoriel (cercle vert + éclair), accents émeraude, en-têtes de tableaux
+// teintés, filets fins, totaux en évidence, cadre « Bon pour accord ».
+// Toujours construit octet par octet dans le navigateur (Helvetica/WinAnsi,
+// zéro dépendance, pas d'appel réseau). Version CLIENT uniquement — jamais
+// de grille, reprise ou commission (R10).
 export function genererPdfDevis(r: DevisResume): Blob {
   const W = 595.28, H = 841.89, M = 54; // A4 portrait, marge 54 pt
-  const fr = (n: number) => (Math.round((n || 0) * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
-  // Accentuations spécifiques WinAnsi (€, apostrophe courbe, tirets…) ;
-  // le reste passe en latin-1 tel quel, caractères exotiques → « ? ».
-  const WIN: Record<string, string> = { "\u20AC": "\u0080", "\u2019": "\u0092", "\u2018": "\u0091", "\u2013": "\u0096", "\u2014": "\u0097", "\u2022": "\u0095", "\u2026": "\u0085", "\u00A0": " " };
+  // Format € : espaces de milliers « normales » (les séparateurs insécables
+  // de toLocaleString ne passent pas en WinAnsi et deviendraient des « ? »).
+  const fr = (n: number) => {
+    const v = Math.round((n || 0) * 100) / 100;
+    const parties = Math.abs(v).toFixed(2).split(".");
+    const entier = parties[0].replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+    return (v < 0 ? "-" : "") + entier + "," + parties[1] + " €";
+  };
+  const WIN: Record<string, string> = { "\u20AC": "\u0080", "\u2019": "\u0092", "\u2018": "\u0091", "\u2013": "\u0096", "\u2014": "\u0097", "\u2022": "\u0095", "\u2026": "\u0085", "\u00A0": " ", "\u202F": " " };
   const esc = (s: string) => {
     let o = "";
     for (const ch of String(s ?? "")) {
@@ -264,85 +270,169 @@ export function genererPdfDevis(r: DevisResume): Blob {
       const c = ch.codePointAt(0) ?? 63;
       o += c >= 32 && c <= 255 ? String.fromCharCode(c) : "?";
     }
-    return o.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+    return o.split("\\").join("\\\\").split("(").join("\\(").split(")").join("\\)");
   };
-  const cmds: string[] = [];
-  let y = 0;
-  const T = (x: number, yy: number, s: string, size = 9, bold = false, col = 0) => {
-    const g = col === 1 ? 0.45 : col === 2 ? 0.32 : 0;
-    cmds.push(`BT /${bold ? "F2" : "F1"} ${size} Tf ${g} g ${x.toFixed(2)} ${(H - yy).toFixed(2)} Td (${esc(s)}) Tj ET`);
-  };
-  // Alignement à droite approximé (métrique Helvetica ~0,50-0,56 em/caractère).
-  const R = (right: number, yy: number, s: string, size = 9, bold = false, col = 0) => T(right - s.length * size * (bold ? 0.56 : 0.5), yy, s, size, bold, col);
-  const L = (yy: number, w = 0.7, g = 0.85) => cmds.push(`${g} G ${w} w ${M} ${(H - yy).toFixed(2)} m ${(W - M).toFixed(2)} ${(H - yy).toFixed(2)} l S`);
 
-  // ── En-tête ──
-  y = 64; T(M, y, "U'MOB", 21, true, 2); R(W - M, y, "OFFRE A LA LOCATION", 12, true);
-  y += 15; T(M, y, "53 avenue Carnot - 69250 Neuville-sur-Saone - 04 82 29 96 78 - www.umob.fr", 8, false, 1);
-  y += 11; R(W - M, y, `N. ${r.numOffre || "-"}`, 9, false, 1);
-  y += 11; R(W - M, y, `Valable jusqu'au ${r.dateValiditeFr || "-"}`, 9, false, 1);
-  y += 12; L(y);
-  // ── Destinataire / modalités ──
-  y += 17; T(M, y, "DESTINATAIRE", 7.5, true, 1); T(W / 2 + 20, y, "MODALITE", 7.5, true, 1);
-  y += 13; T(M, y, r.societe || "-", 10.5, true); T(W / 2 + 20, y, `Mensuel a echoir - ${r.duree} mois`, 10.5);
-  y += 15; T(M, y, "VOTRE COMMERCIAL", 7.5, true, 1); T(W / 2 + 20, y, "EMIS LE", 7.5, true, 1);
-  y += 13; T(M, y, r.commercial || "-", 10.5); T(W / 2 + 20, y, r.dateEmission || "-", 10.5);
-  y += 14; L(y);
-  // ── Tableaux (matériel, prestations) ──
-  const table = (titre: string, lignes: { nom: string; qte: number; u: number; tot: number }[]) => {
-    y += 19; T(M, y, titre, 10, true, 2);
-    if (!lignes.length) return;
-    y += 14; T(M, y, "Designation", 7.5, true, 1); T(372, y, "Qte", 7.5, true, 1); R(452, y, "Loyer U. HT", 7.5, true, 1); R(W - M, y, "Loyer total HT", 7.5, true, 1);
-    y += 4; L(y, 0.5, 0.9);
-    for (const l of lignes) {
-      y += 12.5;
-      T(M, y, l.nom.length > 62 ? l.nom.slice(0, 61) + "..." : l.nom, 9);
-      T(372, y, String(l.qte), 9);
-      R(452, y, fr(l.u), 9);
-      R(W - M, y, fr(l.tot), 9, true);
-      y += 3.5; L(y, 0.4, 0.93);
-    }
+  // ── Palette & primitives de dessin vectoriel ──
+  const EMERAUDE = [0.024, 0.588, 0.412];
+  const VERT = [0.643, 0.816, 0.239];
+  const GRIS = [0.42, 0.45, 0.50];
+  const GRIS_LOGO = [0.608, 0.608, 0.608];
+  const FILET = [0.87, 0.89, 0.91];
+  const FOND_VERT = [0.93, 0.99, 0.96];
+  const FOND_GRISE = [0.965, 0.97, 0.975];
+  const NOIR = [0.11, 0.15, 0.19];
+  const BLANC = [1, 1, 1];
+  const c3 = (c: number[]) => c[0] + " " + c[1] + " " + c[2];
+  const cmds: string[] = [];
+  const Y = (yTop: number) => (H - yTop).toFixed(2);
+  const T = (x: number, yTop: number, s: string, size?: number, bold?: boolean, c?: number[], it?: boolean) => {
+    const taille = size ?? 9;
+    const f = bold ? "F2" : it ? "F3" : "F1";
+    cmds.push("BT /" + f + " " + taille + " Tf " + c3(c ?? NOIR) + " rg " + x.toFixed(2) + " " + Y(yTop) + " Td (" + esc(s) + ") Tj ET");
   };
-  table("LE MATERIEL - LOYERS MENSUELS HT", (r.articles || []).map((a) => ({ nom: a.nom, qte: a.q, u: a.loyerU, tot: a.loyerU * a.q })));
-  if ((r.packs || []).length) table("LES PRESTATIONS - LOYERS MENSUELS HT", r.packs.map((p) => ({ nom: p.nom, qte: p.qte, u: p.loyer, tot: p.total })));
-  // ── Mise en service ──
-  y += 19; T(M, y, "MISE EN SERVICE (COMPTANT)", 10, true, 2);
+  // Largeur approximative Helvetica (~0,50 em ; ~0,56 em en gras).
+  const lgeur = (s: string, size: number, bold: boolean) => String(s).length * size * (bold ? 0.56 : 0.5);
+  const R = (right: number, yTop: number, s: string, size?: number, bold?: boolean, c?: number[], it?: boolean) =>
+    T(right - lgeur(s, size ?? 9, !!bold), yTop, s, size, bold, c, it);
+  const CT = (cx: number, yTop: number, s: string, size?: number, bold?: boolean, c?: number[], it?: boolean) =>
+    T(cx - lgeur(s, size ?? 9, !!bold) / 2, yTop, s, size, bold, c, it);
+  const ligne = (x1: number, y1: number, x2: number, y2: number, c?: number[], ep?: number) =>
+    cmds.push(c3(c ?? FILET) + " RG " + (ep ?? 0.7) + " w " + x1.toFixed(2) + " " + Y(y1) + " m " + x2.toFixed(2) + " " + Y(y2) + " l S");
+  const rect = (x: number, yTop: number, w: number, h: number, c: number[]) =>
+    cmds.push(c3(c) + " rg " + x.toFixed(2) + " " + (H - yTop - h).toFixed(2) + " " + w.toFixed(2) + " " + h.toFixed(2) + " re f");
+  const cadre = (x: number, yTop: number, w: number, h: number, c?: number[], ep?: number) =>
+    cmds.push(c3(c ?? FILET) + " RG " + (ep ?? 0.8) + " w " + x.toFixed(2) + " " + (H - yTop - h).toFixed(2) + " " + w.toFixed(2) + " " + h.toFixed(2) + " re S");
+  const cercle = (cx: number, cyTop: number, rad: number, c: number[]) => {
+    const cy = H - cyTop, k = 0.5523 * rad;
+    cmds.push(c3(c) + " rg " + cx.toFixed(2) + " " + (cy + rad).toFixed(2) + " m " +
+      (cx + k).toFixed(2) + " " + (cy + rad).toFixed(2) + " " + (cx + rad).toFixed(2) + " " + (cy + k).toFixed(2) + " " + (cx + rad).toFixed(2) + " " + cy.toFixed(2) + " c " +
+      (cx + rad).toFixed(2) + " " + (cy - k).toFixed(2) + " " + (cx + k).toFixed(2) + " " + (cy - rad).toFixed(2) + " " + cx.toFixed(2) + " " + (cy - rad).toFixed(2) + " c " +
+      (cx - k).toFixed(2) + " " + (cy - rad).toFixed(2) + " " + (cx - rad).toFixed(2) + " " + (cy - k).toFixed(2) + " " + (cx - rad).toFixed(2) + " " + cy.toFixed(2) + " c " +
+      (cx - rad).toFixed(2) + " " + (cy + k).toFixed(2) + " " + (cx - k).toFixed(2) + " " + (cy + rad).toFixed(2) + " " + cx.toFixed(2) + " " + (cy + rad).toFixed(2) + " c f");
+  };
+  const poly = (pts: number[][], c: number[]) => {
+    let d = "";
+    pts.forEach((p, i) => { d += " " + p[0].toFixed(2) + " " + Y(p[1]) + (i === 0 ? " m" : " l"); });
+    cmds.push(c3(c) + " rg" + d + " f");
+  };
+
+  // ── En-tête : logo U'mob vectoriel (viewBox 310×92, échelle 0,62) + bloc « offre » ──
+  const lx = M, lt = 58, k062 = 0.62;
+  T(lx, lt + 38, "U'", 30, true, GRIS_LOGO, false);
+  cercle(lx + 92 * k062, lt + 44 * k062, 34 * k062, VERT);
+  T(lx + 36, lt + 36, "m", 27, true, BLANC, false);
+  poly([
+    [lx + 108 * k062, lt + 20 * k062], [lx + 92 * k062, lt + 44 * k062], [lx + 102 * k062, lt + 44 * k062],
+    [lx + 96 * k062, lt + 60 * k062], [lx + 114 * k062, lt + 38 * k062], [lx + 104 * k062, lt + 38 * k062],
+  ], BLANC);
+  T(lx + 86, lt + 38, "ob", 30, true, GRIS_LOGO, false);
+  T(lx, lt + 53, "ÉLECTRISEZ VOS DÉPLACEMENTS", 7, true, GRIS_LOGO, false);
+  R(W - M, 64, "OFFRE À LA LOCATION", 13, true, EMERAUDE, false);
+  R(W - M, 82, "N° " + (r.numOffre || "-"), 10, false, GRIS, false);
+  R(W - M, 96, "Valable jusqu'au " + (r.dateValiditeFr || "-"), 9.5, false, GRIS, false);
+  T(M, 124, "53 avenue Carnot · 69250 Neuville-sur-Saône · 04 82 29 96 78 · www.umob.fr", 8, false, GRIS, false);
+  ligne(M, 134, W - M, 134, FILET, 1.2);
+
+  // ── Bloc destinataire / modalités (2 colonnes, comme à l'écran) ──
+  let y = 158;
+  T(M, y, "DESTINATAIRE", 7, true, GRIS, false); T(W / 2 + 20, y, "MODALITÉ", 7, true, GRIS, false);
   y += 14;
-  if (typeof r.miseADispoTot === "number" && typeof r.fraisDossierTot === "number") {
-    T(M, y, `Mise a disposition (immatriculation & livraison) x ${r.nbChassis}`, 9); R(W - M, y, fr(r.miseADispoTot), 9);
-    y += 12.5; T(M, y, `Frais de dossier x ${r.nbChassis}`, 9); R(W - M, y, fr(r.fraisDossierTot), 9);
-    y += 12.5;
-  }
-  T(M, y, "Total mise en service", 9, true); R(W - M, y, fr(r.miseService), 9, true);
+  T(M, y, r.societe || "-", 10.5, true, NOIR, false);
+  T(W / 2 + 20, y, "Mensuel à échoir · " + r.duree + " mois", 10.5, false, NOIR, false);
+  y += 16;
+  T(M, y, "VOTRE COMMERCIAL", 7, true, GRIS, false); T(W / 2 + 20, y, "ÉMIS LE", 7, true, GRIS, false);
+  y += 14;
+  T(M, y, r.commercial || "-", 10.5, true, NOIR, false);
+  T(W / 2 + 20, y, r.dateEmission || "-", 10.5, false, NOIR, false);
+  if ((r.commercial || "") === "Corentin Surand") T(M, y + 11, "corentin.surand@umob.fr · 04 82 29 96 78", 8, false, GRIS, false);
+  y += 24;
+  ligne(M, y, W - M, y, FILET, 0.7);
+
+  // ── Tableaux Matériel / Prestations ──
+  const table = (titre: string, lignes: any[]) => {
+    y += 24; T(M, y, titre, 10.5, true, EMERAUDE, false);
+    if (!lignes.length) return;
+    y += 8;
+    rect(M, y, W - 2 * M, 17, FOND_VERT);
+    T(M + 7, y + 12, "DÉSIGNATION", 7, true, GRIS, false);
+    CT(392, y + 12, "QTÉ", 7, true, GRIS, false);
+    R(456, y + 12, "LOYER U. HT", 7, true, GRIS, false);
+    R(W - M - 7, y + 12, "LOYER TOTAL HT", 7, true, GRIS, false);
+    y += 17;
+    lignes.forEach((l) => {
+      T(M + 7, y + 10.5, l.nom.length > 58 ? l.nom.slice(0, 57) + "…" : l.nom, 9, false, NOIR, false);
+      CT(392, y + 10.5, String(l.qte), 9, false, NOIR, false);
+      R(456, y + 10.5, fr(l.u), 9, false, NOIR, false);
+      R(W - M - 7, y + 10.5, fr(l.tot), 9, true, NOIR, false);
+      y += 16.5;
+      ligne(M + 7, y, W - M - 7, y, FILET, 0.5);
+    });
+  };
+  table("LE MATÉRIEL — LOYERS MENSUELS HT", (r.articles || []).map((a: any) => ({ nom: a.nom, qte: a.q, u: a.loyerU, tot: a.loyerU * a.q })));
+  if ((r.packs || []).length) table("LES PRESTATIONS — LOYERS MENSUELS HT", r.packs.map((p: any) => ({ nom: p.nom, qte: p.qte, u: p.loyer, tot: p.total })));
+
+  // ── Mise en service (comptant) ──
+  y += 24; T(M, y, "MISE EN SERVICE (COMPTANT)", 10.5, true, EMERAUDE, false);
+  y += 8;
+  rect(M, y, W - 2 * M, 17, FOND_VERT);
+  T(M + 7, y + 12, "DÉSIGNATION", 7, true, GRIS, false);
+  R(W - M - 7, y + 12, "MONTANT HT", 7, true, GRIS, false);
+  y += 17;
+  const ligneMes = (lib: string, val: number, gras: boolean) => {
+    T(M + 7, y + 10.5, lib, 9, gras, NOIR, false);
+    R(W - M - 7, y + 10.5, fr(val), 9, gras, NOIR, false);
+    y += 16.5;
+    ligne(M + 7, y, W - M - 7, y, FILET, 0.5);
+  };
+  if (typeof r.miseADispoTot === "number") ligneMes("Mise à disposition (immatriculation & livraison) × " + r.nbChassis, r.miseADispoTot, false);
+  if (typeof r.fraisDossierTot === "number") ligneMes("Frais de dossier × " + r.nbChassis, r.fraisDossierTot, false);
+  ligneMes("TOTAL MISE EN SERVICE", r.miseService, true);
+
   // ── Totaux ──
-  y += 18; L(y);
-  y += 17; R(W - M, y, `Total mensuel HT : ${fr(r.loyerMensuelHT)}`, 10);
-  y += 14; R(W - M, y, `TVA 20 % : ${fr((r.loyerMensuelTTC || 0) - (r.loyerMensuelHT || 0))}`, 10);
-  y += 14; R(W - M, y, `Total TTC/mois : ${fr(r.loyerMensuelTTC)}`, 11, true);
-  y += 16; R(W - M, y, `Contrat ${r.duree} loyers TTC : ${fr((r.loyerMensuelTTC || 0) * r.duree)}`, 10, true);
+  y += 22;
+  R(W - M, y, "Total mensuel HT :  " + fr(r.loyerMensuelHT), 10, false, NOIR, false);
+  y += 15;
+  R(W - M, y, "TVA 20 % :  " + fr((r.loyerMensuelTTC || 0) - (r.loyerMensuelHT || 0)), 10, false, NOIR, false);
+  y += 20;
+  rect(300, y - 7, W - M - 300, 23, FOND_VERT);
+  R(W - M - 8, y + 9, "TOTAL TTC / MOIS :  " + fr(r.loyerMensuelTTC), 11.5, true, EMERAUDE, false);
+  y += 27;
+  R(W - M, y, "Contrat " + r.duree + " loyers TTC :  " + fr((r.loyerMensuelTTC || 0) * r.duree), 10.5, true, NOIR, false);
+
+  // ── Bon pour accord ──
+  y += 26;
+  rect(M, y, 250, 62, FOND_GRISE);
+  cadre(M, y, 250, 62, FILET, 0.8);
+  T(M + 9, y + 15, "BON POUR ACCORD", 9, true, NOIR, false);
+  T(M + 9, y + 36, "Le : ……………………………", 8.5, false, NOIR, false);
+  T(M + 9, y + 54, "Signature :", 8.5, false, NOIR, false);
+
   // ── Pied de page ──
-  y = H - 96; L(y);
-  y += 14; T(M, y, "Sous reserve de validation par U'MOB apres analyse financiere du dossier du locataire.", 8, false, 1);
-  y += 13; T(M, y, "Bon pour accord - Le : .......................    Signature :", 8.5, false);
+  const yFin = H - 58;
+  ligne(M, yFin, W - M, yFin, FILET, 0.7);
+  T(M, yFin + 13, "Sous réserve de validation par U'MOB après analyse financière du dossier du locataire.", 8, false, GRIS, true);
+  T(M, yFin + 26, "U'MOB · 53 avenue Carnot, 69250 Neuville-sur-Saône · 04 82 29 96 78 · www.umob.fr", 7.5, false, GRIS, false);
 
   // ── Assemblage du fichier PDF (objets + xref calculés au fil de l'eau) ──
   const contenu = cmds.join("\n");
   const objets = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>`,
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + W + " " + H + "] /Resources << /Font << /F1 4 0 R /F2 5 0 R /F3 6 0 R >> >> /Contents 7 0 R >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
-    `<< /Length ${contenu.length} >>\nstream\n${contenu}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>",
+    "<< /Length " + contenu.length + " >>\nstream\n" + contenu + "\nendstream",
   ];
   const morceaux: string[] = []; let pos = 0; const offsets: number[] = [];
   const push = (s: string) => { morceaux.push(s); pos += s.length; };
   push("%PDF-1.4\n");
-  objets.forEach((o, i) => { offsets.push(pos); push(`${i + 1} 0 obj\n${o}\nendobj\n`); });
+  objets.forEach((o, i) => { offsets.push(pos); push((i + 1) + " 0 obj\n" + o + "\nendobj\n"); });
   const xrefPos = pos;
-  let xref = `xref\n0 ${objets.length + 1}\n0000000000 65535 f \n`;
+  let xref = "xref\n0 " + (objets.length + 1) + "\n0000000000 65535 f \n";
   offsets.forEach((o) => { xref += String(o).padStart(10, "0") + " 00000 n \n"; });
-  push(xref + `trailer\n<< /Size ${objets.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF`);
+  push(xref + "trailer\n<< /Size " + (objets.length + 1) + " /Root 1 0 R >>\nstartxref\n" + xrefPos + "\n%%EOF");
   const binaire = morceaux.join("");
   const octets = new Uint8Array(binaire.length);
   for (let i = 0; i < binaire.length; i++) octets[i] = binaire.charCodeAt(i) & 0xff;
