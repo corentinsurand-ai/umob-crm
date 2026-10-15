@@ -484,6 +484,14 @@ export function telechargerPdfDevis(r: DevisResume): string {
   } catch { /* échec du téléchargement : sans bloquer l'ouverture du mail */ }
   return nom;
 }
+// Blob → base64 par tranches (btoa n'avale pas un gros buffer d'un coup) —
+// utilisé pour passer le PDF à l'API d'envoi réel.
+async function blobVersBase64(blob: Blob): Promise<string> {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  let s = "";
+  for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}
 
 // ==================== MODULE ====================
 export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail }: {
@@ -554,6 +562,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   const [fNom, setFNom] = useState("");
   const [fObjet, setFObjet] = useState("");
   const [fCorps, setFCorps] = useState("");
+  const [envoiEnCours, setEnvoiEnCours] = useState(false);
   const corpsMailRef = useRef<any>(null);
   const [microActif, setMicroActif] = useState(false);
   const microRef = useRef<any>(null);
@@ -753,14 +762,32 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     else if (ok) { setRetourAction(`✅ Devis ${resume.numOffre} sauvegardé sur la fiche « ${societe} » — visible dans la section 🧾 Devis et la timeline de l'entreprise.`); setCommentaire(""); }
     else setRetourAction(`❌ « ${societe || "—"} » n'existe pas dans le CRM. Utilise 🔍 Chercher un compte (étape 1) ou crée la fiche d'abord.`);
   };
+  const corpsCourtMail = (resume: DevisResume): string =>
+    `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
+  // Envoi réel via /api/envoyer-devis (Resend) : HTML aux couleurs U'mob,
+  // signature complète et PDF joint automatiquement. Retourne false → repli mailto.
+  const envoyerMailReel = async (destinataire: string, objet: string, corps: string): Promise<boolean> => {
+    const resume = construireResume();
+    const nom = `Devis-Umob-${(resume.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf`;
+    try {
+      const pdfBase64 = await blobVersBase64(genererPdfDevis(resume));
+      const rep = await fetch("/api/envoyer-devis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ destinataire, objet, texte: corps, nomPdf: nom, pdfBase64 }),
+      });
+      const data: any = await rep.json().catch(() => ({}));
+      if (rep.ok) { setRetourAction(`✅ Devis envoyé à ${destinataire} — le PDF « ${nom} » est joint automatiquement au mail.`); setVoletMailOuvert(false); return true; }
+      return false;
+    } catch { return false; }
+  };
+  // Repli mailto : PDF téléchargé + messagerie locale pré-remplie (PDF à joindre).
   const envoyerMail = (objetMail?: string, corpsMail?: string) => {
     const resume = construireResume();
-    // Le devis complet part en PDF (téléchargé) : le corps du mail vient du
-    // modèle choisi dans le volet, sinon message court par défaut.
     const nomPdf = telechargerPdfDevis(resume);
     const mail = construireMail(resume);
     const objetFinal = objetMail ?? mail.objet;
-    const corpsFinal = corpsMail ?? `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
+    const corpsFinal = corpsMail ?? corpsCourtMail(resume);
     window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
     setRetourAction(`📄 PDF « ${nomPdf} » généré et téléchargé — joins-le en pièce jointe du message qui vient de s'ouvrir (aucune donnée interne n'y figure).`);
   };
@@ -1533,7 +1560,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                 {retourAction && <p className="text-sm text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">{retourAction}</p>}
                 <p className="text-xs text-slate-400">
                   Le devis complet (brouillon ré-ouvrable) est archivé avec le commentaire — on le relance depuis la fiche entreprise → « 🚀 Rouvrir ».
-                  « ✉️ Envoyer par mail » ouvre le volet des modèles de corps de mail : tu choisis un modèle (ou le message court par défaut), le devis part en PDF (mis en page, sans données internes) et ta messagerie s'ouvre pré-remplie — il ne reste qu'à joindre le PDF.
+                  « ✉️ Envoyer par mail » ouvre le volet des modèles de corps de mail : tu choisis un modèle (ou le message court par défaut) et le devis part directement par e-mail — PDF joint automatiquement, logo et signature U'mob. Si l'envoi direct n'est pas configuré, repli sur ta messagerie (PDF à joindre).
                 </p>
               </CardContent>
             </Card>
@@ -1623,8 +1650,24 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                     </div>
                   )}
                   <div className="border-t bg-white p-4 space-y-2 shrink-0">
-                    <Button className="w-full" onClick={() => { setVoletMailOuvert(false); envoyerMail(modeleChoisi ? rendreModeleMail(modeleChoisi.objet, apercuResume) : undefined, modeleChoisi ? rendreModeleMail(modeleChoisi.corps, apercuResume) : undefined); }}>
-                      {modeleChoisi ? `✉️ Envoyer avec « ${modeleChoisi.nom} »` : "✉️ Envoyer (message court)"}
+                    <Button
+                      className="w-full"
+                      disabled={envoiEnCours}
+                      onClick={async () => {
+                        if (envoiEnCours) return;
+                        setEnvoiEnCours(true);
+                        try {
+                          const mail = construireMail(apercuResume);
+                          const objet = modeleChoisi ? rendreModeleMail(modeleChoisi.objet, apercuResume) : mail.objet;
+                          const corps = modeleChoisi ? rendreModeleMail(modeleChoisi.corps, apercuResume) : corpsCourtMail(apercuResume);
+                          if (mail.destinataire && (await envoyerMailReel(mail.destinataire, objet, corps))) return;
+                          setVoletMailOuvert(false);
+                          envoyerMail(objet, corps);
+                          setRetourAction("⚠️ Envoi direct indisponible (RESEND_API_KEY + MAIL_FROM à configurer dans Vercel) — repli sur ta messagerie : le PDF est téléchargé, joins-le au message qui vient de s'ouvrir.");
+                        } finally { setEnvoiEnCours(false); }
+                      }}
+                    >
+                      {envoiEnCours ? "⏳ Envoi en cours…" : modeleChoisi ? `✉️ Envoyer avec « ${modeleChoisi.nom} »` : "✉️ Envoyer (message court)"}
                     </Button>
                     <Button variant="outline" className="w-full bg-white" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>Annuler</Button>
                   </div>
