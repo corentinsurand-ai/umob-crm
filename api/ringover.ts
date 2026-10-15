@@ -39,9 +39,20 @@ const PROMPT_SYSTEME =
 
 const attendre = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Extraction de texte de transcription depuis n'importe quelle forme de réponse
-// (chaîne, tableau d'objets text/content, imbriquée dans data/list, etc.)
+// Extraction du texte de transcription depuis la réponse RÉELLE de
+// GET /v2/transcriptions/{call_id} : [{ transcription_data: { speeches: [{ text }], text } }]
+// (priorité au format confirmé en prod ; repli sur le scan générique)
 const extraireTexte = (j: any): string => {
+  const tab = Array.isArray(j) ? j : [j];
+  for (const el of tab) {
+    const td = el?.transcription_data ?? el?.data?.transcription_data;
+    if (td && Array.isArray(td.speeches) && td.speeches.length) {
+      const phrases = td.speeches.map((s: any) => (typeof s?.text === "string" ? s.text.trim() : "")).filter(Boolean);
+      if (phrases.length) return phrases.join("\n");
+    }
+    if (typeof td?.text === "string" && td.text.trim().length > 20) return td.text.trim();
+    if (typeof el?.summary?.text === "string" && el.summary.text.trim().length > 20) return el.summary.text.trim();
+  }
   const parcourir = (x: any, profondeur: number): string => {
     if (x == null || profondeur > 4) return "";
     if (typeof x === "string") return x.trim();
@@ -172,6 +183,18 @@ export default async function handler(req: any, res: any) {
         diag.note = "aucun appel dans l'historique et aucun paramètre call_id — visite /api/ringover?call_id=... (le call_id figure dans les logs du webhook) ou passe un appel";
       }
     } catch (e: any) { diag.erreurGlobal = String(e).slice(0, 200); }
+    // ── REPLAY : ?call_id=...&replay=1 → rejoue le pipeline POST sur cet appel ──
+    if (pid && params.get("replay")) {
+      try {
+        const host = (req.headers && (req.headers.host || req.headers["x-forwarded-host"])) || "umob-crm.vercel.app";
+        const rep = await fetch("https://" + host + "/api/ringover", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resource: "replay", event: "hangup", data: { call_id: pid, channel_id: pch } }),
+        });
+        diag.replay = { statut: rep.status, corps: (await rep.text()).slice(0, 2000) };
+      } catch (e: any) { diag.replay = { erreur: String(e).slice(0, 200) }; }
+    }
     return res.status(200).json(diag);
   }
 
@@ -216,15 +239,18 @@ export default async function handler(req: any, res: any) {
           if (!caller) caller = pick(appel, ["from_number", "caller_number", "from", "source_number"]);
           if (!receiver) receiver = pick(appel, ["to_number", "receiver_number", "to", "destination_number"]);
           if (!canal) canal = pick(appel, ["channel_id"]);
-          if (!duration) duration = Number(pick(appel, ["duration", "call_duration", "length"])) || 0;
-          if (!enregistrement) enregistrement = pick(appel, ["recording_url", "record_url", "url_recording"]);
+          if (!duration) duration = Number(pick(appel, ["incall_duration", "total_duration", "duration", "call_duration", "length"])) || 0;
+          if (!enregistrement) enregistrement = pick(appel, ["record", "recording_url", "record_url", "url_recording"]);
+          // résumé IA fourni par Ringover (champ summary du détail d'appel) — repli si pas de transcription
+          const sumTxt = appel?.summary?.text;
+          if (typeof sumTxt === "string" && sumTxt.trim().length > 20) transcription = sumTxt.trim().slice(0, 12000);
           console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, canal }));
         }
       }
       // ── Transcription : routes documentées, testées dans l'ordre (rate limit 2/s) ──
       const essais = [
+        "https://public-api.ringover.com/v2/transcriptions/" + appelId, // route confirmée en prod (200)
         "https://public-api.ringover.com/v2/calls/" + appelId + "/transcription",
-        "https://public-api.ringover.com/v2/transcriptions/" + appelId,
       ];
       for (const url of essais) {
         if (transcription) break;
@@ -369,6 +395,11 @@ export default async function handler(req: any, res: any) {
   }
   if (deja) {
     const a = deja.activite;
+    // une transcription déjà stockée sous forme "un mot par ligne" est un artefact
+    // de l'ancien extracteur → on la considère comme absente pour la remplacer
+    const lignes = String(a.transcription || "").split("\n");
+    const garbage = a.transcription && lignes.length >= 30 && lignes.every((l: string) => l.trim().split(/\s+/).length <= 3);
+    if (garbage) delete a.transcription;
     let modifie = false;
     if (transcription && !a.transcription) { a.transcription = transcription; modifie = true; }
     if (enregistrement && !a.urlEnregistrement) { a.urlEnregistrement = enregistrement; modifie = true; }
