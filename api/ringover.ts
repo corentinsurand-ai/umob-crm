@@ -416,6 +416,7 @@ export default async function handler(req: any, res: any) {
     const tache: any = {
       date: q2(n.getHours()) + ":" + q2(n.getMinutes()),
       dateISO: q2(n.getDate()) + "/" + q2(n.getMonth() + 1) + "/" + n.getFullYear(),
+      heure: q2(n.getHours()) + ":" + q2(n.getMinutes()),
       type: "tache",
       echeance: q2(ech.getDate()) + "/" + q2(ech.getMonth() + 1) + "/" + ech.getFullYear(),
       texte: "✅ " + actionTxt.slice(0, 300) + " (suggérée par l'IA après l'appel)",
@@ -492,7 +493,7 @@ export default async function handler(req: any, res: any) {
   const sens = entrant ? "entrant" : "sortant";
   const numAffiche = (numeroClient || "").replace(/(\d{2})(?=\d)/g, "$1 ").trim();
   const act: any = {
-    date, dateISO, type: "appel", appelId,
+    date, dateISO, heure: date, type: "appel", appelId,
     texte: "📞 Appel " + sens + (numeroClient ? (entrant ? " de " : " vers ") + numAffiche : "") + (dureeTxt ? " · " + dureeTxt : "") + (transcription ? "" : " (transcription en attente)"),
     numeroAppel: numeroClient, directionAppel: sens, dureeAppel: dureeTxt,
   };
