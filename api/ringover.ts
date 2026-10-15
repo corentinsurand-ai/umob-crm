@@ -1,15 +1,33 @@
 // ── Webhook Ringover → CRM U'mob ────────────────────────────────────────────
 // Fonction serverless Vercel : Ringover pousse ici ses événements d'appel.
-//   1. journalise le payload brut (calibration, cf. logs Vercel)
-//   2. ignore les événements bruyants (ringing, answered, contact…)
-//   3. récupère détails (numéros, durée, enregistrement) via l'API publique Ringover
-//   4. récupère la transcription (Empower)
-//   5. analyse IA Mistral : analyse commerciale + EXTRACTION des indications
-//      données par l'appelant (entreprise, ville, secteur, franchiseur, activité,
-//      mode de livraison, contact, e-mail, besoin) → remplissage automatique
-//      des fiches, UNIQUEMENT les champs vides, valeurs normalisées des menus.
+//
+// GET  /api/ringover        → diagnostic complet (sans appel téléphonique) :
+//                             lit les derniers appels via l'API, teste les routes
+//                             de transcription/enregistrement documentées et
+//                             renvoie les statuts + extraits. Calibrage réel.
+// POST /api/ringover        → traitement d'un événement webhook Ringover :
+//   1. journalise le payload brut
+//   2. ignore le bruit (ringing, answered, contact…)
+//   3. récupère détails (numéros, durée, enregistrement) via GET /v2/calls/{id}
+//      (réponse documentée : {list_count, list:[...]})
+//   4. récupère la transcription (routes documentées, testées dans l'ordre)
+//   5. analyse IA Mistral + extraction des indications de l'appelant
+//   6. rattache à une fiche (matching numéro) ou crée un Suspect ; fusion tardive
+//
+// Doc officielle (developer.ringover.com, Ringover Public API 2.1.0) :
+//   - Base URL : https://public-api.ringover.com/v2
+//   - Auth     : header "Authorization: <api-key>" (SANS préfixe Bearer)
+//   - Rate limit : 2 req/s par clé → petites pauses entre les requêtes
+//   - Permissions : Calls/Empower R/W par clé ; Monitoring ON = toute l'équipe
+//   - Transcriptions : accès contrôlé par un réglage au niveau de l'ÉQUIPE
+//   - Liste des calls : GET /v2/calls → {list_count, list:[{cdr_id, call_id,
+//     channel_id, direction, from_number, to_number, duration, ...}]}
+//   - Sections doc : calls (get call by id, recording by channel), transcriptions
+//     (list / get single by call ID), empower (call details by uuid, summary,
+//     key moments, call uuid from platform+channel)
 // Variables d'environnement Vercel : SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-//   RINGOVER_API_KEY, MISTRAL_API_KEY, RINGOVER_NOS_NUMEROS (ex. "0449392956")
+//   RINGOVER_API_KEY, MISTRAL_API_KEY, RINGOVER_NOS_NUMEROS,
+//   RINGOVER_EMPOWER_PLATFORM (optionnel : nom de plateforme Empower)
 
 const EVENEMENTS_BRUIT = ["ringing", "answered", "answer", "contact", "in_progress", "created", "updated", "update"];
 
@@ -17,8 +35,6 @@ const OPTIONS_MODE_LIVRAISON = ["Scooter électrique", "Scooter thermique", "Vé
 const OPTIONS_FRANCHISEUR = ["Indépendant", "Domino's Pizza", "Burger King", "McDonald's", "KFC", "Subway", "Pizza Hut", "O'Tacos", "La Boîte à Pizza"];
 const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", "Livraison de repas", "Boulangerie / Pâtisserie", "Commerce floral", "Alimentation bio", "Commerce de détail", "Services", "Autre"];
 
-// Prompt système Mistral : les listes de valeurs sont injectées SANS guillemets
-// imbriqués (join de tableaux), ce qui évite tout problème d'échappement.
 const PROMPT_SYSTEME =
   "Tu analyses la transcription d'un appel téléphonique reçu par la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown, avec exactement ces clés : " +
   "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase), " +
@@ -30,22 +46,123 @@ const PROMPT_SYSTEME =
   "nomEntreprise : nom de l'entreprise s'il le dit ; ville : ville mentionnée ; secteur : secteur d'activité mentionné ; prenom/nom/role : si l'interlocuteur se présente ; email : adresse dictée ; besoin : besoin exprimé en une phrase courte (nombre de scooters, zone, budget, délai…). " +
   "RÈGLES ABSOLUES : n'invente RIEN, ne devine RIEN ; chaque champ de extraction reste une chaîne vide si l'information n'est pas explicitement dite dans la transcription.";
 
+const attendre = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Extraction de texte de transcription depuis n'importe quelle forme de réponse
+// (chaîne, tableau d'objets text/content, imbriquée dans data/list, etc.)
+const extraireTexte = (j: any): string => {
+  const parcourir = (x: any, profondeur: number): string => {
+    if (x == null || profondeur > 4) return "";
+    if (typeof x === "string") return x.trim();
+    if (Array.isArray(x)) {
+      const morceaux = x.map((e: any) => parcourir(e, profondeur + 1)).filter(Boolean);
+      return morceaux.length ? morceaux.join("\n") : "";
+    }
+    if (typeof x === "object") {
+      for (const k of ["transcription", "transcript", "text", "content", "summary", "sentence", "message"]) {
+        if (typeof x[k] === "string" && x[k].trim()) return x[k].trim();
+      }
+      if (x.data) { const r = parcourir(x.data, profondeur + 1); if (r) return r; }
+      if (Array.isArray(x.list)) { const r = parcourir(x.list, profondeur + 1); if (r) return r; }
+      // objet résultat direct : concaténer les valeurs texte
+      const vals = Object.values(x).map((v: any) => parcourir(v, profondeur + 1)).filter(Boolean);
+      return vals.length ? vals.join("\n") : "";
+    }
+    return "";
+  };
+  return parcourir(j, 0);
+};
+
 export default async function handler(req: any, res: any) {
-  if (req.method === "GET") {
-    const e2 = process.env;
-    return res.status(200).json({ ok: true, service: "ringover-webhook", diag: {
-      SUPABASE_URL: !!e2.SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: !!e2.SUPABASE_SERVICE_ROLE_KEY,
-      RINGOVER_API_KEY: !!e2.RINGOVER_API_KEY, MISTRAL_API_KEY: !!e2.MISTRAL_API_KEY,
-      RINGOVER_NOS_NUMEROS: !!e2.RINGOVER_NOS_NUMEROS
-    } });
-  }
   const env = process.env;
   const SUP: string = env.SUPABASE_URL || "";
   const KEY: string = env.SUPABASE_SERVICE_ROLE_KEY || "";
   const RING: string = env.RINGOVER_API_KEY || "";
   const MIST: string = env.MISTRAL_API_KEY || "";
   const NOS_NUMEROS: string[] = (env.RINGOVER_NOS_NUMEROS || "0449392956").split(",").map((s: string) => s.replace(/\D/g, "")).filter(Boolean);
+  const PLATEFORME_EMPOWER: string = env.RINGOVER_EMPOWER_PLATFORM || "";
 
+  if (req.method === "GET") {
+    // ── DIAGNOSTIC : teste les routes documentées sur le dernier appel réel ──
+    const diag: any = { ok: true, service: "ringover-webhook-diag", variables: {
+      SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, RINGOVER_API_KEY: !!RING,
+      MISTRAL_API_KEY: !!MIST, RINGOVER_NOS_NUMEROS: !!env.RINGOVER_NOS_NUMEROS,
+      RINGOVER_EMPOWER_PLATFORM: !!PLATEFORME_EMPOWER,
+    }, etapes: [] };
+    if (!RING) { diag.erreur = "RINGOVER_API_KEY absente"; return res.status(200).json(diag); }
+    const h = { Authorization: RING };
+    try {
+      // 1) derniers appels (doc : GET /v2/calls, pagination limit_count)
+      const r0 = await fetch("https://public-api.ringover.com/v2/calls?limit_count=5", { headers: h });
+      diag.etapes.push({ route: "GET /v2/calls?limit_count=5", statut: r0.status });
+      if (r0.ok) {
+        const j0: any = await r0.json();
+        const liste = j0.list || [];
+        diag.derniersAppels = liste.map((c: any) => ({ call_id: c.call_id, channel_id: c.channel_id, direction: c.direction, from: c.from_number, to: c.to_number, duration: c.duration, start: c.start_time, end: c.end_time, tags: c.tags, disponible: Object.keys(c).slice(0, 40) }));
+        const dernier = liste[0];
+        if (dernier) {
+          const cid = String(dernier.call_id);
+          const chid = String(dernier.channel_id || "");
+          // 2) détail d'un appel (doc : get a specific call by ID)
+          await attendre(400);
+          const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + cid, { headers: h });
+          const j1 = r1.ok ? await r1.json() : null;
+          diag.etapes.push({ route: "GET /v2/calls/" + cid, statut: r1.status, champs: j1 ? Object.keys(j1.list ? j1.list[0] || {} : j1) : null });
+          // 3) routes transcription candidates (doc : get a single transcription by call ID)
+          const essaisTranscription = [
+            "https://public-api.ringover.com/v2/calls/" + cid + "/transcription",
+            "https://public-api.ringover.com/v2/transcriptions/" + cid,
+            "https://public-api.ringover.com/v2/transcriptions?call_id=" + cid,
+          ];
+          for (const url of essaisTranscription) {
+            await attendre(400);
+            try {
+              const rt = await fetch(url, { headers: h });
+              const corpsBrut = rt.ok ? (await rt.text()).slice(0, 1200) : "";
+              diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rt.status, corps: corpsBrut });
+            } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+          }
+          // 4) enregistrement par canal (doc : get call recording for a specific channel)
+          if (chid) {
+            const essaisRecording = [
+              "https://public-api.ringover.com/v2/calls/" + chid + "/recording",
+              "https://public-api.ringover.com/v2/calls/" + cid + "/recording",
+            ];
+            for (const url of essaisRecording) {
+              await attendre(400);
+              try {
+                const rr = await fetch(url, { headers: h });
+                diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: rr.status, typeContenu: rr.headers.get("content-type") || "" });
+              } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+            }
+          }
+          // 5) Empower (doc : call details by uuid, summary, call uuid from platform+channel)
+          const essaisEmpower = [
+            "https://public-api.ringover.com/v2/empower/call/" + cid,
+            "https://public-api.ringover.com/v2/empower/call/" + cid + "/summary",
+            "https://public-api.ringover.com/v2/empower/call/" + cid + "/moments",
+          ];
+          if (PLATEFORME_EMPOWER && chid) essaisEmpower.push("https://public-api.ringover.com/v2/empower/call-uuid/platform/" + PLATEFORME_EMPOWER + "/channel/" + chid);
+          for (const url of essaisEmpower) {
+            await attendre(400);
+            try {
+              const re = await fetch(url, { headers: h });
+              const corpsBrut = re.ok ? (await re.text()).slice(0, 1200) : "";
+              diag.etapes.push({ route: url.replace("https://public-api.ringover.com", ""), statut: re.status, corps: corpsBrut });
+            } catch (e: any) { diag.etapes.push({ route: url, erreur: String(e).slice(0, 120) }); }
+          }
+        } else {
+          diag.note = "aucun appel dans l'historique (passe un appel avant de relancer le diagnostic)";
+        }
+      } else {
+        const corpsBrut = (await r0.text()).slice(0, 400);
+        diag.etapes.push({ route: "GET /v2/calls", statut: r0.status, corps: corpsBrut });
+      }
+    } catch (e: any) { diag.erreurGlobal = String(e).slice(0, 200); }
+    return res.status(200).json(diag);
+  }
+
+  // ══════════════════════════ POST : traitement webhook ══════════════════════════
   let payload: any = {};
   try { payload = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {}); } catch (e) { payload = {}; }
   console.log("WEBHOOK RINGOVER brut:", JSON.stringify(payload));
@@ -70,93 +187,78 @@ export default async function handler(req: any, res: any) {
   let duration = Number(d.duration ?? d.call_duration ?? 0) || 0;
   let transcription = "";
   let enregistrement = String(d.record_url ?? d.recording_url ?? "");
+  let canal = String(d.channel_id ?? "");
 
-  // ── Détails + transcription via l'API publique Ringover (le webhook seul est muet) ──
+  // ── Détails via GET /v2/calls/{call_id} (réponse documentée {list_count, list:[...]}) ──
+  const h = { Authorization: RING };
   if (RING) {
     try {
-      const h = { Authorization: RING }; // Ringover attend la clé SANS le préfixe "Bearer" (cf. doc officielle)
-      // L'API /v2/calls/{call_id} renvoie {list_count, list: [...]} (constaté en prod)
       const r1 = await fetch("https://public-api.ringover.com/v2/calls/" + appelId, { headers: h });
       console.log("Ringover calls statut:", r1.status);
-      let appel: any = null;
       if (r1.ok) {
         const c: any = await r1.json();
-        console.log("Ringover calls JSON:", JSON.stringify(c).slice(0, 4000));
-        appel = (Array.isArray(c.list) && c.list.length) ? c.list[0] : (c.data || null);
-        if (!appel && Array.isArray(c) && c.length) appel = c[0];
+        const appel = (Array.isArray(c.list) && c.list.length) ? c.list[0] : (c.data || null);
+        if (appel) {
+          const pick = (o: any, cles: string[]): string => { for (const k of cles) { const v = o?.[k]; if (v) return String(v); } return ""; };
+          if (!caller) caller = pick(appel, ["from_number", "caller_number", "from", "source_number"]);
+          if (!receiver) receiver = pick(appel, ["to_number", "receiver_number", "to", "destination_number"]);
+          if (!canal) canal = pick(appel, ["channel_id"]);
+          if (!duration) duration = Number(pick(appel, ["duration", "call_duration", "length"])) || 0;
+          if (!enregistrement) enregistrement = pick(appel, ["recording_url", "record_url", "url_recording"]);
+          console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, canal }));
+        }
       }
-      if (appel) {
-        const pick = (o: any, cles: string[]): string => { for (const k of cles) { const v = o?.[k]; if (v) return String(v); } return ""; };
-        if (!caller) caller = pick(appel, ["caller_number", "from", "from_number", "source_number", "caller", "source", "number_a", "calling_number"]);
-        if (!receiver) receiver = pick(appel, ["receiver_number", "to", "to_number", "destination_number", "callee", "destination", "number_b", "called_number"]);
-        if (!enregistrement) enregistrement = pick(appel, ["recording_url", "record_url", "url_recording", "recording"]);
-        if (!duration) duration = Number(pick(appel, ["duration", "call_duration", "length"])) || 0;
-        console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, enregistrement: !!enregistrement }));
-      }
-      // Empower : la transcription se récupère via un calluuid obtenu depuis le
-      // channel (doc: POST empower/platform/:platform/channel/:channelId puis
-      // GET empower/call/:calluuid). On tente call_id puis channel_id en secours.
-      const canal = String(d.channel_id ?? (appel && appel.channel_id) ?? "");
-      const lireEmpower = async (uuid: string) => {
-        const r = await fetch("https://public-api.ringover.com/v2/empower/call/" + uuid, { headers: h });
-        console.log("Ringover empower statut:", r.status, "uuid:", uuid);
-        if (!r.ok) return "";
-        const e: any = await r.json();
-        console.log("Ringover empower JSON:", JSON.stringify(e).slice(0, 4000));
-        const ee = e.data || e;
-        if (typeof ee.transcription === "string") return ee.transcription;
-        if (Array.isArray(ee.transcriptions)) return ee.transcriptions.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-        if (Array.isArray(ee.messages)) return ee.messages.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-        if (typeof ee.summary === "string") return ee.summary;
-        if (Array.isArray(ee.summaries)) return ee.summaries.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-        if (typeof ee.text === "string") return ee.text;
-        return "";
-      };
-      // Résumé Empower (route dédiée de la doc) : GET empower/call/:uuid/summary
-      const lireSummary = async (uuid: string): Promise<string> => {
+      // ── Transcription : routes documentées, testées dans l'ordre (rate limit 2/s) ──
+      const essais = [
+        "https://public-api.ringover.com/v2/calls/" + appelId + "/transcription",
+        "https://public-api.ringover.com/v2/transcriptions/" + appelId,
+      ];
+      for (const url of essais) {
+        if (transcription) break;
+        await attendre(400);
         try {
-          const rs2 = await fetch("https://public-api.ringover.com/v2/empower/call/" + uuid + "/summary", { headers: h });
-          console.log("Ringover summary statut:", rs2.status, "uuid:", uuid);
-          if (!rs2.ok) return "";
-          const js2: any = await rs2.json();
-          console.log("Ringover summary JSON:", JSON.stringify(js2).slice(0, 2000));
-          const ss2 = js2.data || js2;
-          if (typeof ss2 === "string") return ss2;
-          if (typeof ss2.summary === "string") return ss2.summary;
-          if (Array.isArray(ss2.summaries)) return ss2.summaries.map((t: any) => String(t.text || t.content || "")).filter(Boolean).join("\n");
-          if (Array.isArray(ss2.list)) return ss2.list.map((t: any) => String(t.text || t.content || t.summary || "")).filter(Boolean).join("\n");
-          return "";
-        } catch (e) { console.log("Summary erreur:", e); return ""; }
-      };
-      // Empower — 3 stratégies, dans l'ordre (cf. doc Ringover) :
-      // a) call_id directement comme calluuid (doc : possible quand on possède le call_ID)
-      // b) résumé via la route dédiée /summary
-      // c) résolution du calluuid via le canal (POST platform/:platformname/channel/:id),
-      //    platformname étant le nom de VOTRE plateforme Empower (variable optionnelle
-      //    RINGOVER_EMPOWER_PLATFORM côté Vercel)
-      const plateformeEmpower: string = env.RINGOVER_EMPOWER_PLATFORM || "";
+          const rt = await fetch(url, { headers: h });
+          console.log("Transcription essai:", url.replace("https://public-api.ringover.com", ""), "statut:", rt.status);
+          if (rt.ok) {
+            const jt: any = await rt.json().catch(() => null);
+            const texte = jt ? extraireTexte(jt) : "";
+            if (texte && texte.length > 20) transcription = texte.slice(0, 12000);
+          }
+        } catch (e) { console.log("Transcription erreur:", String(e).slice(0, 120)); }
+      }
+      // ── Empower : détail + résumé (doc : call details by uuid / AI-generated summary) ──
       if (!transcription) {
-        if (!transcription) {
-          try { transcription = await lireEmpower(appelId); } catch (e) { console.log("Empower call erreur:", e); }
-        }
-        if (!transcription) {
-          try { transcription = await lireSummary(appelId); } catch (e) { console.log("Summary erreur:", e); }
-        }
-        if (!transcription && canal && plateformeEmpower) {
+        const essaisEmpower = [
+          "https://public-api.ringover.com/v2/empower/call/" + appelId,
+          "https://public-api.ringover.com/v2/empower/call/" + appelId + "/summary",
+        ];
+        if (PLATEFORME_EMPOWER && canal) essaisEmpower.push("https://public-api.ringover.com/v2/empower/call-uuid/platform/" + PLATEFORME_EMPOWER + "/channel/" + canal);
+        for (const url of essaisEmpower) {
+          if (transcription) break;
+          await attendre(400);
           try {
-            const rp = await fetch("https://public-api.ringover.com/v2/empower/platform/" + plateformeEmpower + "/channel/" + canal, { method: "POST", headers: h });
-            console.log("Ringover empower channel statut:", rp.status);
-            if (rp.ok) {
-              const jp: any = await rp.json();
-              console.log("Ringover empower channel JSON:", JSON.stringify(jp).slice(0, 1500));
-              const uu = (jp.data || jp || {}).calluuid || (jp.data || jp || {}).call_uuid || (jp.data || jp || {}).uuid || "";
-              if (uu) {
-                transcription = await lireEmpower(String(uu));
-                if (!transcription) transcription = await lireSummary(String(uu));
-              }
+            const re = await fetch(url, { headers: h });
+            console.log("Empower essai:", url.replace("https://public-api.ringover.com", ""), "statut:", re.status);
+            if (re.ok) {
+              const je: any = await re.json().catch(() => null);
+              const texte = je ? extraireTexte(je) : "";
+              if (texte && texte.length > 20) transcription = texte.slice(0, 12000);
             }
-          } catch (e) { console.log("Empower channel erreur:", e); }
+          } catch (e) { console.log("Empower erreur:", String(e).slice(0, 120)); }
         }
+      }
+      // ── Enregistrement par canal (doc : get call recording for a specific channel) ──
+      if (!enregistrement && canal) {
+        await attendre(400);
+        try {
+          const rr = await fetch("https://public-api.ringover.com/v2/calls/" + canal + "/recording", { headers: h });
+          console.log("Recording (canal) statut:", rr.status);
+          if (rr.ok) {
+            const jr: any = await rr.json().catch(() => null);
+            const texte = jr ? extraireTexte(jr) : "";
+            if (texte && /^https?:\/\//.test(texte)) enregistrement = texte;
+          }
+        } catch (e) { console.log("Recording erreur:", String(e).slice(0, 120)); }
       }
     } catch (e) { console.log("Ringover API erreur:", e); }
   }
@@ -193,9 +295,7 @@ export default async function handler(req: any, res: any) {
   if (!rows.length) return res.status(200).json({ ok: true, note: "base CRM vide, appel ignoré" });
   const etat: any = rows[0].data;
 
-  // ── Remplissage automatique de la fiche depuis les indications de l'appelant ──
-  // Règle absolue : on ne JAMAIS écraser une valeur existante ; on n'écrit que ce
-  // que la transcription dit explicitement, dans les valeurs normalisées des menus.
+  // ── Remplissage automatique de la fiche (uniquement champs vides, valeurs normalisées) ──
   const extr: any = (ia && ia.extraction && typeof ia.extraction === "object") ? ia.extraction : {};
   const appliquerExtraction = (e: any, a: any): boolean => {
     let m = false;
@@ -220,7 +320,6 @@ export default async function handler(req: any, res: any) {
     }
     return m;
   };
-  // Création/mise à jour du CONTACT d'après la présentation de l'appelant.
   const gererContactExtrait = (cible: any, a: any): boolean => {
     if (!(extr.prenom || extr.nom)) return false;
     const tel = a.numeroAppel || "";
@@ -337,7 +436,6 @@ export default async function handler(req: any, res: any) {
     cree = true;
   }
 
-  // ── Remplissage automatique : fiche rattachée ou Suspect fraîchement créé ──
   let ficheModifiee = false;
   if (entreprise) {
     ficheModifiee = appliquerExtraction(entreprise, act) || gererContactExtrait(entreprise, act);
