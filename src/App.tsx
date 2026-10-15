@@ -239,7 +239,7 @@ type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape";
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string  /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
