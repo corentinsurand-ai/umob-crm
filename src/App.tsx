@@ -74,7 +74,11 @@ const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\
 // client. C’est la source officielle des clients : si le Sheet connaît la
 // société, elle EST cliente. Échec réseau → liste vide, aucun blocage, et JAMAIS
 // de champ contrat rempli sans donnée du Sheet (règle anti-invention). ──
-interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string; modeles: string[]; lignes: ContratLigne[] }
+interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string; modeles: string[]; lignes: ContratLigne[]; contacts: ContactSheet[] }
+// Contact du Sheet : une ligne peut porter un interlocuteur (Prénom Contact /
+// Nom Contact / Fonction Contact / Mobile Contact / Email Contact). Dédupliqués
+// par prénom+nom+mobile+email — jamais inventés, uniquement ce que dit le Sheet.
+interface ContactSheet { prenom: string; nom: string; role: string; tel: string; email: string }
 // Mini-parseur CSV gérant les champs entre guillemets (virgules incluses).
 const parserCSV = (txt: string): string[][] => {
   const lignes: string[][] = []; let cur: string[] = []; let f = ""; let q = false;
@@ -98,6 +102,7 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
     const cCode = col("Code client"), cNom = col("Nom client"), cVille = col("Ville"),
       cPack = col("Libellé contrat"), cProd = tete.findIndex((h) => h.includes("libellé produit")), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
       cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Statut_risque_client"),
+      cPrenom = col("Prénom Contact"), cNomCt = col("Nom Contact"), cFonction = col("Fonction Contact"), cMobile = col("Mobile Contact"), cMail = col("Email Contact"),
       cImp = col("Impayes"), cProc = col("Procedure_collective_Radiation");
     if (cCode < 0 || cNom < 0) return { clients: [], lectureOk: false }; /* page d’erreur Google 200 ou colonnes absentes */
     const clients: ClientSheet[] = []; const idx = new Map<string, ClientSheet>();
@@ -108,7 +113,7 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
     for (const l of lignes.slice(1)) {
       const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
       const code = g(cCode); if (!code) continue;
-      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "", modeles: [], lignes: [] }; idx.set(code, c); clients.push(c); }
+      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "", modeles: [], lignes: [], contacts: [] }; idx.set(code, c); clients.push(c); }
       const c = idx.get(code)!;
       const p = g(cPack); if (p && !c.packs.includes(p)) c.packs = c.packs ? c.packs + " · " + p : p;
       const pr = modeleDepuis(g(cProd)); if (pr && !c.modeles.includes(pr)) c.modeles.push(pr);
@@ -120,6 +125,12 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
       const rq = g(cRq); if (rq && !c.risque) c.risque = rq;
       else if (!c.risque && g(cImp).toLowerCase() === "true") c.risque = "Impayé";
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
+      // ── Interlocuteurs du Sheet : prénom + nom (+ fonction, mobile, email).
+      // Dédupliqués par prénom+nom+tel+email ; une ligne sans nom est ignorée. ──
+      const cp = g(cPrenom), cn = g(cNomCt);
+      if ((cp || cn) && !c.contacts.some((x) => x.prenom === cp && x.nom === cn && x.tel === g(cMobile) && x.email === g(cMail))) {
+        c.contacts.push({ prenom: cp, nom: cn, role: g(cFonction), tel: g(cMobile), email: g(cMail) });
+      }
     }
     for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
     // ── Regroupement par CONTRAT (n° interne, jamais affiché) : plusieurs lignes du Sheet
@@ -556,7 +567,7 @@ const label = "mb-1 block text-[11px] font-bold text-slate-500";
    e-mails) ou par une recherche internet automatique sur l'entreprise.
    L'IA n'aura qu'à choisir dans la liste au lieu d'inventer du texte. */
 const OPTIONS_FRANCHISEUR = ["Indépendant", "Domino's Pizza", "Burger King", "McDonald's", "KFC", "Subway", "Pizza Hut", "O'Tacos", "La Boîte à Pizza"];
-const OPTIONS_MODE_LIVRAISON = ["Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Uber Eats / Deliveroo", "Mixte"];
+const OPTIONS_MODE_LIVRAISON = ["U'mob", "Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Uber Eats / Deliveroo", "Mixte"];
 const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", "Livraison de repas", "Boulangerie / Pâtisserie", "Commerce floral", "Alimentation bio", "Commerce de détail", "Services", "Autre"];
 // Valeurs du champ « Risque » (source Sheet SAV : Statut_risque_client,
 // Impayes, Procedure_collective). L'option vide « — » de ChampSelect vaut
@@ -985,7 +996,28 @@ function Modale({
   const remplirDepuisSheet = (f: { nom: string; nomCommercial: string; ville: string }) => {
     chargerClientsSheet().then(({ clients }) => {
       const cliS = trouverClientSheet(clients, f.nom, (f.nomCommercial.split(" — ")[0] || f.nomCommercial), f.ville);
-      if (cliS) setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+      if (cliS) {
+        const fr = franchiseurDepuis(f.nomCommercial.split(" — ")[0] || "") || franchiseurDepuis(cliS.nom) || "Indépendant";
+        setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+        // Contacts du Sheet : mêmes règles que le chemin API gouv (fusion avec
+        // les contacts déjà proposés, complétion tel/email, ajout sinon).
+        if (cliS.contacts.length > 0) {
+          setContactsProposes((prev) => {
+            const fusion = [...prev];
+            for (const sc of cliS.contacts) {
+              const mem = fusion.find((p) => norme(p.prenom) === norme(sc.prenom) && norme(p.nom) === norme(sc.nom));
+              if (mem) {
+                if (!mem.tel && sc.tel) mem.tel = sc.tel;
+                if (!mem.email && sc.email) mem.email = sc.email;
+                if (!mem.role && sc.role) mem.role = sc.role;
+              } else {
+                fusion.push({ prenom: sc.prenom, nom: sc.nom, role: sc.role || "Contact (Sheet)", email: sc.email, tel: sc.tel, coche: true });
+              }
+            }
+            return fusion;
+          });
+        }
+      }
     });
   };
   const enrichir = async () => {
@@ -1018,7 +1050,33 @@ function Modale({
         // l’utilisateur vérifie avant d’enregistrer ; sans match, tout reste vide).
         const cliS = trouverClientSheet(clientsSheet, fiche.nom, (fiche.nomCommercial.split(" — ")[0] || fiche.nomCommercial), fiche.ville);
         if (cliS) {
-          setEnt((e) => ({ ...e, statut: "Client" as Statut, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+          // Client du Sheet : mode de livraison « U'mob » (c'est la flotte louée)
+          // et franchiseur détecté depuis l'enseigne (marque connue) — sinon
+          // « Indépendant ». Règle anti-invention : la marque vient de l'enseigne
+          // INSEE/Sheet, et « Indépendant » = absence de marque connue.
+          const fr = franchiseurDepuis(fiche.nomCommercial.split(" — ")[0] || "") || franchiseurDepuis(cliS.nom) || "Indépendant";
+          setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+          // ── Contacts du Sheet : prénom/nom/fonction/mobile/email du client
+          // reconnu. On fusionne avec les dirigeants INSEE déjà proposés : si
+          // un dirigeant INSEE correspond (prénom+nom), on COMPLÈTE son tel et
+          // son email avec les valeurs du Sheet ; les interlocuteurs du Sheet
+          // inconnus d'INSEE sont ajoutés cochés (source : Sheet, info réelle).
+          if (cliS.contacts.length > 0) {
+            setContactsProposes((prev) => {
+              const fusion = [...prev];
+              for (const sc of cliS.contacts) {
+                const meme = fusion.find((p) => norme(p.prenom) === norme(sc.prenom) && norme(p.nom) === norme(sc.nom));
+                if (mem) {
+                  if (!mem.tel && sc.tel) mem.tel = sc.tel;
+                  if (!mem.email && sc.email) mem.email = sc.email;
+                  if (!mem.role && sc.role) mem.role = sc.role;
+                } else {
+                  fusion.push({ prenom: sc.prenom, nom: sc.nom, role: sc.role || "Contact (Sheet)", email: sc.email, tel: sc.tel, coche: true });
+                }
+              }
+              return fusion;
+            });
+          }
         }
         // Sheet illisible : partage retiré ou Google bloque l’accès anonyme.
         // On le DIT au lieu de laisser croire qu’aucune société n’est cliente.
@@ -1491,7 +1549,7 @@ function Modale({
 function CarteFiche({ titre, action, children }: { titre: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{titre}</span>
         {action}
       </div>
@@ -2270,10 +2328,12 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} onModifie={onModifie} />}>
                 <div className="space-y-2">
                   {e.risque && (
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
-                      <span className="text-[13px]">⚠️</span>
-                      <span className="text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
-                      <span className="ml-auto shrink-0 text-[10px] font-medium text-red-400">source SAV</span>
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 text-[13px] leading-snug">⚠️</span>
+                        <span className="min-w-0 flex-1 break-words text-[12px] font-bold leading-snug text-red-600">{e.risque}</span>
+                        <span className="shrink-0 pt-0.5 text-[10px] font-medium text-red-400">source SAV</span>
+                      </div>
                     </div>
                   )}
                   {(e.modeles || []).length > 0 && (
