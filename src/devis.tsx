@@ -259,12 +259,10 @@ export const VARIABLES_MAIL: { code: string; label: string }[] = [
   { code: "{{duree}}", label: "Durée (mois)" },
   { code: "{{loyer_ht}}", label: "Loyer HT/mois" },
   { code: "{{loyer_ttc}}", label: "Loyer TTC/mois" },
-  { code: "{{contrat_ttc}}", label: "Contrat TTC" },
   { code: "{{mise_service}}", label: "Mise en service" },
 ];
 // Remplace les variables d'un modèle par les valeurs du devis en cours.
 export function rendreModeleMail(texte: string, r: DevisResume): string {
-  const arr2 = (n: number) => Math.round(n * 100) / 100;
   return texte
     .replace(/\{\{societe\}\}/g, r.societe || "votre société")
     .replace(/\{\{numero\}\}/g, r.numOffre)
@@ -275,7 +273,6 @@ export function rendreModeleMail(texte: string, r: DevisResume): string {
     .replace(/\{\{duree\}\}/g, String(r.duree))
     .replace(/\{\{loyer_ht\}\}/g, eurM(r.loyerMensuelHT))
     .replace(/\{\{loyer_ttc\}\}/g, eurM(r.loyerMensuelTTC))
-    .replace(/\{\{contrat_ttc\}\}/g, eurM(arr2(r.loyerMensuelTTC * r.duree)))
     .replace(/\{\{mise_service\}\}/g, eurM(r.miseService));
 }
 
@@ -433,7 +430,6 @@ export function genererPdfDevis(r: DevisResume): Blob {
   rect(300, y - 7, W - M - 300, 23, FOND_VERT);
   R(W - M - 8, y + 9, "TOTAL TTC / MOIS :  " + fr(r.loyerMensuelTTC), 11.5, true, EMERAUDE, false);
   y += 27;
-  R(W - M, y, "Contrat " + r.duree + " loyers TTC :  " + fr((r.loyerMensuelTTC || 0) * r.duree), 10.5, true, NOIR, false);
 
   // ── Bon pour accord ──
   y += 26;
@@ -733,7 +729,6 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
       `Total mensuel HT : ${eurM(resume.loyerMensuelHT)}`,
       `TVA 20 % : ${eurM(rnd2(resume.loyerMensuelTTC - resume.loyerMensuelHT))}`,
       `Total TTC/mois : ${eurM(resume.loyerMensuelTTC)}`,
-      `Contrat ${resume.duree} loyers TTC : ${eur(rnd2(resume.loyerMensuelTTC * resume.duree))}`,
       "",
       "Cette offre est émise sous réserve de validation par U'MOB après analyse financière du dossier du locataire.",
       "",
@@ -1461,7 +1456,6 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                   </div>
                   <div className="grid grid-cols-2 gap-6 pt-4 border-t">
                     <div><p className="text-sm font-semibold">BON POUR ACCORD</p><p className="text-xs text-slate-400 mt-4">Le : ……………………</p><p className="text-xs text-slate-400 mt-4">Signature :</p></div>
-                    <div className="text-right text-sm"><p className="text-slate-500">Contrat {duree} loyers TTC</p><p className="font-black">{eur((loyerMensuelHT + tvaMens) * duree)}</p></div>
                   </div>
                 </CardContent>
               </Card>
