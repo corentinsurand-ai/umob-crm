@@ -249,6 +249,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
   const [remises, setRemises] = useState<Record<string, string>>(b.remises ?? {});
   const [catalogueOuvert, setCatalogueOuvert] = useState(false);
   const [rechercheArticle, setRechercheArticle] = useState("");
+  const [comptePanelOuvert, setComptePanelOuvert] = useState(false);
+  const [rechercheCompte, setRechercheCompte] = useState("");
 
   // Extras
   const [packsCoches, setPacksCoches] = useState<Record<string, boolean>>(b.packsCoches ?? { "CONFORT+": true, "U'TRACK": true });
@@ -442,9 +444,37 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom }: {
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-base">1 · Destinataire</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                <Field label="Société">
-                  <Input list="devis-societes" value={societe} onChange={(e) => setSociete(e.target.value)} placeholder="Nom de la société cliente…" />
-                  <datalist id="devis-societes">{nomsSocietes.map((n) => <option key={n} value={n} />)}</datalist>
+                <Field label="Société" hint="Recherche parmi les comptes du CRM — ou saisie libre">
+                  <Input value={societe} onChange={(e) => setSociete(e.target.value)} placeholder="Nom de la société cliente…" />
+                  <Button variant="outline" className="w-full justify-between font-normal bg-white mt-1.5" onClick={() => { setComptePanelOuvert(!comptePanelOuvert); setRechercheCompte(""); }}>
+                    <span className="text-slate-500 truncate">🔍 Chercher un compte du CRM…</span>
+                    <span className="text-slate-400">{comptePanelOuvert ? "▲" : "▼"}</span>
+                  </Button>
+                  {comptePanelOuvert && (
+                    <div className="mt-1 border border-slate-300 rounded-lg bg-white shadow-xl overflow-hidden z-50">
+                      <div className="p-2 border-b bg-white">
+                        <Input autoFocus placeholder="Nom du compte…" value={rechercheCompte} onChange={(e) => setRechercheCompte(e.target.value)} className="bg-white text-black" />
+                      </div>
+                      <div className="max-h-64 overflow-y-auto bg-white">
+                        {(() => {
+                          const q = rechercheCompte.trim().toLowerCase();
+                          const res = nomsSocietes.filter((n) => !q || n.toLowerCase().includes(q));
+                          if (res.length === 0) return <p className="px-3 py-3 text-sm text-black bg-white">Aucun compte trouvé — saisie libre possible.</p>;
+                          return res.slice(0, 50).map((n) => (
+                            <button
+                              key={n}
+                              type="button"
+                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-black bg-white hover:bg-emerald-50 text-left border-t border-slate-100 cursor-pointer"
+                              onClick={() => { setSociete(n); setComptePanelOuvert(false); setRechercheCompte(""); }}
+                            >
+                              <span className="flex-1 truncate font-medium">{n}</span>
+                              {n === societe && <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">sélectionné</Badge>}
+                            </button>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+                  )}
                 </Field>
                 <Field label="Ancienneté société" hint="« Moins de 2 bilans » = création → prix × 1,25 (R2)">
                   <select value={anciennete} onChange={(e) => setAnciennete(e.target.value)} className={SEL}>
