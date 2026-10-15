@@ -257,7 +257,7 @@ type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape";
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; contactId?: string; dealId?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -1458,7 +1458,7 @@ function Modale({
                   <div className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">Historique</div>
                   {hist.map((a, i) => (
                     <div key={i} className="text-[11px] text-slate-500">
-                      <span className="font-bold text-slate-600">{a.dateISO || a.date}</span> — {a.texte}
+                      <span className="font-bold text-slate-600">{(a.dateISO || a.date) + ((a.heure || (/^\d{1,2}:\d{2}$/.test(a.date || "") ? a.date : "")) ? " · " + (a.heure || (/^\d{1,2}:\d{2}$/.test(a.date || "") ? a.date : "")) : "")}</span> — {a.texte}
                     </div>
                   ))}
                 </div>
@@ -1578,7 +1578,7 @@ function genererResumeIA(nom: string, events: { date: string; texte: string; typ
   // Paragraphe narratif : dernière activité citée + action de suivi en attente.
   const texte =
     (derniere
-      ? `Le ${derniere.date} — ${META_ACT[derniere.type || "note"].libelle.toLowerCase()} : « ${derniere.texte.slice(0, 160)}${derniere.texte.length > 160 ? "…" : ""} ».`
+      ? `Le ${derniere.dateISO || derniere.date}${(derniere.heure || (/^d{1,2}:d{2}$/.test(derniere.date || "") ? derniere.date : "")) ? " à " + (derniere.heure || (/^d{1,2}:d{2}$/.test(derniere.date || "") ? derniere.date : "")) : ""} — ${META_ACT[derniere.type || "note"].libelle.toLowerCase()} : « ${derniere.texte.slice(0, 160)}${derniere.texte.length > 160 ? "…" : ""} ».`
       : `${nom} n'a encore aucune activité enregistrée.`) +
     (prochaine && prochaine.action
       ? ` Une action de suivi est prévue : ${prochaine.action}${prochaine.echeance ? ` (le ${prochaine.echeance})` : ""}${prochaine.nom ? ` sur le deal « ${prochaine.nom} »` : ""}.`
@@ -1734,7 +1734,7 @@ function Chronologie({ events, onOuvre, contacts, deals }: { events: (Activite &
                 </div>
               )}
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                <span className="font-bold">{ev.dateISO || ev.date}</span>
+                <span className="font-bold">{(ev.dateISO || ev.date) + ((ev.heure || (/^\d{1,2}:\d{2}$/.test(ev.date || "") ? ev.date : "")) ? " · " + (ev.heure || (/^\d{1,2}:\d{2}$/.test(ev.date || "") ? ev.date : "")) : "")}</span>
                 {/* Badge d'échéance pour les tâches et réunions planifiées. */}
                 {ev.echeance && <Badge texte={`échéance ${ev.echeance}`} couleur={meta.couleur} />}
                 {/* Lien vers le contact rattaché à l'activité (ouvre la modale). */}
@@ -1934,7 +1934,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
     // dateISO = date de réalisation réelle (transmise par le composer) ; on garde
     // aussi le libellé court cohérent (« auj. » si réalisé aujourd'hui, sinon jj/mm).
     const estAuj = dateRea === new Date().toLocaleDateString("fr-FR");
-    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || new Date().toLocaleDateString("fr-FR"), contactId: lien?.contactId, dealId: lien?.dealId });
+    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), contactId: lien?.contactId, dealId: lien?.dealId });
   };
 
   return (
@@ -2581,7 +2581,7 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   const validerForm = () => {
     if (!entId || !texteFait.trim()) return;
     const estAuj = dateFait === new Date().toLocaleDateString("fr-FR");
-    const base = { date: estAuj ? "auj." : (dateFait.slice(0, 5) || "auj."), dateISO: dateFait || aujourdhui, contactId: ctId || undefined, dealId: dlId || undefined };
+    const base = { date: estAuj ? "auj." : (dateFait.slice(0, 5) || "auj."), dateISO: dateFait || aujourdhui, heure: new Date().toTimeString().slice(0, 5), contactId: ctId || undefined, dealId: dlId || undefined };
     // 1. L'activité réalisée (compte-rendu horodaté sur l'entreprise).
     onAjouter(entId, { ...base, texte: texteFait.trim(), type: typeFait });
     // 2. L'action suivante : tâche/réunion datée → visible dans l'agenda
@@ -3469,7 +3469,7 @@ export default function App() {
         deals: s.deals.map((x) => (x.id === id ? { ...x, ...patch } : x)),
         entreprises: etapeChange
           ? s.entreprises.map((x) => x.id === ancien!.entrepriseId
-            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien!.etape} → ${patch.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: id }] }
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien!.etape} → ${patch.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: id }] }
             : x)
           : s.entreprises,
       };
@@ -3558,7 +3558,7 @@ export default function App() {
       const entreprises =
         ancien && ancien.etape !== d.etape
           ? s.entreprises.map((x) => x.id === d.entrepriseId
-            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: d.id }] }
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: d.id }] }
             : x)
           : s.entreprises;
       return { ...s, entreprises, deals: existe ? s.deals.map((x) => (x.id === d.id ? d : x)) : [...s.deals, { ...d, id: idSuivantLocal("d", 1) }] };
@@ -3597,7 +3597,7 @@ export default function App() {
         ...s,
         deals: s.deals.map((x) => (x.id === id ? { ...x, etape } : x)),
         entreprises: s.entreprises.map((x) => x.id === d.entrepriseId
-          ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), dealId: d.id }] }
+          ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: d.id }] }
           : x),
       };
     });
