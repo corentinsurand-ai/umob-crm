@@ -1561,11 +1561,20 @@ function genererResumeIA(nom: string, events: { date: string; texte: string; typ
   // Sentiment estimé sur les 5 activités les plus récentes (comme la ligne
   // « Sentiment » du résumé HubSpot de la capture) : positif si mots-clés
   // enthousiastes, négatif si mots-clés d'insatisfaction, neutre sinon.
-  const corpus = events.slice(0, 5).map((x) => x.texte).join(" ").toLowerCase();
+  // Priorité aux VRAIS sentiments IA des appels analysés (webhook Ringover) :
+  // le sentiment affiché = celui du premier appel analysé trouvé dans la timeline
+  // (positif/négatif), sinon repli sur l'estimation locale par mots-clés.
+  const appelSentiment = events.find((x) => x.sentiment === "positif" || x.sentiment === "négatif");
   let sentiment = "neutre";
   let couleurSentiment = "#94a3b8";
-  if (/(satisfait|content|ravi|parfait|super|enthousiaste|intéressé|interessé|validé|valide|impatient)/.test(corpus)) { sentiment = "positif"; couleurSentiment = "#57c26b"; }
-  if (/(mécontent|mecontent|déçu|decu|problème|probleme|panne|trop cher|refus|refuse|annulé|annule|retard|inquiet)/.test(corpus)) { sentiment = "négatif"; couleurSentiment = "#ef4444"; }
+  if (appelSentiment) {
+    sentiment = appelSentiment.sentiment;
+    couleurSentiment = sentiment === "positif" ? "#57c26b" : "#ef4444";
+  } else {
+    const corpus = events.slice(0, 5).map((x) => x.texte).join(" ").toLowerCase();
+    if (/(satisfait|content|ravi|parfait|super|enthousiaste|intéressé|interessé|validé|valide|impatient)/.test(corpus)) { sentiment = "positif"; couleurSentiment = "#57c26b"; }
+    if (/(mécontent|mecontent|déçu|decu|problème|probleme|panne|trop cher|refus|refuse|annulé|annule|retard|inquiet)/.test(corpus)) { sentiment = "négatif"; couleurSentiment = "#ef4444"; }
+  }
   // Paragraphe narratif : dernière activité citée + action de suivi en attente.
   const texte =
     (derniere
