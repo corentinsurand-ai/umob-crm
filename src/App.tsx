@@ -1994,7 +1994,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               <PropTexte label="Téléphone" valeur={e.tel} onChange={(v) => onModifie({ tel: v })} />
               <PropTexte label="Site web" valeur={e.site} onChange={(v) => onModifie({ site: v })} />
               {/* Champs calculés : lecture seule. */}
-              <Prop label="Pipeline actif" valeur={`${pipeline} k€`} />
+              {pipeline > 0 && <Prop label="Pipeline actif" valeur={`${pipeline} k€`} />}
             </div>
             {/* Les notes libres s'affichent en encart sous les propriétés. */}
               {e.notes && <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-2.5 text-[12.5px] leading-relaxed text-slate-600">{e.notes}</p>}
@@ -2204,8 +2204,8 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
               <Prop label="Email" valeur={c.email} />
               <Prop label="Téléphone" valeur={c.tel} />
               <Prop label="Entreprises" valeur={entreprises.map((x) => x.nom).join(", ") || "—"} />
-              <Prop label="Deals" valeur={String(deals.length)} />
-              <Prop label="Pipeline actif" valeur={`${actifs.reduce((s, d) => s + d.montant, 0)} k€`} />
+              {deals.length > 0 && <Prop label="Deals" valeur={String(deals.length)} />}
+              {actifs.length > 0 && <Prop label="Pipeline actif" valeur={`${actifs.reduce((s, d) => s + d.montant, 0)} k€`} />}
               </div>
             </CarteFiche>
           </div>
