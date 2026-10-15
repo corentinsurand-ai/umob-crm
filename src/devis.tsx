@@ -311,13 +311,11 @@ export function genererPdfDevis(r: DevisResume): Blob {
 
   // ── Palette & primitives de dessin vectoriel ──
   const EMERAUDE = [0.024, 0.588, 0.412];
-  const VERT = [0.643, 0.816, 0.239];
   const GRIS = [0.42, 0.45, 0.50];
   const FILET = [0.87, 0.89, 0.91];
   const FOND_VERT = [0.93, 0.99, 0.96];
   const FOND_GRISE = [0.965, 0.97, 0.975];
   const NOIR = [0.11, 0.15, 0.19];
-  const BLANC = [1, 1, 1];
   const c3 = (c: number[]) => c[0] + " " + c[1] + " " + c[2];
   const cmds: string[] = [];
   const Y = (yTop: number) => (H - yTop).toFixed(2);
