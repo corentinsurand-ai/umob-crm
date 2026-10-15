@@ -2372,8 +2372,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           Activités au centre, associations + résumé à droite. Grille à largeur
           minimale + défilement horizontal si le panneau est étroit (même logique
           que le pipeline) : les 3 colonnes restent ainsi toujours visibles. */}
-      <div className="overflow-x-auto pb-2">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4">
+      <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
+        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos (= panneau « Informations clés » HubSpot). */}
           <div>
             <CarteFiche titre="À propos">
@@ -2647,8 +2647,8 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
       {/* 3 colonnes façon HubSpot : À propos à gauche, Activités au centre,
           associations + résumé à droite (même structure que la fiche entreprise,
           défilement horizontal si le panneau est étroit). */}
-      <div className="overflow-x-auto pb-2">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4">
+      <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
+        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos. */}
           <div>
             <CarteFiche titre="À propos">
@@ -2775,8 +2775,8 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
       />
 
       {/* 3 colonnes façon HubSpot, défilement horizontal si le panneau est étroit. */}
-      <div className="overflow-x-auto pb-2">
-        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4">
+      <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
+        <div className="grid min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos — tout est éditable EN DIRECT. */}
           <div>
             <CarteFiche titre="À propos">
