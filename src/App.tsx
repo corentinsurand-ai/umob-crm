@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
 import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, telechargerPdfDevis } from "./devis";
+import { ConsoleManager } from "./console";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
@@ -3797,10 +3798,13 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
 
 /* ============================== APP ============================== */
 
-type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis";
+type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis" | "console";
 // Clé localStorage de la dernière page visitée (vue + fiche ouverte) : un
 // refresh (F5 / Ctrl+F5) doit REVENIR sur la page où l'on était, pas sur l'accueil.
 const CLE_NAV = "umob-crm-nav";
+// Vue « Console manager » : réservée au manager (emails autorisés) — invisible
+// et inaccessible pour tout autre compte connecté.
+const EMAILS_CONSOLE = new Set(["corentin.surand@umob.fr"]);
 
 /* Composant racine : détient l'ÉTAT GLOBAL unique (`etat` = toute la base),
    le routeur interne (vue active, fiche ouverte, modale ouverte) et les
@@ -3816,6 +3820,11 @@ export default function App() {
   const [recherche, setRecherche] = useState("");     // recherche globale du header
   const [cible, setCible] = useState<Cible | null>(null); // modale ouverte (null = fermée)
   const [fiche, setFiche] = useState<FicheRef | null>(null); // page record ouverte (null = liste)
+  const [monEmail, setMonEmail] = useState(""); // email du compte connecté (réserve la Console manager)
+  useEffect(() => { supabase.auth.getSession().then(({ data }) => setMonEmail((data.session?.user?.email || "").toLowerCase())); }, []);
+  const estManager = EMAILS_CONSOLE.has(monEmail);
+  // Sécurité : Console non permise pour ce compte → retour au tableau de bord.
+  useEffect(() => { if (vue === "console" && monEmail !== "" && !estManager) setVue("dashboard"); }, [vue, monEmail, estManager]);
 
   // Routeur des listes : une entreprise / un contact EXISTANT ouvre sa page
   // record ; tout le reste (id null = création, deals = pas de page record)
@@ -4215,7 +4224,7 @@ export default function App() {
   };
 
   // Icônes de la navigation (barre latérale + version mobile).
-  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾" };
+  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾", console: "🎧" };
 
   // Les vues principales, dans l'ordre de la barre latérale.
   const onglets = [
@@ -4226,6 +4235,7 @@ export default function App() {
     ["pipeline", "Pipeline"],
     ["agenda", "Agenda"],
     ["devis", "Devis"],
+    ...(estManager ? [["console", "Console"],] : []),
   ] as const;
 
   // Le bouton « + » du header crée l'objet cohérent avec la vue affichée.
@@ -4287,7 +4297,7 @@ export default function App() {
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Rechercher…"
               className="w-44 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
-            {vue !== "devis" && (
+            {vue !== "devis" && vue !== "console" && (
             <button onClick={() => setCible(boutonAjout[vue])}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
@@ -4338,6 +4348,7 @@ export default function App() {
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
             {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
+            {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>
         )}
       </main>
