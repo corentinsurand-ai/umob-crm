@@ -94,9 +94,31 @@ const parserCSV = (txt: string): string[][] => {
 };
 const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureOk: boolean }> => {
   try {
-    const rep = await fetch("https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv");
-    if (!rep.ok) return { clients: [], lectureOk: false };
-    const lignes = parserCSV(await rep.text());
+    // ── PAGINATION OBLIGATOIRE : l'export CSV de base de Google ne renvoie
+    // QUE LES ~100 PREMIÈRES LIGNES du classeur (qui en compte ~975 !).
+    // Sans ça, les clients au-delà de la ligne ~100 (ex. PIZZA PUCE TASSIN
+    // / Carlos GOMES LOPES, ligne 698) sont INVISIBLES : pas de contrats,
+    // pas de contacts, pas de badge risque. On pagine donc avec le langage
+    // de requête de Google (tq=select * offset N, 100 lignes par page) —
+    // chaque page répète l'en-tête, gardé une seule fois. Une page qui
+    // échoue en cours de route n'invalide pas les pages déjà lues. ──
+    let lignes: string[][] = [];
+    let lectureOk = false;
+    for (let page = 0; page < 30; page++) {
+      const off = page * 100;
+      const url = off === 0
+        ? "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv"
+        : "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&tq=" + encodeURIComponent("select * offset " + off);
+      try {
+        const rep = await fetch(url);
+        if (!rep.ok) break;
+        const lp = parserCSV(await rep.text());
+        if (lp.length <= 1) break; /* page vide (en-tête seul) : dernier bloc atteint */
+        if (page === 0) { lignes = lp; lectureOk = true; }
+        else lignes = lignes.concat(lp.slice(1));
+      } catch { break; }
+    }
+    if (!lectureOk) return { clients: [], lectureOk: false };
     const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
     const col = (n: string) => tete.findIndex((h) => h === n.toLowerCase());
     const cCode = col("Code client"), cNom = col("Nom client"), cVille = col("Ville"),
@@ -2172,7 +2194,7 @@ function EnteteFiche({ initiales, nom, sous, badge, boutons }: { initiales: stri
 // dernière version publiée. Anti-invention maintenu : si le Sheet ne connaît
 // pas la société ou est illisible, on ne touche à RIEN. Les champs saisis à la
 // main (notes, contacts, deals, activités) ne sont jamais écrasés. ──
-function SyncSheetOuverture({ ent, onModifie }: { ent: Entreprise; onModifie: (patch: Partial<Entreprise>) => void }) {
+function SyncSheetOuverture({ ent, contacts, onModifie, onModifieContact }: { ent: Entreprise; contacts: Contact[]; onModifie: (patch: Partial<Entreprise>) => void; onModifieContact: (id: string, patch: Partial<Contact>) => void }) {
   const [sync, setSync] = useState<"enCours" | "ok" | "rien" | "ko">("enCours");
   useEffect(() => {
     let annule = false;
@@ -2212,6 +2234,23 @@ function SyncSheetOuverture({ ent, onModifie }: { ent: Entreprise; onModifie: (p
         (ent.contrats || []).map((k) => [k.pack, k.modele, k.dateDebut, k.dateFin, k.immats, k.etat].join("|")).join("§") !==
           cliS.lignes.map((l) => [l.pack, l.modele, l.dateDebut, l.dateFin, l.immats, l.etat].join("|")).join("§");
       if (change) onModifie(patch);
+      // ── Rattrapage des COORDONNÉES des contacts EXISTANTS : le Sheet
+      // connaît le mobile et l'email des interlocuteurs (colonnes Mobile
+      // Contact / Email Contact). Si un contact rattaché à cette entreprise
+      // est reconnu (prénom+nom normalisés) mais qu'il lui manque le
+      // téléphone ou l'email, on les complète — sans JAMAIS écraser une
+      // valeur déjà saisie à la main. (ex. Carlos GOMES LOPES créé avant la
+      // pagination : son 06 22 62 31 99 était invisible.) ──
+      const lies = contacts.filter((c) => c.entrepriseIds.includes(ent.id));
+      for (const sc of cliS.contacts) {
+        const ct = lies.find((c) => norme(c.prenom) === norme(sc.prenom) && norme(c.nom) === norme(sc.nom));
+        if (ct) {
+          const patchC: Partial<Contact> = {};
+          if (!ct.tel && sc.tel) patchC.tel = sc.tel;
+          if (!ct.email && sc.email) patchC.email = sc.email;
+          if (Object.keys(patchC).length > 0) onModifieContact(ct.id, patchC);
+        }
+      }
       if (!annule) setSync("ok");
     })();
     return () => { annule = true; };
@@ -2230,13 +2269,14 @@ function SyncSheetOuverture({ ent, onModifie }: { ent: Entreprise; onModifie: (p
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onModifieContact }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
   onOuvreFiche: (f: FicheRef) => void;     // navigue vers une autre page record
   onActivite: (id: string, activite: Activite) => void; // journalise une activité SUR l'entreprise
   onModifie: (patch: Partial<Entreprise>) => void; // édition directe du panneau « À propos »
+  onModifieContact: (id: string, patch: Partial<Contact>) => void; // rattrapage tel/email depuis le Sheet
 }) {
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
@@ -2347,7 +2387,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 que le panneau À propos). Source des données auto : Sheet
                 « Infos Service Client » (packs, dates, véhicules). */}
             {(e.pack || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
-              <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} onModifie={onModifie} />}>
+              <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} contacts={contacts} onModifie={onModifie} onModifieContact={onModifieContact} />}>
                 <div className="space-y-2">
                   {e.risque && (
                     <div className="w-full overflow-hidden rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
@@ -3816,6 +3856,14 @@ export default function App() {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
   };
 
+  // Édition d'un contact par PATCH immuable — sert au rattrapage automatique
+  // des tel/email manquants depuis le Sheet (SyncSheetOuverture) et pourra
+  // servir à l'édition directe des fiches contact. Jamais d'écrasement d'une
+  // valeur déjà remplie : le patch ne porte que les champs à compléter.
+  const modifierContact = (id: string, patch: Partial<Contact>) => {
+    setEtat((s) => ({ ...s, contacts: s.contacts.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  };
+
   // Édition directe depuis la page record DEAL (panneau « À propos ») :
   // même logique de patch immuable. Si l'ÉTAPE change, le mouvement est tracé
   // dans l'historique comme via la modale ou le kanban (activité « Étape »
@@ -4062,7 +4110,8 @@ export default function App() {
         {fiche?.type === "entreprise" ? (
           <FicheEntreprise etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} onActivite={ajouterActivite}
-            onModifie={(patch) => modifierEntreprise(fiche.id, patch)} />
+            onModifie={(patch) => modifierEntreprise(fiche.id, patch)}
+            onModifieContact={modifierContact} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
