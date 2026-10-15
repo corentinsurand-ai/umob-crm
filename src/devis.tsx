@@ -765,8 +765,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   const corpsCourtMail = (resume: DevisResume): string =>
     `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr`;
   // Envoi réel via /api/envoyer-devis (Resend) : HTML aux couleurs U'mob,
-  // signature complète et PDF joint automatiquement. Retourne false → repli mailto.
-  const envoyerMailReel = async (destinataire: string, objet: string, corps: string): Promise<boolean> => {
+  // signature complète et PDF joint automatiquement. Retourne null si envoyé,
+  // sinon la raison exacte de l'échec (affichée dans le message de repli).
+  const envoyerMailReel = async (destinataire: string, objet: string, corps: string): Promise<string | null> => {
     const resume = construireResume();
     const nom = `Devis-Umob-${(resume.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf`;
     try {
@@ -777,9 +778,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
         body: JSON.stringify({ destinataire, objet, texte: corps, nomPdf: nom, pdfBase64 }),
       });
       const data: any = await rep.json().catch(() => ({}));
-      if (rep.ok) { setRetourAction(`✅ Devis envoyé à ${destinataire} — le PDF « ${nom} » est joint automatiquement au mail.`); setVoletMailOuvert(false); return true; }
-      return false;
-    } catch { return false; }
+      if (rep.ok) { setRetourAction(`✅ Devis envoyé à ${destinataire} — le PDF « ${nom} » est joint automatiquement au mail.`); setVoletMailOuvert(false); return null; }
+      return (data && data.error) || ("Erreur HTTP " + rep.status);
+    } catch { return "API injoignable"; }
   };
   // Repli mailto : PDF téléchargé + messagerie locale pré-remplie (PDF à joindre).
   const envoyerMail = (objetMail?: string, corpsMail?: string) => {
@@ -1660,10 +1661,11 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                           const mail = construireMail(apercuResume);
                           const objet = modeleChoisi ? rendreModeleMail(modeleChoisi.objet, apercuResume) : mail.objet;
                           const corps = modeleChoisi ? rendreModeleMail(modeleChoisi.corps, apercuResume) : corpsCourtMail(apercuResume);
-                          if (mail.destinataire && (await envoyerMailReel(mail.destinataire, objet, corps))) return;
+                          const erreur = mail.destinataire ? await envoyerMailReel(mail.destinataire, objet, corps) : "aucun e-mail connu sur ce compte (premier contact sans e-mail)";
+                          if (!erreur) return;
                           setVoletMailOuvert(false);
                           envoyerMail(objet, corps);
-                          setRetourAction("⚠️ Envoi direct indisponible (RESEND_API_KEY + MAIL_FROM à configurer dans Vercel) — repli sur ta messagerie : le PDF est téléchargé, joins-le au message qui vient de s'ouvrir.");
+                          setRetourAction("⚠️ Envoi direct impossible (" + erreur + ") — repli sur ta messagerie : le PDF est téléchargé, joins-le au message qui vient de s'ouvrir.");
                         } finally { setEnvoiEnCours(false); }
                       }}
                     >
