@@ -2301,7 +2301,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onSupprimerDevis, onSupprimerActivite }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onSupprimerDevis, onSupprimerActivite }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2310,10 +2310,16 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onModifie: (patch: Partial<Entreprise>) => void; // édition directe du panneau « À propos »
   onMajContacts: (mods: { id: string; tel?: string; email?: string; role?: string }[]) => void; // rattrapage Sheet des contacts
   onRouvrirDevis: (dv: DevisArchive) => void; // recharge un devis archivé dans le module Devis (lié à son original)
-  onMarquerDevisEnvoye: (devisId: string) => void; // passe le devis au statut « Envoyé au client »
+  onMarquerDevisEnvoye: (devisId: string, dateRelanceFr: string) => void; // statut Envoyé + tâche de relance à la DATE CHOISIE par le commercial
+  onMarquerDevisAccepte: (devisId: string) => void; // devis accepté : supprime la tâche de relance + consigne l'acceptation dans les activités // passe le devis au statut « Envoyé au client »
   onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
   onSupprimerActivite: (ev: Activite) => void; // supprime une activité de la timeline (erreur de saisie)
 }) {
+  // ── Choix de la DATE DE RELANCE avant l'envoi d'un devis par mail : la
+  // relance n'est plus imposée à J+7, c'est le commercial qui décide (date
+  // OBLIGATOIRE — l'envoi est bloqué tant qu'elle n'est pas choisie). ──
+  const [relancePour, setRelancePour] = useState<string | null>(null);
+  const [dateRelance, setDateRelance] = useState<string>("");
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
   // fiche, on n'affiche que le bouton retour (évite un écran blanc cassé).
@@ -2428,7 +2434,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                               💾 simplement enregistré. Les archives d'avant le
                               champ n'en portent pas → « Enregistré » par défaut. */}
                           <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${dv.statut === "envoye" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
-                            {dv.statut === "envoye" ? `✅ Envoyé au client${dv.dateEnvoiFr ? ` le ${dv.dateEnvoiFr}` : ""}` : "💾 Enregistré"}
+                            {dv.statut === "accepte" ? "🎉 Devis accepté" : dv.statut === "envoye" ? `✅ Envoyé au client${dv.dateEnvoiFr ? ` le ${dv.dateEnvoiFr}` : ""}` : "💾 Enregistré"}
                           </span>
                           <span className="text-[10px] font-semibold text-slate-400">{dv.dateFr}</span>
                         </div>
@@ -2438,13 +2444,24 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                         {dv.commentaire && <p className="mt-1 whitespace-pre-wrap border-l-2 border-emerald-300 pl-2 italic text-slate-500">{dv.commentaire}</p>}
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
                           <button onClick={() => onRouvrirDevis(dv)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
+                          {dv.statut !== "accepte" && (
                           <button
                             onClick={() => {
-                              onMarquerDevisEnvoye(dv.id); // le devis part au client → statut ✅ « Envoyé »
-                              const nomPdf = telechargerPdfDevis(dv.resume);
-                              window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(`Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n° ${dv.resume?.numOffre || ""} pour ${e.nom}, valable jusqu'au ${dv.resume?.dateValiditeFr || dv.dateFr}.\n\nBien cordialement,\n${dv.resume?.commercial || ""}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78`)}`;
+                              // L'envoi exige la DATE DE RELANCE choisie par le commercial :
+                              // le clic ouvre le mini-formulaire ci-dessous (date obligatoire).
+                              setRelancePour(dv.id);
+                              setDateRelance(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
                             }}
                             className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">✉️ Mail + PDF</button>
+                          )}
+                          {dv.statut === "envoye" && (
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Marquer le devis n° ${dv.resume?.numOffre || ""} comme ACCEPTÉ par le client ? La tâche de relance sera supprimée et l'acceptation consignée dans les activités.`)) onMarquerDevisAccepte(dv.id);
+                            }}
+                            title="Le client a accepté le devis : supprime la tâche de relance et consigne l'acceptation"
+                            className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100">🎉 Devis accepté</button>
+                          )}
                           <button
                             onClick={() => {
                               if (window.confirm(`Supprimer définitivement le devis n° ${dv.resume?.numOffre || ""} de la fiche ?`)) onSupprimerDevis(dv.id);
@@ -2452,6 +2469,25 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                             title="Supprimer ce devis archivé"
                             className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50">🗑️</button>
                         </div>
+                        {relancePour === dv.id && (
+                          <div className="mt-1.5 rounded-lg border border-emerald-200 bg-emerald-50/60 p-2">
+                            <p className="text-[10.5px] font-bold text-slate-600">📅 À quelle date veux-tu relancer ce devis ? (obligatoire — une tâche sera créée sur la fiche)</p>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              <input type="date" value={dateRelance} onChange={(ev) => setDateRelance(ev.target.value)} className="rounded-lg border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700" />
+                              <button
+                                disabled={!dateRelance}
+                                onClick={() => {
+                                  const p = dateRelance.split("-"); const fr = p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : dateRelance;
+                                  onMarquerDevisEnvoye(dv.id, fr); // statut ✅ « Envoyé » + tâche de relance à la date choisie par le commercial
+                                  setRelancePour(null);
+                                  const nomPdf = telechargerPdfDevis(dv.resume);
+                                                                window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(`Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n° ${dv.resume?.numOffre || ""} pour ${e.nom}, valable jusqu'au ${dv.resume?.dateValiditeFr || dv.dateFr}.\n\nBien cordialement,\n${dv.resume?.commercial || ""}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78`)}`;
+                                }}
+                                className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed">✉️ Envoyer le devis</button>
+                              <button onClick={() => setRelancePour(null)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-500 hover:bg-slate-50">Annuler</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -4044,47 +4080,65 @@ export default function App() {
       } : x),
     }));
   };
-  const marquerDevisEnvoyeParId = (entId: string, devisId: string) => {
+  const marquerDevisEnvoyeParId = (entId: string, devisId: string, dateRelanceFr: string) => {
+    if (!dateRelanceFr) return; // pas d'envoi sans date de relance choisie par le commercial
     const maintenant = new Date();
-    // RÈGLE : un devis envoyé au client DOIT avoir sa relance planifiée — la
-    // tâche est créée automatiquement à l'envoi (J+7), impossible d'y couper.
-    const dans7j = new Date(Date.now() + 7 * 86400000).toLocaleDateString("fr-FR");
     setEtat((s2) => ({
       ...s2,
       entreprises: s2.entreprises.map((x) => {
         if (x.id !== entId) return x;
         const dv = (x.devisHistorique ?? []).find((d) => d.id === devisId);
-        const transition = !!dv && dv.statut !== "envoye"; // tâche créée UNE seule fois par devis
+        const transition = !!dv && dv.statut !== "envoye" && dv.statut !== "accepte"; // tâche créée UNE seule fois par devis
         return {
           ...x,
-          devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId && d.statut !== "envoye" ? { ...d, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR") } : d),
+          devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId && d.statut !== "envoye" && d.statut !== "accepte" ? { ...d, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR"), dateRelanceFr } : d),
           activites: transition ? [...x.activites,
-            { date: "auj.", texte: `Relancer le devis n° ${dv!.resume?.numOffre || ""} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dans7j, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite] : x.activites,
+            { date: "auj.", texte: `Relancer le devis n° ${dv!.resume?.numOffre || ""} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite] : x.activites,
         };
       }),
     }));
   };
-  const marquerDevisEnvoye = (societe: string, numOffre: string) => {
+  // Devis ACCEPTÉ par le client : la relance n'a plus de raison d'être → la
+  // tâche de relance est SUPPRIMÉE des activités, et l'acceptation est
+  // consignée dans la Chronologie de l'entreprise.
+  const marquerDevisAccepte = (entId: string, devisId: string) => {
+    const dv = (etat.entreprises.find((x) => x.id === entId)?.devisHistorique ?? []).find((d) => d.id === devisId);
+    if (!dv || dv.statut === "accepte") return;
+    const num = dv.resume?.numOffre || "";
+    const maintenant = new Date();
+    const prefixeTache = `Relancer le devis n° ${num}`;
+    setEtat((s2) => ({
+      ...s2,
+      entreprises: s2.entreprises.map((x) => x.id === entId ? {
+        ...x,
+        devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: "accepte" as const, dateAcceptationFr: maintenant.toLocaleDateString("fr-FR") } : d),
+        activites: [
+          ...x.activites.filter((a) => !(a.type === "tache" && (a.texte || "").startsWith(prefixeTache))),
+          { date: "auj.", texte: `🎉 Devis n° ${num} accepté par le client`, type: "note" as const, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite,
+        ],
+      } : x),
+    }));
+  };
+  const marquerDevisEnvoye = (societe: string, numOffre: string, dateRelanceFr: string) => {
     const ent = trouverEntrepriseParNom(societe);
     if (!ent || !numOffre) return;
-    const cible = (etat.entreprises.find((x) => x.id === ent.id)?.devisHistorique ?? []).find((dv) => dv.resume?.numOffre === numOffre && dv.statut !== "envoye");
-    if (!cible) return; // jamais envoyé, ou déjà marqué « Envoyé » : rien à faire
+    if (!dateRelanceFr) return; // pas d'envoi sans date de relance choisie par le commercial
+    const cible = (etat.entreprises.find((x) => x.id === ent.id)?.devisHistorique ?? []).find((dv) => dv.resume?.numOffre === numOffre && dv.statut !== "envoye" && dv.statut !== "accepte");
+    if (!cible) return; // déjà envoyé ou accepté : rien à faire
     const maintenant = new Date();
-    // RÈGLE : relance obligatoire — tâche créée automatiquement à l'envoi (J+7).
-    const dans7j = new Date(Date.now() + 7 * 86400000).toLocaleDateString("fr-FR");
     const texte = `Devis n° ${numOffre} envoyé au client (mail + PDF)`;
     setEtat((s2) => ({
       ...s2,
       entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
         ...x,
-        devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR") } : dv),
+        devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR"), dateRelanceFr } : dv),
         activites: [...x.activites,
           { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite,
-          { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dans7j, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
-      ] } : x),
+          { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+      } : x),
     }));
   };
-  // E-mail de contact du compte (premier contact de l'entreprise avec e-mail).
+    // E-mail de contact du compte (premier contact de l'entreprise avec e-mail).
   const emailDuCompte = (nom: string) => {
     const ent = trouverEntrepriseParNom(nom);
     if (!ent) return "";
@@ -4361,7 +4415,8 @@ export default function App() {
             onModifie={(patch) => modifierEntreprise(fiche.id, patch)}
             onMajContacts={majContacts}
             onRouvrirDevis={rouvrirDevis}
-            onMarquerDevisEnvoye={(devisId) => marquerDevisEnvoyeParId(fiche.id, devisId)}
+            onMarquerDevisEnvoye={(devisId, dateRelanceFr) => marquerDevisEnvoyeParId(fiche.id, devisId, dateRelanceFr)}
+            onMarquerDevisAccepte={(devisId) => marquerDevisAccepte(fiche.id, devisId)}
             onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)}
             onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)} />
         ) : fiche?.type === "contact" ? (

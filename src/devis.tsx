@@ -251,7 +251,7 @@ export interface SauvegardeDevis { societe: string; commentaire: string; brouill
 // statut : "enregistre" = simplement archivé sur la fiche ; "envoye" = le
 // devis est parti au client (mail + PDF). Les archives créées avant ce champ
 // n'en portent pas → affichées « Enregistré » par défaut.
-export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string; statut?: "enregistre" | "envoye"; dateEnvoiFr?: string };
+export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; dateFr: string; statut?: "enregistre" | "envoye" | "accepte"; dateEnvoiFr?: string; dateRelanceFr?: string; dateAcceptationFr?: string };
 
 // Modèle de corps de mail pour l'envoi du devis (persisté dans l'état du CRM
 // via etat.modelesMailDevis → Supabase). Les variables {{...}} sont remplacées
@@ -498,7 +498,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   onModelesMail?: (m: ModeleMailDevis[]) => void;
   // Signale au CRM qu'un devis vient d'être envoyé au client (mail + PDF) :
   // le CRM marque « Envoyé » l'archive correspondante sur la fiche entreprise.
-  onDevisEnvoye?: (societe: string, numOffre: string) => void;
+  onDevisEnvoye?: (societe: string, numOffre: string, dateRelanceFr: string) => void;
   // N° d'offre déjà archivés dans tout le CRM (toutes fiches) — sert à
   // attribuer un numéro UNIQUE (suffixe -1, -2, -3…) par jour et commercial.
   numerosExistants?: string[];
@@ -557,6 +557,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // ── Archivage & envoi (étape « Devis client ») ──
   const [commentaire, setCommentaire] = useState("");
   const [retourAction, setRetourAction] = useState("");
+  // Date de relance du devis choisie par le commercial (OBLIGATOIRE pour
+  // l'envoi, pré-remplie à J+7 mais modifiable) : le CRM crée la tâche
+  // « Relancer le devis » sur la fiche entreprise à cette date.
+  const [dateRelance, setDateRelance] = useState<string>(() => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
   // ── Volet « modèles de mail » (envoi du devis) ──
   const [voletMailOuvert, setVoletMailOuvert] = useState(false);
   const [apercuMailOuvert, setApercuMailOuvert] = useState(false);
@@ -795,6 +799,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // Signature (1 clic). Le PDF est téléchargé au préalable, il ne reste
   // qu'à le joindre (1 clic) et à envoyer soi-même.
   const envoyerMail = (objetMail?: string, corpsMail?: string) => {
+    if (!dateRelance) { setRetourAction("⚠️ Choisis d'abord la date de relance du devis (obligatoire)."); return; }
     const resume = construireResume();
     const nomPdf = telechargerPdfDevis(resume);
     const mail = construireMail(resume);
@@ -802,7 +807,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
     const corpsFinal = corpsMail ?? corpsCourtMail(resume);
     window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
     // Le devis part au client : la fiche entreprise le marque « Envoyé ».
-    onDevisEnvoye?.(societe, resume.numOffre);
+    const pRel = dateRelance.split("-"); const dateRelanceFr = pRel.length === 3 ? `${pRel[2]}/${pRel[1]}/${pRel[0]}` : dateRelance;
+    onDevisEnvoye?.(societe, resume.numOffre, dateRelanceFr);
     setRetourAction(`✉️ Brouillon ouvert dans ton Outlook — ta signature par défaut (logo inclus) s'insère normalement ; sinon un clic dans Insertion → Signature. Joins le PDF « ${nomPdf} » (déjà téléchargé), relis, et envoie !`);
     setVoletMailOuvert(false);
   };
@@ -1566,6 +1572,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                       <Button variant="outline" disabled className="shrink-0" title="Dictée non supportée par ce navigateur">🎤 Dicter</Button>
                     )}
                   </div>
+                </Field>
+                <Field label="📅 Relancer ce devis le (obligatoire)" hint="Une tâche de relance sera créée sur la fiche entreprise à cette date. Pré-remplie à J+7, modifiable.">
+                  <input type="date" value={dateRelance} onChange={(ev) => setDateRelance(ev.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30" />
                 </Field>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={sauvegarder} disabled={!societe.trim()}>💾 Sauvegarder sur la fiche entreprise</Button>
