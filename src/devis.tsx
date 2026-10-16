@@ -560,7 +560,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // Date de relance du devis choisie par le commercial (OBLIGATOIRE pour
   // l'envoi, pré-remplie à J+7 mais modifiable) : le CRM crée la tâche
   // « Relancer le devis » sur la fiche entreprise à cette date.
-  const [dateRelance, setDateRelance] = useState<string>(() => new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
+  const [dateRelance, setDateRelance] = useState<string>(() => new Date(Date.now() + 7 * 86400000).toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }));
   // ── Volet « modèles de mail » (envoi du devis) ──
   const [voletMailOuvert, setVoletMailOuvert] = useState(false);
   const [apercuMailOuvert, setApercuMailOuvert] = useState(false);
@@ -613,7 +613,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   // N° d'offre dynamique : L + initiales du commercial + aaaammjj + position du jour
   const aujourdhui = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  const aaaammjj = `${aujourdhui.getFullYear()}${pad(aujourdhui.getMonth() + 1)}${pad(aujourdhui.getDate())}`;
+  const aaaammjj = aujourdhui.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").join(""); // n° d'offre sur l'heure de Paris
   const initiales = (commercial || "CS").split(/\s+/).map((m) => m[0]).join("").toUpperCase();
   // N° UNIQUE : L + initiales + date + premier suffixe libre (-1, -2, -3…)
   // parmi TOUS les devis déjà archivés du CRM. Si le brouillon est lié à un

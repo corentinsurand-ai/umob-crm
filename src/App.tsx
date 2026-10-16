@@ -76,6 +76,14 @@ const telCorrespond = (q: string, tel: string): boolean => {
 // sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
 // en base sous un autre nom légal).
 const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+// ── Horodatage officiel du CRM : TOUT est sur l'heure de PARIS, quel que soit
+//    le fuseau du navigateur (Intl avec timeZone explicite). dateParis = jj/mm/aaaa,
+//    heureParis = hh:mm, dateHeureParis = « jj/mm/aaaa à hh:mm »,
+//    isoParis = YYYY-MM-DD (champ <input type="date">). ──
+const dateParis = (d: Date = new Date()): string => d.toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" });
+const heureParis = (d: Date = new Date()): string => d.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hour12: false });
+const dateHeureParis = (d: Date = new Date()): string => dateParis(d) + " à " + heureParis(d);
+const isoParis = (d: Date = new Date()): string => d.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" });
 // ── Sheet « Infos Service Client » (Google Sheet partagé « lien », lu EN DIRECT
 // par le navigateur au moment de la création via l’export CSV public — même mécanisme
 // que l’API gouv, aucune clé API). Une ligne = un CONTRAT ; on agrège par code
@@ -1824,7 +1832,7 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
   const [ia, setIa] = useState<{ resume: string; recommandations: string[]; sentiment?: string } | null>(null);
   const [enCours, setEnCours] = useState(false);
   const [cleIA, setCleIA] = useState(0); // « ✨ Régénérer » relance la génération Mistral
-  const generee = new Date().toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" });
+  const generee = new Date().toLocaleDateString("fr-FR", { timeZone: "Europe/Paris", day: "numeric", month: "long", year: "numeric" });
   // Contexte des appels analysés envoyé à l IA (en production) : résumés,
   // sentiments, scores et transcriptions tronquées — les VRAIS faits de la fiche.
   const contexteAppels = events
@@ -2102,7 +2110,7 @@ function ComposerActivites({ onAjouter, contacts, deals }: {
   // Date de réalisation réelle, pré-remplie avec la date du jour (jj/mm/aaaa) :
   // c'est L'HORODATAGE officiel de l'activité, modifiable pour rattraper une
   // action faite hier ou avant.
-  const aujourdhui = new Date().toLocaleDateString("fr-FR");
+  const aujourdhui = dateParis();
   const [dateRea, setDateRea] = useState(aujourdhui);
 
   // Fermeture = remise à zéro complète du formulaire.
@@ -2301,7 +2309,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onSupprimerDevis, onSupprimerActivite }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2311,7 +2319,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onMajContacts: (mods: { id: string; tel?: string; email?: string; role?: string }[]) => void; // rattrapage Sheet des contacts
   onRouvrirDevis: (dv: DevisArchive) => void; // recharge un devis archivé dans le module Devis (lié à son original)
   onMarquerDevisEnvoye: (devisId: string, dateRelanceFr: string) => void; // statut Envoyé + tâche de relance à la DATE CHOISIE par le commercial
-  onMarquerDevisAccepte: (devisId: string) => void; // devis accepté : supprime la tâche de relance + consigne l'acceptation dans les activités // passe le devis au statut « Envoyé au client »
+  onMarquerDevisAccepte: (devisId: string) => void; // devis accepté : supprime la tâche de relance + consigne l'acceptation dans les activités
+  onAnnulerDevisAccepte: (devisId: string) => void; // annule une acceptation faite par erreur (tâche de relance recréée)
   onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
   onSupprimerActivite: (ev: Activite) => void; // supprime une activité de la timeline (erreur de saisie)
 }) {
@@ -2345,8 +2354,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => {
     // dateISO = date de réalisation réelle (transmise par le composer) ; on garde
     // aussi le libellé court cohérent (« auj. » si réalisé aujourd'hui, sinon jj/mm).
-    const estAuj = dateRea === new Date().toLocaleDateString("fr-FR");
-    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), contactId: lien?.contactId, dealId: lien?.dealId });
+    const estAuj = dateRea === dateParis();
+    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || dateParis(), heure: heureParis(), contactId: lien?.contactId, dealId: lien?.dealId });
   };
 
   return (
@@ -2433,10 +2442,10 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                           {/* Statut du devis : ✅ envoyé au client (mail + PDF) ou
                               💾 simplement enregistré. Les archives d'avant le
                               champ n'en portent pas → « Enregistré » par défaut. */}
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${dv.statut === "envoye" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
-                            {dv.statut === "accepte" ? "🎉 Devis accepté" : dv.statut === "envoye" ? `✅ Envoyé au client${dv.dateEnvoiFr ? ` le ${dv.dateEnvoiFr}` : ""}` : "💾 Enregistré"}
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${dv.statut === "enregistre" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                            {dv.statut === "accepte" ? `🎉 Accepté${dv.dateAcceptationFr ? ` le ${dv.dateAcceptationFr}` : ""}` : dv.statut === "envoye" ? `✅ Envoyé au client${dv.dateEnvoiFr ? ` le ${dv.dateEnvoiFr}` : ""}` : "💾 Enregistré"}
                           </span>
-                          <span className="text-[10px] font-semibold text-slate-400">{dv.dateFr}</span>
+                          <span className="text-[10px] font-semibold text-slate-400">{dv.dateFr}{dv.dateISO && !Number.isNaN(new Date(dv.dateISO).getTime()) ? ` à ${heureParis(new Date(dv.dateISO))}` : ""}</span>
                         </div>
                         <p className="mt-0.5 text-slate-600">
                           {dv.resume?.nbChassis ?? 0} scooter(s) · {dv.resume?.duree ?? "—"} mois · <span className="font-bold">{fmtEur(dv.resume?.loyerMensuelHT ?? 0)} HT/mois</span>
@@ -2450,17 +2459,24 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                               // L'envoi exige la DATE DE RELANCE choisie par le commercial :
                               // le clic ouvre le mini-formulaire ci-dessous (date obligatoire).
                               setRelancePour(dv.id);
-                              setDateRelance(new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10));
+                              setDateRelance(isoParis(new Date(Date.now() + 7 * 86400000)));
                             }}
                             className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">✉️ Mail + PDF</button>
                           )}
-                          {dv.statut === "envoye" && (
+                          {dv.statut !== "accepte" ? (
                           <button
                             onClick={() => {
                               if (window.confirm(`Marquer le devis n° ${dv.resume?.numOffre || ""} comme ACCEPTÉ par le client ? La tâche de relance sera supprimée et l'acceptation consignée dans les activités.`)) onMarquerDevisAccepte(dv.id);
                             }}
                             title="Le client a accepté le devis : supprime la tâche de relance et consigne l'acceptation"
-                            className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100">🎉 Devis accepté</button>
+                            className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100">🎉 Accepté</button>
+                          ) : (
+                          <button
+                            onClick={() => {
+                              if (window.confirm(`Annuler l'acceptation du devis n° ${dv.resume?.numOffre || ""} ? Le devis redevient « envoyé », la note d'acceptation est retirée et la tâche de relance est recréée.`)) onAnnulerDevisAccepte(dv.id);
+                            }}
+                            title="Correction d'erreur : annule l'acceptation (le devis redevient envoyé, la tâche de relance est recréée)"
+                            className="rounded-xl border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10.5px] font-bold text-amber-700 hover:bg-amber-100">↩️ Annuler l'acceptation</button>
                           )}
                           <button
                             onClick={() => {
@@ -3035,7 +3051,7 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   const [dlId, setDlId] = useState("");
   const [typeFait, setTypeFait] = useState<"note" | "email" | "appel" | "tache" | "reunion">("appel");
   const [texteFait, setTexteFait] = useState("");
-  const aujourdhui = new Date().toLocaleDateString("fr-FR");
+  const aujourdhui = dateParis();
   const [dateFait, setDateFait] = useState(aujourdhui);
   const [avecSuivante, setAvecSuivante] = useState(true);
   const [typeSuivante, setTypeSuivante] = useState<"tache" | "reunion">("tache");
@@ -3071,8 +3087,8 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   };
   const validerForm = () => {
     if (!entId || !texteFait.trim()) return;
-    const estAuj = dateFait === new Date().toLocaleDateString("fr-FR");
-    const base = { date: estAuj ? "auj." : (dateFait.slice(0, 5) || "auj."), dateISO: dateFait || aujourdhui, heure: new Date().toTimeString().slice(0, 5), contactId: ctId || undefined, dealId: dlId || undefined };
+    const estAuj = dateFait === dateParis();
+    const base = { date: estAuj ? "auj." : (dateFait.slice(0, 5) || "auj."), dateISO: dateFait || aujourdhui, heure: heureParis(), contactId: ctId || undefined, dealId: dlId || undefined };
     // 1. L'activité réalisée (compte-rendu horodaté sur l'entreprise).
     onAjouter(entId, { ...base, texte: texteFait.trim(), type: typeFait });
     // 2. L'action suivante : tâche/réunion datée → visible dans l'agenda
@@ -4042,19 +4058,19 @@ export default function App() {
         entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
           ...x,
           devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === archive.id ? archive : dv),
-          activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+          activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
         } : x),
       }));
       return archive.id;
     }
-    const archive: DevisArchive = { ...s, id: `dv-${maintenant.getTime()}`, dateISO: maintenant.toISOString(), dateFr: maintenant.toLocaleDateString("fr-FR"), statut: "enregistre" };
+    const archive: DevisArchive = { ...s, id: `dv-${maintenant.getTime()}`, dateISO: maintenant.toISOString(), dateFr: dateParis(maintenant), statut: "enregistre" };
     const texte = `Devis n° ${s.resume.numOffre} sauvegardé — ${s.resume.nbChassis} scooter(s), ${s.resume.loyerMensuelHT.toLocaleString("fr-FR", { minimumFractionDigits: 2 })} €/mois HT${s.commentaire ? ` — « ${s.commentaire} »` : ""}`;
     setEtat((s2) => ({
       ...s2,
       entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
         ...x,
         devisHistorique: [archive, ...(x.devisHistorique ?? [])].slice(0, 30),
-        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
     return archive.id;
@@ -4076,7 +4092,7 @@ export default function App() {
       entreprises: s2.entreprises.map((x) => x.id === entId ? {
         ...x,
         devisHistorique: (x.devisHistorique ?? []).filter((d) => d.id !== devisId),
-        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
   };
@@ -4091,9 +4107,9 @@ export default function App() {
         const transition = !!dv && dv.statut !== "envoye" && dv.statut !== "accepte"; // tâche créée UNE seule fois par devis
         return {
           ...x,
-          devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId && d.statut !== "envoye" && d.statut !== "accepte" ? { ...d, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR"), dateRelanceFr } : d),
+          devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId && d.statut !== "envoye" && d.statut !== "accepte" ? { ...d, statut: "envoye" as const, dateEnvoiFr: dateHeureParis(maintenant), dateRelanceFr } : d),
           activites: transition ? [...x.activites,
-            { date: "auj.", texte: `Relancer le devis n° ${dv!.resume?.numOffre || ""} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite] : x.activites,
+            { date: "auj.", texte: `Relancer le devis n° ${dv!.resume?.numOffre || ""} (envoyé le ${dateHeureParis(maintenant)})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite] : x.activites,
         };
       }),
     }));
@@ -4111,13 +4127,35 @@ export default function App() {
       ...s2,
       entreprises: s2.entreprises.map((x) => x.id === entId ? {
         ...x,
-        devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: "accepte" as const, dateAcceptationFr: maintenant.toLocaleDateString("fr-FR") } : d),
+        devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: "accepte" as const, dateAcceptationFr: dateHeureParis(maintenant) } : d),
         activites: [
           ...x.activites.filter((a) => !(a.type === "tache" && (a.texte || "").startsWith(prefixeTache))),
-          { date: "auj.", texte: `🎉 Devis n° ${num} accepté par le client`, type: "note" as const, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite,
+          { date: "auj.", texte: `🎉 Devis n° ${num} accepté par le client`, type: "note" as const, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
         ],
       } : x),
     }));
+  };
+  // Annule une acceptation faite par ERREUR : le devis redevient « envoyé »
+  // (ou « enregistré » s'il n'avait jamais été envoyé), la note 🎉 est retirée
+  // de la Chronologie et la tâche de relance est RECRÉÉE à la date choisie
+  // initialement (anti-doublon : pas de tâche en double).
+  const annulerDevisAccepte = (entId: string, devisId: string) => {
+    const dv = (etat.entreprises.find((x) => x.id === entId)?.devisHistorique ?? []).find((d) => d.id === devisId);
+    if (!dv || dv.statut !== "accepte") return;
+    const num = dv.resume?.numOffre || "";
+    const noteAccept = `🎉 Devis n° ${num} accepté par le client`;
+    const prefixeTache = `Relancer le devis n° ${num}`;
+    setEtat((s2) => ({ ...s2, entreprises: s2.entreprises.map((x) => x.id === entId ? {
+      ...x,
+      devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: (d.dateEnvoiFr ? "envoye" : "enregistre") as "envoye" | "enregistre", dateAcceptationFr: undefined } : d),
+      activites: (() => {
+        const sansNote = x.activites.filter((a) => !(a.type === "note" && a.texte === noteAccept));
+        const dejaRelance = sansNote.some((a) => a.type === "tache" && (a.texte || "").startsWith(prefixeTache));
+        if (dejaRelance || !dv.dateRelanceFr) return sansNote;
+        const maintenant = new Date();
+        return [{ date: "auj.", texte: `Relancer le devis n° ${num} (acceptation annulée)`, type: "tache" as const, echeance: dv.dateRelanceFr, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite, ...sansNote];
+      })(),
+    } : x) }));
   };
   const marquerDevisEnvoye = (societe: string, numOffre: string, dateRelanceFr: string) => {
     const ent = trouverEntrepriseParNom(societe);
@@ -4131,10 +4169,10 @@ export default function App() {
       ...s2,
       entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
         ...x,
-        devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR"), dateRelanceFr } : dv),
+        devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: dateHeureParis(maintenant), dateRelanceFr } : dv),
         activites: [...x.activites,
-          { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite,
-          { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+          { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
+          { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${dateHeureParis(maintenant)})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
   };
@@ -4175,7 +4213,7 @@ export default function App() {
         deals: s.deals.map((x) => (x.id === id ? { ...x, ...patch } : x)),
         entreprises: etapeChange
           ? s.entreprises.map((x) => x.id === ancien!.entrepriseId
-            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien!.etape} → ${patch.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: id }] }
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien!.etape} → ${patch.etape}`, type: "etape", dateISO: dateParis(), heure: heureParis(), dealId: id }] }
             : x)
           : s.entreprises,
       };
@@ -4264,7 +4302,7 @@ export default function App() {
       const entreprises =
         ancien && ancien.etape !== d.etape
           ? s.entreprises.map((x) => x.id === d.entrepriseId
-            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: d.id }] }
+            ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${ancien.etape} → ${d.etape}`, type: "etape", dateISO: dateParis(), heure: heureParis(), dealId: d.id }] }
             : x)
           : s.entreprises;
       return { ...s, entreprises, deals: existe ? s.deals.map((x) => (x.id === d.id ? d : x)) : [...s.deals, { ...d, id: idSuivantLocal("d", 1) }] };
@@ -4303,7 +4341,7 @@ export default function App() {
         ...s,
         deals: s.deals.map((x) => (x.id === id ? { ...x, etape } : x)),
         entreprises: s.entreprises.map((x) => x.id === d.entrepriseId
-          ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape", dateISO: new Date().toLocaleDateString("fr-FR"), heure: new Date().toTimeString().slice(0, 5), dealId: d.id }] }
+          ? { ...x, activites: [...x.activites, { date: "auj.", texte: `Étape : ${d.etape} → ${etape}`, type: "etape", dateISO: dateParis(), heure: heureParis(), dealId: d.id }] }
           : x),
       };
     });
@@ -4417,6 +4455,7 @@ export default function App() {
             onRouvrirDevis={rouvrirDevis}
             onMarquerDevisEnvoye={(devisId, dateRelanceFr) => marquerDevisEnvoyeParId(fiche.id, devisId, dateRelanceFr)}
             onMarquerDevisAccepte={(devisId) => marquerDevisAccepte(fiche.id, devisId)}
+            onAnnulerDevisAccepte={(devisId) => annulerDevisAccepte(fiche.id, devisId)}
             onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)}
             onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)} />
         ) : fiche?.type === "contact" ? (

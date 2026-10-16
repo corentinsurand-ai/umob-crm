@@ -48,7 +48,7 @@ const cleDate = (d?: string): number => {
   if (p.length !== 3 || p.some(Number.isNaN)) return 0;
   return p[0] > 1000 ? p[0] * 10000 + p[1] * 100 + p[2] : p[2] * 10000 + p[1] * 100 + p[0];
 };
-const aujourdhui = () => { const d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
+const aujourdhui = () => { const p = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").map(Number); return p[0] * 10000 + p[1] * 100 + p[2]; }; // heure de Paris
 const ilYA = (jours: number) => aujourdhui() - jours; // approximatif en jours calendaires compacts (ok pour des tris 7/30 j)
 
 /* ————— Détection du mode de livraison ————— RÈGLE ANTI-INVENTION : la valeur

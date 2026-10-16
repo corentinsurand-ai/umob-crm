@@ -432,12 +432,14 @@ export default async function handler(req: any, res: any) {
     const n = new Date();
     const q2 = (x: number) => (x < 10 ? "0" : "") + x;
     const ech = new Date(Date.now() + delai * 86400000);
+    const nP = n.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").map(Number); // heure de Paris (Vercel tourne en UTC)
+    const echP = ech.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").map(Number);
     const tache: any = {
-      date: q2(n.getHours()) + ":" + q2(n.getMinutes()),
-      dateISO: q2(n.getDate()) + "/" + q2(n.getMonth() + 1) + "/" + n.getFullYear(),
-      heure: q2(n.getHours()) + ":" + q2(n.getMinutes()),
+      date: n.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hour12: false }),
+      dateISO: q2(nP[2]) + "/" + q2(nP[1]) + "/" + nP[0],
+      heure: n.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hour12: false }),
       type: "tache",
-      echeance: q2(ech.getDate()) + "/" + q2(ech.getMonth() + 1) + "/" + ech.getFullYear(),
+      echeance: q2(echP[2]) + "/" + q2(echP[1]) + "/" + echP[0],
       texte: "✅ " + actionTxt.slice(0, 300) + " (suggérée par l'IA après l'appel)",
       tacheDepuisAppel: appelId,
     };
@@ -506,8 +508,9 @@ export default async function handler(req: any, res: any) {
   // ── Construction de l'activité (mêmes champs que le front) ──
   const now = new Date();
   const p2 = (n: number) => (n < 10 ? "0" : "") + n;
-  const dateISO = p2(now.getDate()) + "/" + p2(now.getMonth() + 1) + "/" + now.getFullYear();
-  const date = p2(now.getHours()) + ":" + p2(now.getMinutes());
+  const nowP = now.toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").map(Number); // heure de Paris (Vercel tourne en UTC)
+  const dateISO = p2(nowP[2]) + "/" + p2(nowP[1]) + "/" + nowP[0];
+  const date = now.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hour12: false });
   const dureeTxt = duration ? Math.max(1, Math.round(duration / 60)) + " min" : "";
   const sens = entrant ? "entrant" : "sortant";
   const numAffiche = (numeroClient || "").replace(/(\d{2})(?=\d)/g, "$1 ").trim();
