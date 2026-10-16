@@ -1277,6 +1277,29 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                         </tr>
                       );
                     })}
+{(() => {
+                      const ch = lignes.find((l) => l.cat === "Châssis" && l.q > 0);
+                      const bat = lignes.find((l) => l.cat === "Batteries" && l.q > 0);
+                      const cha = lignes.find((l) => l.cat === "Chargeurs" && l.q > 0);
+                      if (!ch) return null; // ligne scooter seulement si un châssis est présent
+                      const comps = [ch, bat, cha].filter(Boolean);
+                      const neufScoot = comps.reduce((s2, l) => s2 + l.pvu, 0);
+                      const loyerScootBrut = comps.reduce((s2, l) => s2 + l.loyerU, 0);
+                      const loyerScootNet = comps.reduce((s2, l) => s2 + l.loyerUNet, 0);
+                      return (
+                        <tr className="border-t-2 border-slate-300 bg-cyan-50">
+                          <td className="px-3 py-2 font-bold text-cyan-800" colSpan={2}>
+                            🛵 Prix par scooter <span className="font-normal text-cyan-600">(1 châssis + 1 batterie + 1 chargeur) — neuf : {eurM(neufScoot)}</span>
+                          </td>
+                          <td className="text-right px-2 font-mono font-bold text-cyan-800">
+                            {eurM(loyerScootBrut)}
+                            {loyerScootNet < loyerScootBrut - 0.0001 && <span className="block text-[11px] text-emerald-700 font-semibold">{eurM(loyerScootNet)} net</span>}
+                          </td>
+                          <td className="text-right px-2 text-[10px] text-cyan-600" colSpan={3}>{comps.map((l) => l.nom).join(" + ")}</td>
+                          <td></td>
+                        </tr>
+                      );
+                    })()}
                   </tbody>
                   <tfoot className="bg-slate-50 border-t-2 border-slate-200 font-semibold">
                     <tr>
@@ -1287,6 +1310,21 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                   </tfoot>
                 </table>
               </div>
+              {(() => {
+                if (lignes.length === 0) return null;
+                const apresRemises = loyerNet - remiseSuppMensuelle;
+                const eco = loyerBrut - apresRemises;
+                const pct = loyerBrut > 0 ? (eco / loyerBrut) * 100 : 0;
+                return (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs text-slate-500">
+                      🏷️ Remise totale du devis : <span className="font-bold text-slate-800">{pct.toFixed(1).replace(".", ",")} %</span>
+                      <span className="text-slate-400"> (soit −{eurM(eco)} HT/mois sur {eurM(loyerBrut)})</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400">indication — lecture seule, calculée depuis les remises appliquées (lignes + remise supp. lissée)</span>
+                  </div>
+                );
+              })()}
               <p className="text-xs text-slate-400">🔒 Les colonnes « Remise max » sont internes (jamais sur le devis client). Les batteries/chargeurs héritent de la remise du châssis présent dans le devis (R4).</p>
             </CardContent>
           </Card>
