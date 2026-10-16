@@ -151,7 +151,7 @@ const eurM = (n: number) => `${n.toLocaleString("fr-FR", { minimumFractionDigits
 
 // ==================== COMPOSANTS ====================
 function Stepper({ step, onGoTo }: { step: number; onGoTo?: (i: number) => void }) {
-  const steps = ["Configuration", "Calcul & remises", "Reprise", "Packs & extras", "Devis client"];
+  const steps = ["Configuration", "Reprise", "Calcul & remises", "Packs & extras", "Devis client"];
   return (
     <div className="flex items-center gap-1 mb-5 text-sm flex-wrap">
       {steps.map((s, i) => {
@@ -1145,21 +1145,21 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                   <p className="text-3xl font-black">{eurM(loyerBrut)}<span className="text-sm font-normal opacity-80"> HT/mois</span></p>
                 </div>
                 <Button size="lg" className="bg-white text-emerald-700 hover:bg-emerald-50 font-semibold" onClick={() => setStep(1)}>
-                  Configurer le matériel →
+                  Reprise & calcul →
                 </Button>
               </CardContent>
             </Card>
           </div>
         )}
 
-        {/* ============ ÉTAPE 2 : LIGNES & REMISES ============ */}
-        {step === 1 && (
+        {/* ============ ÉTAPE 3 : LIGNES & REMISES (après la Reprise — l'empilage est intégré au total) ============ */}
+        {step === 2 && (
           <Card>
             <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">3 · Matériel — loyers & remises par article</CardTitle>
+              <CardTitle className="text-base">4 · Matériel — loyers & remises par article</CardTitle>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setStep(0)}>← Retour</Button>
-                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setStep(2)}>Reprise & packs →</Button>
+                <Button variant="outline" size="sm" onClick={() => setStep(1)}>← Retour</Button>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setStep(3)}>Packs & extras →</Button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -1277,29 +1277,77 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                         </tr>
                       );
                     })}
+{(() => {
+                      const ch = lignes.find((l) => l.cat === "Châssis" && l.q > 0);
+                      const bat = lignes.find((l) => l.cat === "Batteries" && l.q > 0);
+                      const cha = lignes.find((l) => l.cat === "Chargeurs" && l.q > 0);
+                      if (!ch) return null;
+                      const comps = [ch, bat, cha].filter(Boolean);
+                      const neufScoot = comps.reduce((s2, l) => s2 + l.pvu, 0);
+                      const loyerScootBrut = comps.reduce((s2, l) => s2 + l.loyerU, 0);
+                      const loyerScootNet = comps.reduce((s2, l) => s2 + l.loyerUNet, 0);
+                      return (
+                        <tr className="border-t-2 border-slate-300 bg-cyan-50">
+                          <td className="px-3 py-2 font-bold text-cyan-800" colSpan={2}>
+                            🛵 Prix par scooter <span className="font-normal text-cyan-600">(1 châssis + 1 batterie + 1 chargeur) — neuf : {eurM(neufScoot)}</span>
+                          </td>
+                          <td className="text-right px-2 font-mono font-bold text-cyan-800">
+                            {eurM(loyerScootBrut)}
+                            {loyerScootNet < loyerScootBrut - 0.0001 && <span className="block text-[11px] text-emerald-700 font-semibold">{eurM(loyerScootNet)} net</span>}
+                          </td>
+                          <td className="text-right px-2 text-[10px] text-cyan-600" colSpan={3}>{comps.map((l) => l.nom).join(" + ")}</td>
+                          <td></td>
+                        </tr>
+                      );
+                    })()}
                   </tbody>
                   <tfoot className="bg-slate-50 border-t-2 border-slate-200 font-semibold">
                     <tr>
-                      <td className="px-3 py-2 text-right" colSpan={5}>Loyer HT mensuel net</td>
+                      <td className="px-3 py-2 text-right" colSpan={5}>Loyer HT mensuel net (articles après remises)</td>
                       <td className="text-right px-2 font-mono">{eurM(loyerNet)}</td>
+                      <td></td>
+                    </tr>
+                    <tr>
+                      <td className="px-3 py-2 text-right font-normal" colSpan={5}>🛞 Reprise &amp; empilage lissé <span className="text-slate-400">(étape 2)</span></td>
+                      <td className="text-right px-2 font-mono text-emerald-700">+{eurM(empilageMensuelTotal)}</td>
+                      <td></td>
+                    </tr>
+                    <tr className="border-t-2 border-slate-300">
+                      <td className="px-3 py-2 text-right font-bold" colSpan={5}>Loyer mensuel HT final du devis</td>
+                      <td className="text-right px-2 font-mono font-bold text-emerald-700">{eurM(loyerMensuelHT)}</td>
                       <td></td>
                     </tr>
                   </tfoot>
                 </table>
               </div>
+              {(() => {
+                if (lignes.length === 0) return null;
+                const apresRemises = loyerNet - remiseSuppMensuelle;
+                const eco = loyerBrut - apresRemises;
+                const pct = loyerBrut > 0 ? (eco / loyerBrut) * 100 : 0;
+                return (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-xs text-slate-500">
+                      🏷️ Remise totale du devis : <span className="font-bold text-slate-800">{pct.toFixed(1).replace(".", ",")} %</span>
+                      <span className="text-slate-400"> (soit −{eurM(eco)} HT/mois sur {eurM(loyerBrut)})</span>
+                    </div>
+                    <span className="text-[10px] text-slate-400">indication — lecture seule, calculée depuis les remises appliquées</span>
+                  </div>
+                );
+              })()}
               <p className="text-xs text-slate-400">🔒 Les colonnes « Remise max » sont internes (jamais sur le devis client). Les batteries/chargeurs héritent de la remise du châssis présent dans le devis (R4).</p>
             </CardContent>
           </Card>
         )}
 
-        {/* ============ ÉTAPE 3 : REPRISE DE LA FLOTTE ACTUELLE ============ */}
-        {step === 2 && (
+        {/* ============ ÉTAPE 2 : REPRISE DE LA FLOTTE ACTUELLE (AVANT le calcul — le montant empilé alimente le loyer final) ============ */}
+        {step === 1 && (
           <Card>
             <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-              <CardTitle className="text-base">4 · Reprise de la flotte actuelle</CardTitle>
+              <CardTitle className="text-base">3 · Reprise de la flotte actuelle</CardTitle>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setStep(1)}>← Retour</Button>
-                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setStep(3)}>Packs & extras →</Button>
+                <Button variant="outline" size="sm" onClick={() => setStep(0)}>← Retour</Button>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setStep(2)}>Calcul & remises →</Button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
