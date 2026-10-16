@@ -2485,8 +2485,11 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             {/* Devis archivés depuis le module Devis (bouton « 💾 Sauvegarder
                 sur la fiche entreprise »), sous « À propos ». « Rouvrir »
                 recharge le brouillon tel quel dans le module Devis ;
-                « Mail + PDF » télécharge le devis en PDF (mis en page, sans
-                données internes) et ouvre un e-mail court à compléter. */}
+                « ⬇ PDF » télécharge SEUL le devis en PDF (mise en page
+                U'mob — logo officiel, couleurs du site, totaux par
+                tableau), sans ouvrir de mail ; « Mail + PDF » télécharge
+                le devis en PDF (mis en page, sans données internes) et
+                ouvre un e-mail court à compléter. */}
             {(e.devisHistorique?.length ?? 0) > 0 && (
               <div className="mt-3">
                 <div className="mb-2 flex items-center justify-between">
@@ -2514,6 +2517,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                         {dv.commentaire && <p className="mt-1 whitespace-pre-wrap border-l-2 border-emerald-300 pl-2 italic text-slate-500">{dv.commentaire}</p>}
                         <div className="mt-1.5 flex flex-wrap gap-1.5">
                           <button onClick={() => onRouvrirDevis(dv)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-50">🚀 Rouvrir</button>
+                          <button onClick={() => { try { telechargerPdfDevis(dv.resume); } catch { /* échec du téléchargement : sans bloquer la fiche */ } }} title="Télécharger ce devis en PDF (logo officiel + couleurs U'mob + totaux par tableau)" className="rounded-xl px-2 py-0.5 text-[10.5px] font-bold hover:opacity-80" style={{ background: "#b0c300", color: "#3d4200" }}>⬇ PDF</button>
                           {dv.statut !== "accepte" && (
                           <button
                             onClick={() => {
