@@ -217,6 +217,8 @@ export interface DevisBrouillon {
   renouvellement: boolean;
   qtes: Record<string, string>;
   remises: Record<string, string>;
+  // Les remises par article sont stockées en MONTANTS € (ex. "30,50"), pas en %.
+  remisesEnEuros?: boolean;
   packsCoches: Record<string, boolean>;
   coupDePoing: number;
   remiseLibre: number;
@@ -688,6 +690,26 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // (champ vidé = 0 pour le calcul, mais la ligne reste affichée)
   const [qtes, setQtes] = useState<Record<string, string>>(b.qtes ?? {});
   const [remises, setRemises] = useState<Record<string, string>>(b.remises ?? {});
+  // Migration une seule fois au montage : les anciens brouillons stockaient des
+  // POURCENTAGES (ex. "20") → on les convertit en montants € (loyerU x %/100).
+  const migrationRemisesFaite = useRef(false);
+  useEffect(() => {
+    if (migrationRemisesFaite.current || b.remisesEnEuros) return;
+    migrationRemisesFaite.current = true;
+    const t = TAUX[b.duree ?? 50] ?? 0.02701;
+    const cree = (b.anciennete ?? "") === "Moins de 2 bilans";
+    const conv: Record<string, string> = {};
+    Object.entries(b.remises ?? {}).forEach(([nom, raw]) => {
+      if (raw === "" || raw === undefined) return;
+      const pct = parseFloat(String(raw).replace(",", "."));
+      if (isNaN(pct) || pct <= 0) return;
+      const art = ARTICLES.find((a) => a.nom === nom);
+      if (!art) return;
+      const pvu = cree ? art.pvu * 1.25 : art.pvu;
+      conv[nom] = (pvu * t * (Math.min(pct, 100) / 100)).toFixed(2).replace(".", ",");
+    });
+    if (Object.keys(conv).length > 0) setRemises((r) => ({ ...r, ...conv }));
+  }, []);
   const [catalogueOuvert, setCatalogueOuvert] = useState(false);
   const [rechercheArticle, setRechercheArticle] = useState("");
   const [comptePanelOuvert, setComptePanelOuvert] = useState(false);
@@ -771,6 +793,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
     onBrouillonRef.current?.({
       step, societe, anciennete, mode, duree, grille, renouvellement,
       qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
+      remisesEnEuros: true,
       miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
       ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
     });
@@ -804,10 +827,13 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
 
   // Parse robuste : champ vide = 0, jamais de négatif, remise plafonnée à 100 %
   const parseQte = (raw: string | undefined) => Math.max(0, Math.round(parseFloat((raw ?? "").replace(",", ".")) || 0));
+  // Remise saisie en MONTANT € par unité (virgule acceptée) : vide = 0 €, jamais négatif.
   const parseRemise = (raw: string | undefined) => {
     const v = parseFloat((raw ?? "").replace(",", "."));
-    return isNaN(v) ? 0 : Math.min(100, Math.max(0, v)) / 100;
+    return isNaN(v) ? 0 : Math.max(0, v);
   };
+  // Montant € au format français (virgule décimale) pour l'affichage et le stockage.
+  const eurTxt = (n: number) => n.toFixed(2).replace(".", ",");
   const parsePrix = (raw: string | undefined) => {
     const v = parseFloat((raw ?? "").replace(",", "."));
     return isNaN(v) ? 0 : Math.max(0, v);
@@ -829,9 +855,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
           : qOf("Châssis DAILY PRO 50cc") > 0 ? "DAILY" : "AUCUNE";
       }
       const remiseMax = a.famille === "FLEXCITY" ? 0.35 : famEff !== "AUCUNE" ? (REMISES[famEff]?.[grille] ?? 0) : (REMISES.INFINITY[grille] ?? 0.20);
-      const remiseSaisie = parseRemise(remises[a.nom]);
-      const loyerUNet = loyerU * (1 - remiseSaisie);
-      return { ...a, q, pvu, loyerU, remiseMax, remiseSaisie, loyerUNet, total: loyerUNet * q, famEff };
+      const remiseEuros = parseRemise(remises[a.nom]);
+      const remiseSaisie = loyerU > 0 ? Math.min(remiseEuros / loyerU, 1) : 0;
+      const loyerUNet = Math.max(loyerU - remiseEuros, 0);
+      return { ...a, q, pvu, loyerU, remiseMax, remiseEuros, remiseSaisie, loyerUNet, total: loyerUNet * q, famEff };
     });
   }, [qtes, remises, taux, creation, grille]);
 
@@ -944,6 +971,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   const brouillonCourant = (): DevisBrouillon => ({
     step, societe, anciennete, mode, duree, grille, renouvellement,
     qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
+    remisesEnEuros: true,
     miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
     ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
   });
@@ -1055,12 +1083,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   const setRemiseArticle = (nom: string, raw: string) => {
     if (raw === "") { setRemises({ ...remises, [nom]: "" }); return; }
     const n = parseFloat(raw.replace(",", "."));
-    setRemises({ ...remises, [nom]: String(isNaN(n) ? "" : Math.min(100, Math.max(0, n))) });
+    setRemises({ ...remises, [nom]: isNaN(n) ? "" : eurTxt(Math.max(0, n)) });
   };
-  const appliquerRemiseMax = (nom: string, max: number) => setRemises({ ...remises, [nom]: (max * 100).toFixed(1) });
+  const appliquerRemiseMax = (nom: string, loyerU: number, max: number) => setRemises({ ...remises, [nom]: eurTxt(loyerU * max) });
   const toutRemiseMax = () => {
     const r: Record<string, string> = {};
-    lignes.forEach((l) => { r[l.nom] = (l.remiseMax * 100).toFixed(1); });
+    lignes.forEach((l) => { r[l.nom] = eurTxt(l.loyerU * l.remiseMax); });
     setRemises(r);
   };
   const viderRemises = () => setRemises({});
@@ -1297,7 +1325,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                       <th className="text-center px-2 py-2 w-24">Qté</th>
                       <th className="text-right px-2 py-2 w-32">Loyer U. HT/mois</th>
                       <th className="text-center px-2 py-2 w-32">Remise max 🔒</th>
-                      <th className="text-center px-2 py-2 w-28">Remise %</th>
+                      <th className="text-center px-2 py-2 w-48">Remise € / unité</th>
                       <th className="text-right px-2 py-2 w-40">Loyer total HT/mois<br /><span className="normal-case font-normal text-[10px] text-slate-400">(qté × loyer U.)</span></th>
                       <th className="w-8"></th>
                     </tr>
@@ -1324,12 +1352,18 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                             <p className={l.remiseSaisie > 0 ? "text-slate-400 line-through" : ""}>{eurM(l.loyerU)}</p>
                             {l.remiseSaisie > 0 && <p className="text-[11px] text-emerald-700 font-semibold">{eurM(l.loyerUNet)} <span className="font-normal text-slate-400">net</span></p>}
                           </td>
-                          <td className="text-center px-2"><Badge className={grille === "IND" ? "bg-blue-100 text-blue-700" : "bg-slate-800 text-white"}>{(l.remiseMax * 100).toFixed(1)} %</Badge></td>
+                          <td className="text-center px-2">
+                            <Badge className={grille === "IND" ? "bg-blue-100 text-blue-700" : "bg-slate-800 text-white"}>{(l.remiseMax * 100).toFixed(1)} %</Badge>
+                            <p className="text-[10px] text-slate-400 font-mono">max {eurTxt(l.loyerU * l.remiseMax)} €</p>
+                          </td>
                           <td className="text-center px-2">
                             <div className="flex items-center justify-center gap-1">
-                              <span className={`font-bold text-black bg-slate-100 rounded px-2 py-1 text-sm ${dep ? "text-red-700" : ""}`}>{(l.remiseSaisie * 100).toFixed(1)} %</span>
-                              <Input className={`h-8 text-center w-16 ${dep ? "bg-red-50 border-red-300 text-red-700 font-bold" : ""}`} type="number" step="0.1" min={0} max={100} value={remises[l.nom] ?? ""} placeholder="0" onChange={(e) => setRemiseArticle(l.nom, e.target.value)} />
-                              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" title="Appliquer la remise max" onClick={() => appliquerRemiseMax(l.nom, l.remiseMax)}>max</Button>
+                              <span className={`font-bold rounded px-2 py-1 text-sm ${dep ? "text-red-700 bg-red-50" : "text-emerald-700 bg-emerald-50"}`}>{(l.remiseSaisie * 100).toFixed(1)} %</span>
+                              <div className="relative">
+                                <Input className={`h-9 w-28 pr-7 text-right font-mono ${dep ? "bg-red-50 border-red-300 text-red-700 font-bold" : ""}`} type="text" inputMode="decimal" value={remises[l.nom] ?? ""} placeholder="0,00" onChange={(e) => setRemiseArticle(l.nom, e.target.value)} />
+                                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">€</span>
+                              </div>
+                              <Button variant="ghost" size="sm" className="h-8 px-2 text-xs" title="Appliquer la remise max (montant €)" onClick={() => appliquerRemiseMax(l.nom, l.loyerU, l.remiseMax)}>max</Button>
                             </div>
                           </td>
                           <td className="text-right px-2">
@@ -1400,7 +1434,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                   </div>
                 );
               })()}
-              <p className="text-xs text-slate-400">🔒 Les colonnes « Remise max » sont internes (jamais sur le devis client). Les batteries/chargeurs héritent de la remise du châssis présent dans le devis (R4).</p>
+              <p className="text-xs text-slate-400">🔒 Les colonnes « Remise max » sont internes (jamais sur le devis client). La remise se saisit en MONTANT € par unité (virgule acceptée, ex. 30,50) — le % affiché est recalculé automatiquement. Les batteries/chargeurs héritent de la remise du châssis présent dans le devis (R4).</p>
             </CardContent>
           </Card>
         )}
