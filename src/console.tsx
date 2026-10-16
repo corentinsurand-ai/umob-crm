@@ -160,8 +160,8 @@ function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
               <b>{d.appels.length}</b> appel{d.appels.length > 1 ? "s" : ""} consigné{d.appels.length > 1 ? "s" : ""} au total,
               dont <b>{_7j.length}</b> sur les 7 derniers jours et <b>{d.analyses.length}</b> analysé{d.analyses.length > 1 ? "s" : ""} par l'IA
               {negatifs.length > 0 ? `, ${negatifs.length} avec un sentiment négatif à revoir` : ""}.
-              {duJour.length > 0 ? ` ${duJour.length} tâche${duJour.length > 1 ? "s" : ""} 
-              {devis.length > 0 ? <> {" "}<span className="bg-cyan-50 px-1 rounded">Côté devis : <b>{devisEnvoyes.length}</b> en cours chez le client, dont <b className="text-rose-600">{devisRetard.length}</b> à RELANCER{devisAcceptes.length > 0 ? ", " + devisAcceptes.length + " accepté" + (devisAcceptes.length > 1 ? "s" : "") + " 🎉" : ""}.</span></> : null}arrivée${duJour.length > 1 ? "s" : ""} à échéance aujourd'hui ou en retard.` : ""}
+              {duJour.length > 0 ? ` ${duJour.length} tâche${duJour.length > 1 ? "s" : ""} arrivée${duJour.length > 1 ? "s" : ""} à échéance aujourd'hui ou en retard.` : ""}
+              {devis.length > 0 ? <> {" "}<span className="bg-cyan-50 px-1 rounded">Côté devis : <b>{devisEnvoyes.length}</b> en cours chez le client, dont <b className="text-rose-600">{devisRetard.length}</b> à RELANCER{devisAcceptes.length > 0 ? ", " + devisAcceptes.length + " accepté" + (devisAcceptes.length > 1 ? "s" : "") + " 🎉" : ""}.</span></> : null}
             </>
           )}
         </div>
@@ -609,7 +609,7 @@ function StatsDevis({ etat }: { etat: EtatConsole }) {
   const delais = acceptes.filter((x) => x.dv.dateEnvoiFr && x.dv.dateAcceptationFr).map((x) => Math.max(0, Math.round(enJours(x.dv.dateAcceptationFr) - enJours(x.dv.dateEnvoiFr))));
   const delaiMoyen = delais.length ? Math.round(delais.reduce((a, b) => a + b, 0) / delais.length) : null;
   const loyers = tous.map((x) => x.dv.resume?.loyerMensuelHT || 0);
-  const panier = loyers.length ? Math.round(loys.reduce((a, b) => a + b, 0) / loyers.length) : 0;
+  const panier = loyers.length ? Math.round(loyers.reduce((a, b) => a + b, 0) / loyers.length) : 0;
   const mois = Math.floor(AUJ / 100); // aaaamm courant
   const duMois = tous.filter((x) => Math.floor(cle(x.dv.dateFr) / 100) === mois);
   const villes = new Map<string, { nb: number; pipe: number }>();
