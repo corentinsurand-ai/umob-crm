@@ -236,6 +236,11 @@ export interface DevisBrouillon {
   // (même n° d'offre) au lieu d'en créer une nouvelle.
   idOrigine?: string;
   numOffreOrigine?: string;
+  // Fiche entreprise CIBLÉE (ID interne du CRM), posée quand le compte est
+  // choisi via « 🔍 Chercher un compte ». C'est elle qui départage deux
+  // sociétés partageant le MÊME nom commercial (ex. NB2 / Nour Breizh) :
+  // le nom commercial seul ne suffit plus à identifier la fiche.
+  entId?: string;
 }
 
 // ==================== ARCHIVAGE SUR FICHE ENTREPRISE ====================
@@ -255,7 +260,7 @@ export interface DevisResume {
 // Texte du devis prêt à partir par e-mail (version client, sans données internes).
 export interface MailDevis { destinataire: string; objet: string; corps: string; }
 // Ce que le module transmet au CRM au moment de la sauvegarde.
-export interface SauvegardeDevis { societe: string; commentaire: string; brouillon: DevisBrouillon; resume: DevisResume; mail: MailDevis; }
+export interface SauvegardeDevis { entId?: string; societe: string; commentaire: string; brouillon: DevisBrouillon; resume: DevisResume; mail: MailDevis; }
 // Ce qui est archivé sur la fiche entreprise (id + horodatage ajoutés par App.tsx).
 // statut : "enregistre" = simplement archivé sur la fiche ; "envoye" = le
 // devis est parti au client (mail + PDF). Les archives créées avant ce champ
@@ -646,19 +651,20 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   ouvertureDirecte?: boolean;
   // Comptes du CRM avec nom légal + téléphone pour le volet de recherche
   // de compte (match nom commercial + nom légal + téléphone).
-  comptesCRM?: { affiche: string; nom: string; tel: string }[];
+  comptesCRM?: { affiche: string; nom: string; tel: string; entId?: string }[];
   // Sauvegarde du devis sur la fiche entreprise du CRM. Retourne l'ID de
   // l'archive (nouvelle ou mise à jour) pour lier les sauvegardes suivantes
   // au même devis, ou false si la société n'existe pas dans le CRM.
   onSauvegarder?: (s: SauvegardeDevis) => string | boolean;
   // E-mail de contact du compte (premier contact avec e-mail), "" si inconnu.
-  emailSociete?: (nom: string) => string;
+  // entId prioritaire : deux sociétés peuvent partager le nom commercial.
+  emailSociete?: (nom: string, entId?: string) => string;
   // Modèles de corps de mail pour l'envoi du devis (persistés dans le CRM).
   modelesMail?: ModeleMailDevis[];
   onModelesMail?: (m: ModeleMailDevis[]) => void;
   // Signale au CRM qu'un devis vient d'être envoyé au client (mail + PDF) :
   // le CRM marque « Envoyé » l'archive correspondante sur la fiche entreprise.
-  onDevisEnvoye?: (societe: string, numOffre: string, dateRelanceFr: string) => void;
+  onDevisEnvoye?: (societe: string, numOffre: string, dateRelanceFr: string, entId?: string) => void;
   // N° d'offre déjà archivés dans tout le CRM (toutes fiches) — sert à
   // attribuer un numéro UNIQUE (suffixe -1, -2, -3…) par jour et commercial.
   numerosExistants?: string[];
@@ -680,6 +686,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
 
   // Config
   const [societe, setSociete] = useState<string>(b.societe ?? "");
+  // Fiche entreprise ciblée (ID) — prioritaire sur le nom pour l'archivage.
+  const [entId, setEntId] = useState<string | undefined>(b.entId);
   const [anciennete, setAnciennete] = useState<string>(b.anciennete ?? "Plus de 2 bilans");
   const [mode, setMode] = useState<string>(b.mode ?? "LOCATION");
   const [duree, setDuree] = useState<number>(b.duree ?? 50);
@@ -791,13 +799,13 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   useEffect(() => {
     if (premier.current) { premier.current = false; return; }
     onBrouillonRef.current?.({
-      step, societe, anciennete, mode, duree, grille, renouvellement,
+      step, societe, entId, anciennete, mode, duree, grille, renouvellement,
       qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
       remisesEnEuros: true,
       miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
       ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
     });
-  }, [step, societe, anciennete, mode, duree, grille, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement, offreLiee]);
+  }, [step, societe, entId, anciennete, mode, duree, grille, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement, offreLiee]);
 
   // N° d'offre dynamique : L + initiales du commercial + aaaammjj + position du jour
   const aujourdhui = new Date();
@@ -937,7 +945,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
     })() : {}),
   });
   const construireMail = (resume: DevisResume): MailDevis => ({
-    destinataire: emailSociete?.(societe) ?? "",
+    destinataire: emailSociete?.(societe, entId) ?? "",
     objet: `Offre de location U'mob — ${societe || "proposition"} (n° ${resume.numOffre})`,
     corps: [
       "Bonjour,",
@@ -969,7 +977,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   });
   // Brouillon complet au moment T (même contenu que celui remonté via onBrouillon).
   const brouillonCourant = (): DevisBrouillon => ({
-    step, societe, anciennete, mode, duree, grille, renouvellement,
+    step, societe, entId, anciennete, mode, duree, grille, renouvellement,
     qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
     remisesEnEuros: true,
     miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
@@ -980,7 +988,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   const sauvegarder = () => {
     const resume = construireResume();
     const mail = construireMail(resume);
-    const ok = onSauvegarder?.({ societe, commentaire: commentaire.trim(), brouillon: brouillonCourant(), resume, mail });
+    const ok = onSauvegarder?.({ entId, societe, commentaire: commentaire.trim(), brouillon: brouillonCourant(), resume, mail });
     if (ok === undefined) setRetourAction("⚠️ Sauvegarde indisponible hors CRM.");
     else if (ok) {
       // Liaison avec l'archive (nouvelle ou mise à jour) : les sauvegardes
@@ -1009,7 +1017,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
     window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
     // Le devis part au client : la fiche entreprise le marque « Envoyé ».
     const pRel = dateRelance.split("-"); const dateRelanceFr = pRel.length === 3 ? `${pRel[2]}/${pRel[1]}/${pRel[0]}` : dateRelance;
-    onDevisEnvoye?.(societe, resume.numOffre, dateRelanceFr);
+    onDevisEnvoye?.(societe, resume.numOffre, dateRelanceFr, entId);
     setRetourAction(`✉️ Brouillon ouvert dans ton Outlook — ta signature par défaut (logo inclus) s'insère normalement ; sinon un clic dans Insertion → Signature. Joins le PDF « ${nomPdf} » (déjà téléchargé), relis, et envoie !`);
     setVoletMailOuvert(false);
   };
@@ -1142,7 +1150,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
               <CardHeader className="pb-2"><CardTitle className="text-base">1 · Destinataire</CardTitle></CardHeader>
               <CardContent className="space-y-3">
                 <Field label="Société" hint="Recherche par nom commercial, nom légal ou téléphone — ou saisie libre">
-                  <Input value={societe} onChange={(e) => setSociete(e.target.value)} placeholder="Nom de la société cliente…" />
+                  <Input value={societe} onChange={(e) => { setSociete(e.target.value); setEntId(undefined); }} placeholder="Nom de la société cliente…" />
                   <Button variant="outline" className="w-full justify-between font-normal bg-white mt-1.5" onClick={() => { setComptePanelOuvert(!comptePanelOuvert); setRechercheCompte(""); }}>
                     <span className="text-slate-500 truncate">🔍 Chercher un compte du CRM…</span>
                     <span className="text-slate-400">{comptePanelOuvert ? "▲" : "▼"}</span>
@@ -1167,15 +1175,15 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                           if (res.length === 0) return <p className="px-3 py-3 text-sm text-black bg-white">Aucun compte trouvé — saisie libre possible.</p>;
                           return res.slice(0, 50).map((f) => (
                             <button
-                              key={f.affiche + "|" + f.tel}
+                              key={f.entId ?? f.affiche + "-" + f.tel}
                               type="button"
                               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-black bg-white hover:bg-emerald-50 text-left border-t border-slate-100 cursor-pointer"
-                              onClick={() => { setSociete(f.affiche); setComptePanelOuvert(false); setRechercheCompte(""); }}
+                              onClick={() => { setSociete(f.affiche); setEntId(f.entId); setComptePanelOuvert(false); setRechercheCompte(""); }}
                             >
                               <span className="flex-1 truncate font-medium">{f.affiche}</span>
                               {f.nom && f.nom !== f.affiche && <span className="truncate text-[11px] text-slate-400">{f.nom}</span>}
                               {f.tel && <span className="text-[11px] text-slate-500">{f.tel}</span>}
-                              {f.affiche === societe && <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">sélectionné</Badge>}
+                              {!!f.entId && f.entId === entId && <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">sélectionné</Badge>}
                             </button>
                           ));
                         })()}
