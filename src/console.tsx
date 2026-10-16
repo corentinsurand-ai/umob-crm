@@ -19,6 +19,14 @@ interface EntrepriseC {
   id: string; nom: string; nomCommercial?: string; secteur: string; ville: string; statut: string;
   tel: string; franchiseur: string; modeLivraison: string; nbVehicules: string; modeles?: string[];
   activites: ActiviteC[];
+  devisHistorique?: DevisC[];
+}
+// Devis archivé sur une fiche entreprise (source : module Devis « 💾 Sauvegarder
+// sur la fiche »). Mêmes champs que DevisArchive de devis.tsx — on ne lit que ceux-ci.
+interface DevisC {
+  id: string; dateFr: string; statut?: "enregistre" | "envoye" | "accepte";
+  dateEnvoiFr?: string; dateRelanceFr?: string; dateAcceptationFr?: string;
+  resume?: { numOffre?: string; commercial?: string; nbChassis?: number; loyerMensuelHT?: number; duree?: number };
 }
 interface DealC { id: string; titre: string; entrepriseId: string; montant: number; etape: string }
 interface ContactC { id: string; prenom: string; nom: string; entrepriseIds: string[]; tel: string; email: string }
@@ -416,12 +424,158 @@ function Insights({ d }: { d: ReturnType<typeof construire> }) {
   );
 }
 
+/* ═══════════════════ DEVIS — consolidation de suivi des devis ═══════════════════ */
+// Vue manager : une ligne par devis archivé dans le CRM, consolidée par statut
+// et par commercial. Priorité absolue aux RELANCES DUES (tâche « Relancer le
+// devis n° … » à échéance passée) — rouge = en retard, orange = sous 3 jours.
+function DevisVue({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsole }) {
+  const [filtre, setFiltre] = useState<"tous" | "retard" | "semaine" | "envoye" | "accepte" | "enregistre">("tous");
+  const AUJ = aujourdhui();
+  // « jj/mm/aaaa » ou « jj/mm/aaaa à hh:mm » → clé comparable (robuste aux heures ajoutées en 58bis).
+  const cle = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
+  const eur = (n?: number) => (n || 0).toLocaleString("fr-FR") + " € HT/mois";
+  // Tous les devis archivés du CRM, rattachés à leur entreprise porteuse.
+  const tous = etat.entreprises.flatMap((e) => (e.devisHistorique || []).map((dv) => ({ e, dv })));
+  const st = (x: { dv: DevisC }) => x.dv.statut || "enregistre";
+  const envoyes = tous.filter((x) => st(x) === "envoye");
+  const acceptes = tous.filter((x) => st(x) === "accepte");
+  const brouillons = tous.filter((x) => st(x) === "enregistre");
+  const enRetard = envoyes.filter((x) => x.dv.dateRelanceFr && cle(x.dv.dateRelanceFr) <= AUJ);
+  const bientot = envoyes.filter((x) => x.dv.dateRelanceFr && cle(x.dv.dateRelanceFr) > AUJ && cle(x.dv.dateRelanceFr) <= AUJ + 3);
+  const semaine = envoyes.filter((x) => x.dv.dateRelanceFr && cle(x.dv.dateRelanceFr) > AUJ && cle(x.dv.dateRelanceFr) <= AUJ + 7);
+  const pipe = envoyes.reduce((t, x) => t + (x.dv.resume?.loyerMensuelHT || 0), 0);
+  const gagne = acceptes.reduce((t, x) => t + (x.dv.resume?.loyerMensuelHT || 0), 0);
+
+  const BADGE: Record<string, { txt: string; cls: string }> = {
+    enregistre: { txt: "💾 Enregistré", cls: "bg-amber-100 text-amber-700" },
+    envoye: { txt: "✅ Envoyé", cls: "bg-sky-100 text-sky-700" },
+    accepte: { txt: "🎉 Accepté", cls: "bg-emerald-100 text-emerald-700" },
+  };
+
+  const liste = tous.filter((x) => {
+    if (filtre === "tous") return true;
+    if (filtre === "retard") return enRetard.includes(x);
+    if (filtre === "semaine") return semaine.includes(x);
+    return st(x) === filtre;
+  }).sort((a, b) => {
+    // Tri par urgence : relances échues d'abord (plus ancienne d'abord), puis à venir, puis le reste.
+    const ur = (x: { dv: DevisC }) => { const c = cle(x.dv.dateRelanceFr); return st(x) === "envoye" && c ? c : 99999999; };
+    return ur(a) - ur(b);
+  });
+
+  // Charge par commercial (source : champ « commercial » du devis).
+  const comms = Array.from(new Set(tous.map((x) => x.dv.resume?.commercial || "—")));
+  const parComm = comms.map((c) => {
+    const l = tous.filter((x) => (x.dv.resume?.commercial || "—") === c);
+    return { c, total: l.length, envoyes: l.filter((x) => st(x) === "envoye").length, acceptes: l.filter((x) => st(x) === "accepte").length,
+      retard: l.filter((x) => st(x) === "envoye" && x.dv.dateRelanceFr && cle(x.dv.dateRelanceFr) <= AUJ).length,
+      pipe: l.filter((x) => st(x) === "envoye").reduce((t, x) => t + (x.dv.resume?.loyerMensuelHT || 0), 0),
+      gagne: l.filter((x) => st(x) === "accepte").reduce((t, x) => t + (x.dv.resume?.loyerMensuelHT || 0), 0) };
+  });
+
+  const FILTRES: [typeof filtre, string, number][] = [
+    ["tous", "Tous", tous.length], ["retard", "🔴 À relancer", enRetard.length],
+    ["semaine", "🗓️ Cette semaine", semaine.length], ["envoye", "✅ Envoyés", envoyes.length],
+    ["accepte", "🎉 Acceptés", acceptes.length], ["enregistre", "💾 Brouillons", brouillons.length],
+  ];
+
+  if (tous.length === 0) return (
+    <Card>
+      <div className="text-sm font-semibold text-slate-700 mb-1">🧾 Devis</div>
+      <div className="text-xs text-slate-400">Aucun devis archivé pour l'instant. Sauvegarde un devis depuis le module Devis (« 💾 Sauvegarder sur la fiche entreprise ») : il apparaîtra ici avec son statut, sa date d'envoi et sa date de relance.</div>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <Card><div className="text-xs text-slate-500">Envoyés en cours</div><div className="text-xl font-bold text-sky-700">{envoyes.length}</div><div className="text-[10px] text-slate-400">{eur(pipe)}</div></Card>
+        <Card><div className="text-xs text-slate-500">À relancer (échéance due)</div><div className={"text-xl font-bold " + (enRetard.length > 0 ? "text-rose-600" : "text-slate-400")}>{enRetard.length}</div><div className="text-[10px] text-slate-400">dont {bientot.length} sous 3 jours</div></Card>
+        <Card><div className="text-xs text-slate-500">Relances cette semaine</div><div className="text-xl font-bold text-amber-600">{semaine.length}</div><div className="text-[10px] text-slate-400">échéances à venir ≤ 7 j</div></Card>
+        <Card><div className="text-xs text-slate-500">Acceptés 🎉</div><div className="text-xl font-bold text-emerald-700">{acceptes.length}</div><div className="text-[10px] text-slate-400">{eur(gagne)}</div></Card>
+        <Card><div className="text-xs text-slate-500">Brouillons jamais envoyés</div><div className="text-xl font-bold text-slate-500">{brouillons.length}</div><div className="text-[10px] text-slate-400">à finaliser</div></Card>
+      </div>
+
+      {enRetard.length > 0 && (
+        <Card className="border-rose-200 bg-rose-50">
+          <div className="text-sm font-bold text-rose-700 mb-1.5">🔴 {enRetard.length} relance{enRetard.length > 1 ? "s" : ""} en retard — priorité du jour</div>
+          <div className="flex flex-wrap gap-1.5">
+            {enRetard.map(({ e, dv }) => (
+              <span key={dv.id} className="rounded-lg border border-rose-200 bg-white px-2 py-1 text-[11px] font-semibold text-rose-700">
+                {e.nomCommercial || e.nom} · n° {dv.resume?.numOffre || "—"} · due le {dv.dateRelanceFr} · {eur(dv.resume?.loyerMensuelHT)}
+              </span>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <Card>
+        <div className="flex gap-1.5 flex-wrap mb-3">
+          {FILTRES.map(([k, l, n]) => (
+            <button key={k} onClick={() => setFiltre(k)}
+              className={"rounded-full px-3 py-1 text-[11px] font-bold transition-colors " + (filtre === k ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>
+              {l} <span className="opacity-60">{n}</span>
+            </button>
+          ))}
+        </div>
+        <div className="space-y-1.5">
+          {liste.length === 0 && <div className="py-4 text-center text-xs text-slate-400">Aucun devis dans cette vue.</div>}
+          {liste.map(({ e, dv }) => {
+            const retard = st({ dv }) === "envoye" && dv.dateRelanceFr && cle(dv.dateRelanceFr) <= AUJ;
+            const urgence = st({ dv }) === "envoye" && dv.dateRelanceFr && cle(dv.dateRelanceFr) <= AUJ + 3 && cle(dv.dateRelanceFr) > AUJ;
+            const b = BADGE[st({ dv })] || BADGE.enregistre;
+            return (
+              <div key={dv.id} className={"flex flex-wrap items-center gap-2 rounded-xl border p-2.5 text-xs " + (retard ? "border-rose-200 bg-rose-50" : urgence ? "border-amber-200 bg-amber-50/60" : "border-slate-200")}>
+                <div className="min-w-[150px] flex-1">
+                  <div className="font-bold text-slate-800">{e.nomCommercial || e.nom}</div>
+                  <div className="text-[10px] font-semibold text-slate-400">{e.ville || "ville à qualifier"} · {dv.resume?.commercial || "—"}</div>
+                </div>
+                <span className="font-bold text-slate-500">{dv.resume?.numOffre || "Devis"}</span>
+                <span className={"rounded-full px-2 py-0.5 text-[10px] font-bold " + b.cls}>{b.txt}</span>
+                <span className="font-semibold text-slate-700">{dv.resume?.nbChassis ?? "?"} scoot. · <span className="text-emerald-600 font-bold">{eur(dv.resume?.loyerMensuelHT)}</span></span>
+                <span className="text-[10.5px] text-slate-500">{dv.dateEnvoiFr ? "envoyé le " + dv.dateEnvoiFr : "pas encore envoyé"}</span>
+                {st({ dv }) === "envoye" && dv.dateRelanceFr && (
+                  <span className={"rounded-lg px-2 py-0.5 text-[10.5px] font-bold " + (retard ? "bg-rose-600 text-white" : urgence ? "bg-amber-500 text-white" : "bg-violet-100 text-violet-700")}>
+                    {retard ? "🔴 Relancer !" : urgence ? "🟠 Bientôt" : "🗓️"} {dv.dateRelanceFr}
+                  </span>
+                )}
+                {st({ dv }) === "accepte" && dv.dateAcceptationFr && <span className="text-[10.5px] font-bold text-emerald-600">accepté le {dv.dateAcceptationFr}</span>}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      {parComm.length > 1 && (
+        <Card>
+          <div className="text-sm font-semibold mb-2">👤 Charge par commercial</div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {parComm.map((p) => (
+              <div key={p.c} className="rounded-xl border border-slate-200 p-2.5 text-xs">
+                <div className="font-bold text-slate-800">{p.c}</div>
+                <div className="mt-1 flex justify-between text-[11px] text-slate-500">
+                  <span>✅ {p.envoyes} envoyés{p.retard > 0 ? <span className="text-rose-600 font-bold"> (🔴{p.retard} en retard)</span> : ""}</span>
+                  <span>🎉 {p.acceptes} acceptés</span>
+                </div>
+                <div className="mt-0.5 flex justify-between text-[10px] font-semibold">
+                  <span className="text-sky-600">Pipe : {eur(p.pipe)}</span>
+                  <span className="text-emerald-600">Gagné : {eur(p.gagne)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 /* ═══════════════════ CONSOLE (onglets) ═══════════════════ */
 export function ConsoleManager({ etat }: { etat: EtatConsole }) {
   const [tab, setTab] = useState("brief");
   const d = useMemo(() => construire(etat), [etat]);
   const onglets = [
-    ["brief", "☀️ Brief"], ["conversations", "💬 Conversations"], ["deals", "🎯 Deals"],
+    ["brief", "☀️ Brief"], ["conversations", "💬 Conversations"], ["deals", "🎯 Deals"], ["devis", "🧾 Devis"],
     ["prospection", "🧭 Prospection"], ["coaching", "🎓 Coaching"], ["insights", "📊 Insights"],
   ] as const;
   return (
@@ -441,6 +595,7 @@ export function ConsoleManager({ etat }: { etat: EtatConsole }) {
       {tab === "brief" && <Brief d={d} />}
       {tab === "conversations" && <Conversations d={d} />}
       {tab === "deals" && <Deals d={d} etat={etat} />}
+      {tab === "devis" && <DevisVue d={d} etat={etat} />}
       {tab === "prospection" && <Prospection d={d} etat={etat} />}
       {tab === "coaching" && <Coaching d={d} />}
       {tab === "insights" && <Insights d={d} />}
