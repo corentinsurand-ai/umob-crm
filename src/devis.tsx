@@ -138,6 +138,9 @@ const MODELES_REPRISE: Record<string, number> = {
   "Piaggio Liberty": 1580, "Kymco Agility": 1290, "Peugeot Ludix Pro": 1290.83, "Peugeot Tweet": 1658.33,
   "Sym": 1290.83, "Kymco Agility 125": 1832.50, "Sym XPro 125": 1707.50, "U'mob S5 Delivery": 0,
 };
+// Ligne « remise déguisée » : une ligne de reprise SANS véhicule réel — le
+// montant saisi en dur est lissé dans le loyer exactement comme une reprise.
+const MODELE_REMISE_DEGUISEE = "🎁 Remise déguisée (hors reprise véhicule)";
 export interface VehiculeReprise { id: number; modele: string; immat: string; mec: string; dateReleve: string; km: string; remiseEtat: string; repriseManuelle: string; reprendre: boolean; }
 
 const PACKS_BASE: Record<string, number> = { "ZEN+": 12, "CONFORT+": 25, "INTEGRAL+": 39, "SMART": 10, "PREMIUM": 15, "EXPERT": 29, "TRANQUILITE": 5.9, "PILOTE": 3.9, "U'TRACK": 11.99 };
@@ -482,11 +485,105 @@ export function telechargerPdfDevis(r: DevisResume): string {
 // Blob → base64 par tranches (btoa n'avale pas un gros buffer d'un coup) —
 // utilisé pour passer le PDF à l'API d'envoi réel.
 
+// Ligne de la vue « liste des devis » : un devis archivé aplati, avec le
+// lien vers sa fiche entreprise (consolidé par App.tsx depuis toutes les fiches).
+export interface DevisListeItem { id: string; num: string; societe: string; entId: string; dateFr: string; statut?: "enregistre" | "envoye" | "accepte"; dateEnvoiFr?: string; dateRelanceFr?: string; dateAcceptationFr?: string; loyer: number; nbChassis: number; commercial: string; }
+
+// ── Vue « liste de tous les devis » : DÉFAUT du module. Le bouton « ➕ Nouveau
+//    devis » ouvre l'assistant 5 étapes (inchangé) ; un brouillon en cours
+//    n'est jamais perdu (bandeau « Reprendre le brouillon »). ──
+function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFiche }: { items: DevisListeItem[]; brouillonExiste: boolean; onReprendre: () => void; onNouveau: () => void; onOuvrirFiche?: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [filtre, setFiltre] = useState<"tous" | "envoye" | "accepte" | "enregistre" | "retard">("tous");
+  // « aujourd'hui » en heure de Paris (comme le reste du CRM)
+  const auj = (() => { const m = new Date().toLocaleDateString("fr-FR", { timeZone: "Europe/Paris" }).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; })();
+  const cle = (s?: string) => { const m = (s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
+  const st = (d: DevisListeItem) => d.statut || "enregistre";
+  const envoyes = items.filter((d) => st(d) === "envoye");
+  const acceptes = items.filter((d) => st(d) === "accepte");
+  const brouillons = items.filter((d) => st(d) === "enregistre");
+  const enRetard = envoyes.filter((d) => d.dateRelanceFr && cle(d.dateRelanceFr) <= auj);
+  const t = (q || "").trim().toLowerCase();
+  const liste = items
+    .filter((d) => (filtre === "tous" ? true : filtre === "retard" ? enRetard.includes(d) : st(d) === filtre))
+    .filter((d) => !t || d.societe.toLowerCase().includes(t) || d.num.toLowerCase().includes(t) || (d.commercial || "").toLowerCase().includes(t))
+    .sort((a, b) => cle(b.dateFr) - cle(a.dateFr));
+  const BADGE_L: Record<string, { txt: string; cls: string }> = { enregistre: { txt: "💾 Enregistré", cls: "bg-amber-100 text-amber-700" }, envoye: { txt: "✅ Envoyé", cls: "bg-sky-100 text-sky-700" }, accepte: { txt: "🎉 Accepté", cls: "bg-emerald-100 text-emerald-700" } };
+  const eurL = (n: number) => (n || 0).toLocaleString("fr-FR") + " € HT/mois";
+  const FILTRES: [typeof filtre, string, number][] = [["tous", "Tous", items.length], ["retard", "🔴 À relancer", enRetard.length], ["envoye", "✅ Envoyés", envoyes.length], ["accepte", "🎉 Acceptés", acceptes.length], ["enregistre", "💾 Brouillons", brouillons.length]];
+  return (
+    <div className="mx-auto max-w-6xl space-y-4">
+      {brouillonExiste && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-bold text-emerald-800">📝 Brouillon en cours</span>
+          <span className="text-emerald-700">Un devis est en préparation — il n'est pas perdu.</span>
+          <button onClick={onReprendre} className="ml-auto rounded-lg bg-emerald-600 px-2.5 py-1 font-bold text-white cursor-pointer">↩️ Reprendre le brouillon</button>
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={onNouveau} className="rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-bold text-white shadow-sm hover:bg-emerald-700 cursor-pointer">➕ Nouveau devis</button>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Société, n° d'offre, commercial…"
+          className="flex-1 min-w-[200px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-emerald-500" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Devis au total</div><div className="text-xl font-bold text-slate-800">{items.length}</div><div className="text-[10px] text-slate-400">toutes fiches confondues</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">En cours chez le client</div><div className="text-xl font-bold text-sky-700">{envoyes.length}</div><div className="text-[10px] text-slate-400">{eurL(envoyes.reduce((x, d) => x + d.loyer, 0))}</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">À relancer</div><div className="text-xl font-bold text-rose-600">{enRetard.length}</div><div className="text-[10px] text-slate-400">échéance due</div></div>
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="text-xs text-slate-500">Acceptés 🎉</div><div className="text-xl font-bold text-emerald-700">{acceptes.length}</div><div className="text-[10px] text-slate-400">{eurL(acceptes.reduce((x, d) => x + d.loyer, 0))}</div></div>
+      </div>
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex gap-1.5 flex-wrap mb-3">
+          {FILTRES.map(([k, l, c]) => (
+            <button key={k} onClick={() => setFiltre(k)} className={"rounded-full px-3 py-1 text-[11px] font-bold transition-colors cursor-pointer " + (filtre === k ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200")}>{l} <span className="opacity-60">{c}</span></button>
+          ))}
+        </div>
+        {items.length === 0 ? (
+          <p className="text-xs text-slate-400 py-6 text-center">Aucun devis pour l'instant — clique sur « ➕ Nouveau devis » pour créer la première offre.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {liste.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">Aucun devis ne correspond.</p>}
+            {liste.map((d) => {
+              const retard = st(d) === "envoye" && d.dateRelanceFr && cle(d.dateRelanceFr) <= auj;
+              const b = BADGE_L[st(d)];
+              return (
+                <div key={d.id} className={"flex flex-wrap items-center gap-2 rounded-xl border p-2.5 text-xs " + (retard ? "border-rose-200 bg-rose-50" : "border-slate-200")}>
+                  <div className="min-w-[160px] flex-1">
+                    <div className="font-bold text-slate-800">{d.societe}</div>
+                    <div className="text-[10px] font-semibold text-slate-400">créé le {d.dateFr} · {d.commercial || "—"}</div>
+                  </div>
+                  <span className="font-bold text-slate-500">{d.num}</span>
+                  <span className={"rounded-full px-2 py-0.5 text-[10px] font-bold " + b.cls}>{b.txt}</span>
+                  <span className="font-semibold text-slate-700">{d.nbChassis} scoot. · <span className="text-emerald-600 font-bold">{(d.loyer || 0).toLocaleString("fr-FR")} €</span>/mois</span>
+                  {st(d) === "envoye" && d.dateRelanceFr && (
+                    <span className={"rounded-lg px-2 py-0.5 text-[10.5px] font-bold " + (retard ? "bg-rose-600 text-white" : "bg-violet-100 text-violet-700")}>{retard ? "🔴 Relancer !" : "🗓️"} {d.dateRelanceFr}</span>
+                  )}
+                  {st(d) === "accepte" && d.dateAcceptationFr && <span className="text-[10.5px] font-bold text-emerald-600">accepté le {d.dateAcceptationFr}</span>}
+                  {onOuvrirFiche && (
+                    <button onClick={() => onOuvrirFiche(d.entId)} className="rounded-lg border border-slate-200 px-2 py-1 text-[10.5px] font-semibold text-slate-500 hover:bg-slate-100 cursor-pointer">Ouvrir ↗</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {onOuvrirFiche && <div className="mt-2 text-[10.5px] text-slate-400">« Ouvrir ↗ » mène à la fiche entreprise, section 🧾 Devis.</div>}
+      </div>
+    </div>
+  );
+}
+
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
+  // Liste de TOUS les devis archivés (toutes fiches confondues) pour la vue
+  // « liste » par défaut du module ; onOuvrirFiche ouvre la fiche entreprise.
+  tousDevis?: DevisListeItem[];
+  onOuvrirFiche?: (entId: string) => void;
+  // Comptes du CRM avec nom légal + téléphone pour le volet de recherche
+  // de compte (match nom commercial + nom légal + téléphone).
+  comptesCRM?: { affiche: string; nom: string; tel: string }[];
   // Sauvegarde du devis sur la fiche entreprise du CRM. Retourne l'ID de
   // l'archive (nouvelle ou mise à jour) pour lier les sauvegardes suivantes
   // au même devis, ou false si la société n'existe pas dans le CRM.
@@ -513,6 +610,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   );
 
   const [step, setStep] = useState<number>(b.step ?? 0);
+  // Vue « liste de tous les devis » PAR DÉFAUT ; l'assistant s'ouvre via le
+  // bouton « ➕ Nouveau devis » — ou directement si un brouillon est en cours
+  // (le flux « 🚀 Rouvrir » d'une fiche entreprise reste identique).
+  const [vueListe, setVueListe] = useState<boolean>(!brouillon);
 
   // Config
   const [societe, setSociete] = useState<string>(b.societe ?? "");
@@ -549,6 +650,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
   );
   const [dureeAmort, setDureeAmort] = useState<string>(b.dureeAmort ?? "5");
   const [nouvVehicule, setNouvVehicule] = useState({ modele: "Piaggio Liberty", immat: "", mec: "", dateReleve: "", km: "" });
+  // Montant de la ligne « remise déguisée » (saisi dans le formulaire d'ajout).
+  const [montantDeguisee, setMontantDeguisee] = useState("");
   // Mode renouvellement (interne, jamais sur le devis client)
   const [locamRenouvellement, setLocamRenouvellement] = useState<{ contrat: string; montant: string; date: string }>(
     b.locamRenouvellement ?? { contrat: "", montant: "", date: "" }
@@ -894,6 +997,17 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
 
   const depassement = lignes.some((l) => l.remiseSaisie > l.remiseMax + 0.0001);
 
+  // Vue liste : tous les devis du CRM + bouton « ➕ Nouveau devis ».
+  if (vueListe) return (
+    <ListeDevis
+      items={tousDevis ?? []}
+      brouillonExiste={!!brouillon}
+      onReprendre={() => setVueListe(false)}
+      onNouveau={() => setVueListe(false)}
+      onOuvrirFiche={onOuvrirFiche}
+    />
+  );
+
   return (
     <div className="font-sans text-slate-800 pb-10">
       <div className="max-w-6xl mx-auto space-y-4">
@@ -912,6 +1026,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
           </div>
         </div>
 
+        <div className="flex justify-end">
+          <Button variant="outline" size="sm" className="bg-white" onClick={() => setVueListe(true)}>← Retour à la liste des devis</Button>
+        </div>
         <Stepper step={step} onGoTo={setStep} />
 
         {/* ============ ÉTAPE 1 : CONFIGURATION ============ */}
@@ -920,7 +1037,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-base">1 · Destinataire</CardTitle></CardHeader>
               <CardContent className="space-y-3">
-                <Field label="Société" hint="Recherche parmi les comptes du CRM — ou saisie libre">
+                <Field label="Société" hint="Recherche par nom commercial, nom légal ou téléphone — ou saisie libre">
                   <Input value={societe} onChange={(e) => setSociete(e.target.value)} placeholder="Nom de la société cliente…" />
                   <Button variant="outline" className="w-full justify-between font-normal bg-white mt-1.5" onClick={() => { setComptePanelOuvert(!comptePanelOuvert); setRechercheCompte(""); }}>
                     <span className="text-slate-500 truncate">🔍 Chercher un compte du CRM…</span>
@@ -929,22 +1046,32 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                   {comptePanelOuvert && (
                     <div className="mt-1 border border-slate-300 rounded-lg bg-white shadow-xl overflow-hidden z-50">
                       <div className="p-2 border-b bg-white">
-                        <Input autoFocus placeholder="Nom du compte…" value={rechercheCompte} onChange={(e) => setRechercheCompte(e.target.value)} className="bg-white text-black" />
+                        <Input autoFocus placeholder="Nom commercial, nom légal ou téléphone…" value={rechercheCompte} onChange={(e) => setRechercheCompte(e.target.value)} className="bg-white text-black" />
                       </div>
                       <div className="max-h-64 overflow-y-auto bg-white">
                         {(() => {
+                          // Recherche à 3 champs : nom commercial + nom LÉGAL +
+                          // TÉLÉPHONE (tolérant espaces/points, 33 ↔ 0, partiel).
                           const q = rechercheCompte.trim().toLowerCase();
-                          const res = nomsSocietes.filter((n) => !q || n.toLowerCase().includes(q));
+                          const fiches = comptesCRM ?? nomsSocietes.map((n) => ({ affiche: n, nom: "", tel: "" }));
+                          const qc = q.replace(/\D/g, "").replace(/^330/, "0");
+                          const res = fiches.filter((f) => {
+                            if (!q) return true;
+                            return (f.affiche || "").toLowerCase().includes(q) || (f.nom || "").toLowerCase().includes(q)
+                              || (qc.length >= 2 && !!f.tel && f.tel.replace(/\D/g, "").replace(/^330/, "0").includes(qc));
+                          });
                           if (res.length === 0) return <p className="px-3 py-3 text-sm text-black bg-white">Aucun compte trouvé — saisie libre possible.</p>;
-                          return res.slice(0, 50).map((n) => (
+                          return res.slice(0, 50).map((f) => (
                             <button
-                              key={n}
+                              key={f.affiche + "|" + f.tel}
                               type="button"
                               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-black bg-white hover:bg-emerald-50 text-left border-t border-slate-100 cursor-pointer"
-                              onClick={() => { setSociete(n); setComptePanelOuvert(false); setRechercheCompte(""); }}
+                              onClick={() => { setSociete(f.affiche); setComptePanelOuvert(false); setRechercheCompte(""); }}
                             >
-                              <span className="flex-1 truncate font-medium">{n}</span>
-                              {n === societe && <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">sélectionné</Badge>}
+                              <span className="flex-1 truncate font-medium">{f.affiche}</span>
+                              {f.nom && f.nom !== f.affiche && <span className="truncate text-[11px] text-slate-400">{f.nom}</span>}
+                              {f.tel && <span className="text-[11px] text-slate-500">{f.tel}</span>}
+                              {f.affiche === societe && <Badge variant="outline" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">sélectionné</Badge>}
                             </button>
                           ));
                         })()}
@@ -1195,9 +1322,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                   <div className="md:col-span-2 space-y-1">
                     <Label className="text-[11px] text-slate-500">Modèle</Label>
                     <select value={nouvVehicule.modele} onChange={(e) => setNouvVehicule({ ...nouvVehicule, modele: e.target.value })} className={SEL}>
-                      {Object.keys(MODELES_REPRISE).map((m) => <option key={m} value={m}>{m}</option>)}
+                      {[...Object.keys(MODELES_REPRISE), MODELE_REMISE_DEGUISEE].map((m) => <option key={m} value={m}>{m}</option>)}
                     </select>
                   </div>
+                  {nouvVehicule.modele !== MODELE_REMISE_DEGUISEE ? (<>
                   <div className="space-y-1">
                     <Label className="text-[11px] text-slate-500">Immat.</Label>
                     <Input className="bg-white" placeholder="AB-123-CD" value={nouvVehicule.immat} onChange={(e) => setNouvVehicule({ ...nouvVehicule, immat: e.target.value })} />
@@ -1214,15 +1342,24 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                     <Label className="text-[11px] text-slate-500">Km relevé</Label>
                     <Input className="bg-white" type="number" min={0} value={nouvVehicule.km} onChange={(e) => setNouvVehicule({ ...nouvVehicule, km: e.target.value === "" ? "" : String(Math.max(0, +e.target.value || 0)) })} />
                   </div>
+                  </>) : (
+                    <div className="space-y-1 md:col-span-4">
+                      <Label className="text-[11px] text-violet-600">Montant de la remise déguisée (€ HT)</Label>
+                      <Input className="bg-violet-50 border-violet-300 font-bold" type="number" min={0} placeholder="ex. 400" value={montantDeguisee} onChange={(e) => setMontantDeguisee(e.target.value === "" ? "" : String(Math.max(0, +e.target.value || 0)))} />
+                      <p className="text-[10px] text-violet-500">Ligne de reprise sans véhicule — le montant est lissé dans le loyer comme une reprise.</p>
+                    </div>
+                  )}
                 </div>
                 <Button
                   size="sm"
                   className="bg-emerald-600 hover:bg-emerald-700"
-                  disabled={!nouvVehicule.mec || !nouvVehicule.dateReleve || nouvVehicule.km === ""}
+                  disabled={nouvVehicule.modele === MODELE_REMISE_DEGUISEE ? montantDeguisee === "" : (!nouvVehicule.mec || !nouvVehicule.dateReleve || nouvVehicule.km === "")}
                   onClick={() => {
                     const id = (flotteReprise.length ? Math.max(...flotteReprise.map((v) => v.id)) : 0) + 1;
-                    setFlotteReprise([...flotteReprise, { id, modele: nouvVehicule.modele, immat: nouvVehicule.immat, mec: nouvVehicule.mec, dateReleve: nouvVehicule.dateReleve, km: nouvVehicule.km, remiseEtat: "", repriseManuelle: "", reprendre: true }]);
+                    const deg = nouvVehicule.modele === MODELE_REMISE_DEGUISEE;
+                    setFlotteReprise([...flotteReprise, { id, modele: nouvVehicule.modele, immat: deg ? "" : nouvVehicule.immat, mec: deg ? "" : nouvVehicule.mec, dateReleve: deg ? "" : nouvVehicule.dateReleve, km: deg ? "" : nouvVehicule.km, remiseEtat: "", repriseManuelle: deg ? montantDeguisee : "", reprendre: true }]);
                     setNouvVehicule({ modele: nouvVehicule.modele, immat: "", mec: "", dateReleve: "", km: "" });
+                    setMontantDeguisee("");
                   }}
                 >Ajouter le véhicule</Button>
               </div>
@@ -1256,8 +1393,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
                         return (
                           <tr key={v.id} className={`border-t ${v.reprendre ? "" : "opacity-50"}`}>
                             <td className="px-3 py-2">
-                              <p className="font-medium">{v.modele}</p>
-                              <p className="text-xs text-slate-400">{v.immat || "immat. à saisir"}{c.vnc > 0 ? ` · VNC ${eurM(c.vnc)}` : ""}{c.kmAnnuel > 0 ? ` · ${c.kmAnnuel.toLocaleString("fr-FR")} km/an` : ""}</p>
+                              <p className="font-medium">{v.modele === MODELE_REMISE_DEGUISEE ? <span className="text-violet-700">🎁 Remise déguisée</span> : v.modele}</p>
+                              <p className="text-xs text-slate-400">{v.modele === MODELE_REMISE_DEGUISEE ? <span className="text-violet-500">remise sans véhicule — lissée comme une reprise</span> : <>{v.immat || "immat. à saisir"}{c.vnc > 0 ? ` · VNC ${eurM(c.vnc)}` : ""}{c.kmAnnuel > 0 ? ` · ${c.kmAnnuel.toLocaleString("fr-FR")} km/an` : ""}</>}</p>
                             </td>
                             <td className="text-center px-2 text-xs text-slate-500">
                               <input type="date" value={v.mec} onChange={(e) => majVehicule({ mec: e.target.value })} className="bg-transparent text-xs w-28" />
@@ -1332,7 +1469,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, onSauvegar
               {totalEmpileGlobal !== 0 && nbChassis === 0 && (
                 <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 text-sm font-medium">⚠️ Ajoute d'abord les scooters neufs (étape Matériel) pour lisser l'empilage dans les loyers.</div>
               )}
-              <p className="text-xs text-slate-400">🔒 Coefs : ×1,3 (&lt; 1 an) · ×1,2 · ×1,1 (2-4 ans). Les U'mob S5 Delivery ne sont pas valorisés (0 €).</p>
+              <p className="text-xs text-slate-400">🔒 Coefs : ×1,3 (&lt; 1 an) · ×1,2 · ×1,1 (2-4 ans). Les U'mob S5 Delivery ne sont pas valorisés (0 €). 💡 Colonne « Valeur reprise ✏️ » : vide = valeur auto (marché × coef) ; un montant saisi = reprise forcée en dur. 🎁 « Remise déguisée » = ligne de reprise sans véhicule, montant lissé dans le loyer.</p>
             </CardContent>
           </Card>
         )}

@@ -70,7 +70,13 @@ const normeTelRecherche = (t: string): string => {
 const telCorrespond = (q: string, tel: string): boolean => {
   const qd = normeTelRecherche(q);
   if (qd.length < 2) return false;
-  return normeTelRecherche(tel).includes(qd);
+  const nt = normeTelRecherche(tel);
+  // Recherche directe, puis variante internationale : taper « +33 6 12 45 »
+  // (préfixe 33 PARTIEL) doit retrouver « 06 12 45 78 90 » comme le ferait
+  // un numéro complet à 11 chiffres.
+  if (nt.includes(qd)) return true;
+  if (qd.startsWith("33")) return nt.includes("0" + qd.slice(2));
+  return false;
 };
 // Normalisation de libellé pour comparer deux noms/enseignes : minuscules,
 // sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
@@ -2309,6 +2315,61 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
+// ── VOLET DE RECHERCHE GLOBALE : s'affiche sous la barre « Rechercher… »
+//    du header dès les premiers caractères tapés. Résultats groupés par type
+//    (entreprises, contacts, devis, deals, activités), chaque ligne mène à la
+//    fiche concernée. Match : nom commercial, nom légal, ville, téléphone
+//    (tolérant 33 ↔ 0, espaces, partiel), n° d'offre, noms de deals et textes
+//    d'activités (≥ 2 caractères). ──
+function VoletRecherche({ q, etat, onOuvre }: { q: string; etat: Etat; onOuvre: (c: Cible) => void }) {
+  const t = q.trim().toLowerCase();
+  const mTxt = (x?: string) => !!t && (x || "").toLowerCase().includes(t);
+  const mTel = (x?: string) => telCorrespond(q, x || "");
+  const rEnt = etat.entreprises.filter((e) => mTxt(e.nom) || mTxt(e.nomCommercial) || mTxt(e.ville) || mTel(e.tel)).slice(0, 6);
+  const entDe = (id: string) => etat.entreprises.find((e) => e.id === id);
+  const rCt = etat.contacts.filter((c) => mTxt(c.prenom + " " + c.nom) || mTxt(c.nom) || mTel(c.tel) || mTxt(c.email)).slice(0, 5);
+  const rDv: { dv: DevisArchive; entId: string; entNom: string }[] = [];
+  etat.entreprises.forEach((e) => (e.devisHistorique ?? []).forEach((dv) => {
+    if (mTxt(dv.resume?.numOffre) || mTxt(e.nomCommercial || e.nom) || mTxt(e.nom) || mTel(e.tel)) rDv.push({ dv, entId: e.id, entNom: e.nomCommercial || e.nom });
+  }));
+  const rDvTop = rDv.slice(0, 6);
+  const rDe = etat.deals.filter((d) => mTxt(d.nom)).slice(0, 5);
+  const rAc: { a: Activite; e: Entreprise }[] = [];
+  if (t.length >= 2) etat.entreprises.forEach((e) => e.activites.forEach((a) => { if (mTxt(a.texte)) rAc.push({ a, e }); }));
+  const rAcTop = rAc.slice(0, 5);
+  const nb = rEnt.length + rCt.length + rDvTop.length + rDe.length + rAcTop.length;
+  const G = ({ titre, items }: { titre: string; items: { cle: string; nom: string; sub?: string; droite?: string; go: () => void }[] }) => (
+    items.length === 0 ? null : (
+      <div>
+        <div className="px-3 py-1 text-[9.5px] font-bold uppercase tracking-wider text-slate-400 bg-slate-50/80">{titre} ({items.length})</div>
+        {items.map((it) => (
+          <button key={it.cle} onClick={it.go} className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[11.5px] hover:bg-cyan-50 cursor-pointer">
+            <span className="flex-1 truncate font-semibold text-slate-800">{it.nom}</span>
+            {it.sub && <span className="truncate text-[10px] text-slate-400">{it.sub}</span>}
+            {it.droite && <span className="text-[10px] text-slate-500">{it.droite}</span>}
+            <span className="text-cyan-600">↗</span>
+          </button>
+        ))}
+      </div>
+    )
+  );
+  return (
+    <div className="absolute right-0 top-full z-50 mt-1.5 w-[440px] max-w-[85vw] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+      <div className="border-b border-slate-100 bg-slate-50 px-3 py-1.5 text-[10.5px] font-bold text-slate-500">
+        {nb} résultat{nb > 1 ? "s" : ""} pour « {q.trim()} »
+      </div>
+      <div className="max-h-80 divide-y divide-slate-100 overflow-auto">
+        {nb === 0 && <p className="px-3 py-5 text-center text-xs text-slate-400">Aucun résultat — essaie un nom, un n° de devis ou un téléphone.</p>}
+        <G titre="🏢 Entreprises" items={rEnt.map((e) => ({ cle: "e" + e.id, nom: e.nomCommercial || e.nom, sub: e.nomCommercial ? e.nom : undefined, droite: [e.ville, e.tel].filter(Boolean).join(" · "), go: () => onOuvre({ type: "entreprise", id: e.id }) }))} />
+        <G titre="👥 Contacts" items={rCt.map((c) => ({ cle: "c" + c.id, nom: c.prenom + " " + c.nom, sub: c.role || undefined, droite: [entDe(c.entrepriseIds[0] || "")?.nomCommercial || entDe(c.entrepriseIds[0] || "")?.nom, c.tel].filter(Boolean).join(" · "), go: () => onOuvre({ type: "contact", id: c.id }) }))} />
+        <G titre="🧾 Devis" items={rDvTop.map((x) => ({ cle: "d" + x.dv.id, nom: (x.dv.resume?.numOffre || "—") + " — " + x.entNom, droite: (x.dv.resume?.loyerMensuelHT ? Math.round(x.dv.resume.loyerMensuelHT).toLocaleString("fr-FR") + " €/mois" : "") + (x.dv.statut === "accepte" ? " 🎉" : x.dv.statut === "envoye" ? " ✅" : ""), go: () => onOuvre({ type: "entreprise", id: x.entId }) }))} />
+        <G titre="🎯 Deals" items={rDe.map((d) => ({ cle: "k" + d.id, nom: d.nom, sub: d.etape, droite: d.montant ? d.montant.toLocaleString("fr-FR") + " €/mois" : undefined, go: () => onOuvre({ type: "deal", id: d.id }) }))} />
+        <G titre="🎧 Activités" items={rAcTop.map((x, i) => ({ cle: "a" + i + x.e.id, nom: x.a.texte, droite: (x.e.nomCommercial || x.e.nom) + (x.a.date ? " · " + x.a.date : ""), go: () => onOuvre({ type: "entreprise", id: x.e.id }) }))} />
+      </div>
+    </div>
+  );
+}
+
 function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite }: {
   etat: Etat; id: string;
   onRetour: () => void;
@@ -4419,8 +4480,13 @@ export default function App() {
             <div className="text-[13px] font-black text-slate-800">CRM U'mob</div>
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-2">
-            <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Rechercher…"
-              className="w-44 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+            <div className="relative">
+              <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="🔍 Rechercher partout…"
+                className="w-56 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+              {recherche.trim() !== "" && (
+                <VoletRecherche q={recherche} etat={etat} onOuvre={(c) => { ouvrir(c); setRecherche(""); }} />
+              )}
+            </div>
             {vue !== "devis" && vue !== "console" && (
             <button onClick={() => setCible(boutonAjout[vue])}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
@@ -4473,7 +4539,11 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
-            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)} onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
+            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
+              comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel }))}
+              tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
+              onOuvrirFiche={(id) => { setFiche({ type: "entreprise", id }); setCible(null); }}
+              onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>
         )}
