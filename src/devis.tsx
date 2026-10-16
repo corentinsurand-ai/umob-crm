@@ -577,7 +577,7 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, ouvertureDirecte, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -587,6 +587,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   onOuvrirFiche?: (entId: string) => void;
   // Supprime le brouillon en cours (bandeau 🗑️ de la vue liste).
   onSupprimerBrouillon?: () => void;
+  // « ➕ Nouveau devis » : REPART DE ZÉRO. App remonte le module à neuf
+  // (key++) APRÈS suppression de l'ancien brouillon — aucun champ de
+  // l'ancien devis (société, articles, remises, reprise) n'est conservé.
+  onDemarrerNouveau?: () => void;
   // Vrai UNIQUEMENT pour le flux « 🚀 Rouvrir » d'une fiche entreprise :
   // le module s'ouvre alors directement sur l'assistant. Par défaut (clic
   // sur l'onglet 🧾 Devis), on ouvre TOUJOURS la liste des devis.
@@ -1013,7 +1017,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
       items={tousDevis ?? []}
       brouillonExiste={!!brouillon}
       onReprendre={() => setVueListe(false)}
-      onNouveau={() => setVueListe(false)}
+      onNouveau={() => {
+        if (brouillon && !window.confirm("Un devis est en préparation (« " + (brouillon.societe || "sans société") + " »). Démarrer un NOUVEAU devis ?\n\nL'ancien brouillon sera supprimé et tout repartira de zéro.")) return;
+        onSupprimerBrouillon?.();
+        onDemarrerNouveau?.();
+        setVueListe(false);
+      }}
       onOuvrirFiche={onOuvrirFiche}
       onSupprimerBrouillon={onSupprimerBrouillon}
     />

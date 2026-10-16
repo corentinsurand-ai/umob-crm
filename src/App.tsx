@@ -3937,6 +3937,9 @@ export default function App() {
   // s'ouvre alors directement sur l'assistant. Un clic sur l'onglet 🧾 Devis
   // de la navigation remet à false → ouverture sur la LISTE à chaque fois.
   const [assistantDirect, setAssistantDirect] = useState(false);
+  // Remonte le module Devis à neuf (clé de rendu) : « ➕ Nouveau devis »
+  // repart de zéro — tous les états internes sont réinitialisés au montage.
+  const [devisKey, setDevisKey] = useState(0);
   const [monEmail, setMonEmail] = useState(""); // email du compte connecté (réserve la Console manager)
   useEffect(() => { supabase.auth.getSession().then(({ data }) => setMonEmail((data.session?.user?.email || "").toLowerCase())); }, []);
   const estManager = EMAILS_CONSOLE.has(monEmail);
@@ -4544,12 +4547,13 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
-            {vue === "devis" && <DevisModule brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
+            {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel }))}
               tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
               onOuvrirFiche={(id) => { setFiche({ type: "entreprise", id }); setCible(null); }}
               onSupprimerBrouillon={() => setEtat((e) => ({ ...e, devis: null }))}
               ouvertureDirecte={assistantDirect}
+              onDemarrerNouveau={() => { setAssistantDirect(true); setDevisKey((k) => k + 1); }}
               onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>
