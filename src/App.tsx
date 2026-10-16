@@ -4114,8 +4114,16 @@ export default function App() {
     const cible = (nom || "").trim().toLowerCase();
     return cible ? etat.entreprises.find((x) => (x.nomCommercial || x.nom).trim().toLowerCase() === cible) : undefined;
   };
+  // Résolution de la fiche entreprise d'un devis : l'ID (posé par le sélecteur
+  // « Chercher un compte » du module Devis) est PRIORITAIRE sur le nom —
+  // deux sociétés distinctes peuvent porter le MÊME nom commercial
+  // (ex. NB2 / Nour Breizh) : le nom seul désignerait la PREMIÈRE fiche
+  // trouvée, donc la MAUVAISE société. ID absent (anciens brouillons,
+  // saisie libre) → repli sur le nom, comme avant.
+  const trouverEntrepriseDevis = (nom: string, entId?: string) =>
+    (entId ? etat.entreprises.find((x) => x.id === entId) : undefined) ?? trouverEntrepriseParNom(nom);
   const sauvegarderDevisSurFiche = (s: SauvegardeDevis): string | boolean => {
-    const ent = trouverEntrepriseParNom(s.societe);
+    const ent = trouverEntrepriseDevis(s.societe, s.entId);
     if (!ent) return false;
     const maintenant = new Date();
     // MÊME devis (même n° d'offre déjà archivé) → MET À JOUR l'original :
@@ -4229,8 +4237,8 @@ export default function App() {
       })(),
     } : x) }));
   };
-  const marquerDevisEnvoye = (societe: string, numOffre: string, dateRelanceFr: string) => {
-    const ent = trouverEntrepriseParNom(societe);
+  const marquerDevisEnvoye = (societe: string, numOffre: string, dateRelanceFr: string, entId?: string) => {
+    const ent = trouverEntrepriseDevis(societe, entId);
     if (!ent || !numOffre) return;
     if (!dateRelanceFr) return; // pas d'envoi sans date de relance choisie par le commercial
     const cible = (etat.entreprises.find((x) => x.id === ent.id)?.devisHistorique ?? []).find((dv) => dv.resume?.numOffre === numOffre && dv.statut !== "envoye" && dv.statut !== "accepte");
@@ -4249,8 +4257,8 @@ export default function App() {
     }));
   };
     // E-mail de contact du compte (premier contact de l'entreprise avec e-mail).
-  const emailDuCompte = (nom: string) => {
-    const ent = trouverEntrepriseParNom(nom);
+  const emailDuCompte = (nom: string, entId?: string) => {
+    const ent = trouverEntrepriseDevis(nom, entId);
     if (!ent) return "";
     const ct = etat.contacts.find((c) => c.entrepriseIds.includes(ent.id) && (c.email || "").trim());
     return ct ? ct.email.trim() : "";
@@ -4552,7 +4560,7 @@ export default function App() {
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
             {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
-              comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel }))}
+              comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel, entId: x.id }))}
               tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
               onOuvrirFiche={(id) => { setFiche({ type: "entreprise", id }); setCible(null); }}
               onSupprimerBrouillon={() => setEtat((e) => ({ ...e, devis: null }))}
