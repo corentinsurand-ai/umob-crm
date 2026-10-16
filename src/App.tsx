@@ -3933,6 +3933,10 @@ export default function App() {
   const [recherche, setRecherche] = useState("");     // recherche globale du header
   const [cible, setCible] = useState<Cible | null>(null); // modale ouverte (null = fermée)
   const [fiche, setFiche] = useState<FicheRef | null>(null); // page record ouverte (null = liste)
+  // Vrai uniquement après « 🚀 Rouvrir » d'un devis archivé : le module Devis
+  // s'ouvre alors directement sur l'assistant. Un clic sur l'onglet 🧾 Devis
+  // de la navigation remet à false → ouverture sur la LISTE à chaque fois.
+  const [assistantDirect, setAssistantDirect] = useState(false);
   const [monEmail, setMonEmail] = useState(""); // email du compte connecté (réserve la Console manager)
   useEffect(() => { supabase.auth.getSession().then(({ data }) => setMonEmail((data.session?.user?.email || "").toLowerCase())); }, []);
   const estManager = EMAILS_CONSOLE.has(monEmail);
@@ -4250,6 +4254,7 @@ export default function App() {
     // Le brouillon rechargé porte la liaison vers l'archive d'origine : la
     // sauvegarde METTRA À JOUR ce devis (même n°) au lieu d'en créer un autre.
     setEtat((e) => ({ ...e, devis: { ...dv.brouillon, idOrigine: dv.id, numOffreOrigine: dv.resume?.numOffre || "" } }));
+    setAssistantDirect(true);
     setFiche(null);
     setVue("devis");
   };
@@ -4449,7 +4454,7 @@ export default function App() {
         </div>
         {/* Navigation : changer de vue ferme automatiquement la page record. */}
         {onglets.map(([cle, label]) => (
-          <button key={cle} onClick={() => { setFiche(null); setVue(cle as typeof vue); }}
+          <button key={cle} onClick={() => { if (cle === "devis") setAssistantDirect(false); setFiche(null); setVue(cle as typeof vue); }}
             className={"mb-0.5 flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] font-bold transition-colors " + (vue === cle ? "bg-slate-100 text-cyan-700" : "text-slate-500 hover:bg-slate-50")}>
             <span className="text-[14px]">{ICONES_NAV[cle]}</span> {label}
           </button>
@@ -4499,7 +4504,7 @@ export default function App() {
         {/* Navigation mobile : chips défilables (équivalent de la sidebar). */}
         <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4 pb-2 sm:hidden">
           {onglets.map(([cle, label]) => (
-            <button key={cle} onClick={() => { setFiche(null); setVue(cle as typeof vue); }}
+            <button key={cle} onClick={() => { if (cle === "devis") setAssistantDirect(false); setFiche(null); setVue(cle as typeof vue); }}
               className="whitespace-nowrap rounded-full px-3 py-1.5 text-[12px] font-bold transition-colors"
               style={{ background: vue === cle ? "#e2e8f0" : "transparent", color: vue === cle ? "#0f766e" : "#94a3b8" }}>
               {ICONES_NAV[cle]} {label}
@@ -4543,6 +4548,8 @@ export default function App() {
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel }))}
               tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
               onOuvrirFiche={(id) => { setFiche({ type: "entreprise", id }); setCible(null); }}
+              onSupprimerBrouillon={() => setEtat((e) => ({ ...e, devis: null }))}
+              ouvertureDirecte={assistantDirect}
               onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>

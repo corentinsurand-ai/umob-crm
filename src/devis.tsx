@@ -492,7 +492,7 @@ export interface DevisListeItem { id: string; num: string; societe: string; entI
 // ── Vue « liste de tous les devis » : DÉFAUT du module. Le bouton « ➕ Nouveau
 //    devis » ouvre l'assistant 5 étapes (inchangé) ; un brouillon en cours
 //    n'est jamais perdu (bandeau « Reprendre le brouillon »). ──
-function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFiche }: { items: DevisListeItem[]; brouillonExiste: boolean; onReprendre: () => void; onNouveau: () => void; onOuvrirFiche?: (id: string) => void }) {
+function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFiche, onSupprimerBrouillon }: { items: DevisListeItem[]; brouillonExiste: boolean; onReprendre: () => void; onNouveau: () => void; onOuvrirFiche?: (id: string) => void; onSupprimerBrouillon?: () => void }) {
   const [q, setQ] = useState("");
   const [filtre, setFiltre] = useState<"tous" | "envoye" | "accepte" | "enregistre" | "retard">("tous");
   // « aujourd'hui » en heure de Paris (comme le reste du CRM)
@@ -518,6 +518,10 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
           <span className="font-bold text-emerald-800">📝 Brouillon en cours</span>
           <span className="text-emerald-700">Un devis est en préparation — il n'est pas perdu.</span>
           <button onClick={onReprendre} className="ml-auto rounded-lg bg-emerald-600 px-2.5 py-1 font-bold text-white cursor-pointer">↩️ Reprendre le brouillon</button>
+          {onSupprimerBrouillon && (
+            <button onClick={() => { if (window.confirm("Supprimer le brouillon en cours ? Cette action est définitive.")) onSupprimerBrouillon(); }}
+              className="rounded-lg border border-emerald-300 bg-white px-2.5 py-1 font-bold text-emerald-700 hover:bg-red-50 hover:border-red-300 hover:text-red-600 cursor-pointer">🗑️ Supprimer</button>
+          )}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -573,7 +577,7 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, ouvertureDirecte, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -581,6 +585,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // « liste » par défaut du module ; onOuvrirFiche ouvre la fiche entreprise.
   tousDevis?: DevisListeItem[];
   onOuvrirFiche?: (entId: string) => void;
+  // Supprime le brouillon en cours (bandeau 🗑️ de la vue liste).
+  onSupprimerBrouillon?: () => void;
+  // Vrai UNIQUEMENT pour le flux « 🚀 Rouvrir » d'une fiche entreprise :
+  // le module s'ouvre alors directement sur l'assistant. Par défaut (clic
+  // sur l'onglet 🧾 Devis), on ouvre TOUJOURS la liste des devis.
+  ouvertureDirecte?: boolean;
   // Comptes du CRM avec nom légal + téléphone pour le volet de recherche
   // de compte (match nom commercial + nom légal + téléphone).
   comptesCRM?: { affiche: string; nom: string; tel: string }[];
@@ -613,7 +623,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // Vue « liste de tous les devis » PAR DÉFAUT ; l'assistant s'ouvre via le
   // bouton « ➕ Nouveau devis » — ou directement si un brouillon est en cours
   // (le flux « 🚀 Rouvrir » d'une fiche entreprise reste identique).
-  const [vueListe, setVueListe] = useState<boolean>(!brouillon);
+  const [vueListe, setVueListe] = useState<boolean>(!ouvertureDirecte);
 
   // Config
   const [societe, setSociete] = useState<string>(b.societe ?? "");
@@ -1005,6 +1015,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
       onReprendre={() => setVueListe(false)}
       onNouveau={() => setVueListe(false)}
       onOuvrirFiche={onOuvrirFiche}
+      onSupprimerBrouillon={onSupprimerBrouillon}
     />
   );
 
