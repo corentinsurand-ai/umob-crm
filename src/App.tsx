@@ -4046,12 +4046,22 @@ export default function App() {
   };
   const marquerDevisEnvoyeParId = (entId: string, devisId: string) => {
     const maintenant = new Date();
+    // RÈGLE : un devis envoyé au client DOIT avoir sa relance planifiée — la
+    // tâche est créée automatiquement à l'envoi (J+7), impossible d'y couper.
+    const dans7j = new Date(Date.now() + 7 * 86400000).toLocaleDateString("fr-FR");
     setEtat((s2) => ({
       ...s2,
-      entreprises: s2.entreprises.map((x) => x.id === entId ? {
-        ...x,
-        devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === devisId && dv.statut !== "envoye" ? { ...dv, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR") } : dv),
-      } : x),
+      entreprises: s2.entreprises.map((x) => {
+        if (x.id !== entId) return x;
+        const dv = (x.devisHistorique ?? []).find((d) => d.id === devisId);
+        const transition = !!dv && dv.statut !== "envoye"; // tâche créée UNE seule fois par devis
+        return {
+          ...x,
+          devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId && d.statut !== "envoye" ? { ...d, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR") } : d),
+          activites: transition ? [...x.activites,
+            { date: "auj.", texte: `Relancer le devis n° ${dv!.resume?.numOffre || ""} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dans7j, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite] : x.activites,
+        };
+      }),
     }));
   };
   const marquerDevisEnvoye = (societe: string, numOffre: string) => {
@@ -4060,14 +4070,18 @@ export default function App() {
     const cible = (etat.entreprises.find((x) => x.id === ent.id)?.devisHistorique ?? []).find((dv) => dv.resume?.numOffre === numOffre && dv.statut !== "envoye");
     if (!cible) return; // jamais envoyé, ou déjà marqué « Envoyé » : rien à faire
     const maintenant = new Date();
+    // RÈGLE : relance obligatoire — tâche créée automatiquement à l'envoi (J+7).
+    const dans7j = new Date(Date.now() + 7 * 86400000).toLocaleDateString("fr-FR");
     const texte = `Devis n° ${numOffre} envoyé au client (mail + PDF)`;
     setEtat((s2) => ({
       ...s2,
       entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
         ...x,
         devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: maintenant.toLocaleDateString("fr-FR") } : dv),
-        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
-      } : x),
+        activites: [...x.activites,
+          { date: "auj.", texte, type: "note", dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite,
+          { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${maintenant.toLocaleDateString("fr-FR")})`, type: "tache" as const, echeance: dans7j, dateISO: maintenant.toLocaleDateString("fr-FR"), heure: maintenant.toTimeString().slice(0, 5) } as Activite],
+      ] } : x),
     }));
   };
   // E-mail de contact du compte (premier contact de l'entreprise avec e-mail).
