@@ -135,7 +135,15 @@ const BarreMix = ({ m, total }: { m: any; total: number }) => {
 };
 
 /* ═══════════════════ BRIEF DU MATIN ═══════════════════ */
-function Brief({ d }: { d: ReturnType<typeof construire> }) {
+function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsole }) {
+  // Devis consolidés depuis les fiches entreprises (pour la synthèse + la carte relances).
+  const AUJ = aujourdhui();
+  const cleD = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
+  const devis = etat.entreprises.flatMap((e) => (e.devisHistorique || []).map((dv) => ({ e, dv })));
+  const stD = (x: { dv: DevisC }) => x.dv.statut || "enregistre";
+  const devisEnvoyes = devis.filter((x) => stD(x) === "envoye");
+  const devisAcceptes = devis.filter((x) => stD(x) === "accepte");
+  const devisRetard = devisEnvoyes.filter((x) => x.dv.dateRelanceFr && cleD(x.dv.dateRelanceFr) <= AUJ);
   const _7j = d.appels.filter((x) => cleDate(x.a.dateISO) >= ilYA(7));
   const aEcouter = d.analyses.filter((x) => (x.a.scoreIA ?? 3) <= 2).slice(0, 3);
   const duJour = d.taches.filter((x) => cleDate(x.a.echeance) <= aujourdhui());
@@ -152,11 +160,22 @@ function Brief({ d }: { d: ReturnType<typeof construire> }) {
               <b>{d.appels.length}</b> appel{d.appels.length > 1 ? "s" : ""} consigné{d.appels.length > 1 ? "s" : ""} au total,
               dont <b>{_7j.length}</b> sur les 7 derniers jours et <b>{d.analyses.length}</b> analysé{d.analyses.length > 1 ? "s" : ""} par l'IA
               {negatifs.length > 0 ? `, ${negatifs.length} avec un sentiment négatif à revoir` : ""}.
-              {duJour.length > 0 ? ` ${duJour.length} tâche${duJour.length > 1 ? "s" : ""} arrivée${duJour.length > 1 ? "s" : ""} à échéance aujourd'hui ou en retard.` : ""}
+              {duJour.length > 0 ? ` ${duJour.length} tâche${duJour.length > 1 ? "s" : ""} 
+              {devis.length > 0 ? <> {" "}<span className="bg-cyan-50 px-1 rounded">Côté devis : <b>{devisEnvoyes.length}</b> en cours chez le client, dont <b className="text-rose-600">{devisRetard.length}</b> à RELANCER{devisAcceptes.length > 0 ? ", " + devisAcceptes.length + " accepté" + (devisAcceptes.length > 1 ? "s" : "") + " 🎉" : ""}.</span></> : null}arrivée${duJour.length > 1 ? "s" : ""} à échéance aujourd'hui ou en retard.` : ""}
             </>
           )}
         </div>
       </Card>
+      {devisRetard.length > 0 && (
+        <Card className="border-rose-200 bg-rose-50">
+          <div className="font-semibold text-rose-700 mb-2 text-sm">🧾 Devis à relancer ({devisRetard.length})</div>
+          {devisRetard.map(({ e, dv }) => (
+            <div key={dv.id} className="rounded-lg bg-white/70 px-3 py-2 mb-1 text-xs">
+              <b>{e.nomCommercial || e.nom}</b> — devis n° {dv.resume?.numOffre || "—"} · relance due le {dv.dateRelanceFr} · <span className="font-bold text-rose-700">{(dv.resume?.loyerMensuelHT || 0).toLocaleString("fr-FR")} € HT/mois en jeu</span>
+            </div>
+          ))}
+        </Card>
+      )}
       {negatifs.length > 0 && (
         <Card>
           <div className="font-semibold text-rose-700 mb-2 text-sm">⚠️ Appels à sentiment négatif</div>
@@ -570,6 +589,93 @@ function DevisVue({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatCon
   );
 }
 
+/* ═══════════════════ STATS DES DEVIS GÉNÉRÉS ═══════════════════ */
+// Photographie du pipe devis : taux de concrétisation, délai moyen
+// d'acceptation, panier moyen, volume du mois, répartition des statuts et
+// top villes. Règle anti-invention : pas de statut « perdu » sur les devis,
+// le taux se lit « part des devis envoyés qui ont abouti ».
+function StatsDevis({ etat }: { etat: EtatConsole }) {
+  const AUJ = aujourdhui();
+  const cle = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
+  const enJours = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])) / 86400000 : 0; };
+  const eur = (n?: number) => (n || 0).toLocaleString("fr-FR") + " € HT/mois";
+  const tous = etat.entreprises.flatMap((e) => (e.devisHistorique || []).map((dv) => ({ e, dv })));
+  const st = (x: { dv: DevisC }) => x.dv.statut || "enregistre";
+  const envoyes = tous.filter((x) => st(x) === "envoye");
+  const acceptes = tous.filter((x) => st(x) === "accepte");
+  const brouillons = tous.filter((x) => st(x) === "enregistre");
+  const parts = envoyes.length + acceptes.length; // devis réellement envoyés au client
+  const taux = parts > 0 ? Math.round((acceptes.length / parts) * 100) : 0;
+  const delais = acceptes.filter((x) => x.dv.dateEnvoiFr && x.dv.dateAcceptationFr).map((x) => Math.max(0, Math.round(enJours(x.dv.dateAcceptationFr) - enJours(x.dv.dateEnvoiFr))));
+  const delaiMoyen = delais.length ? Math.round(delais.reduce((a, b) => a + b, 0) / delais.length) : null;
+  const loyers = tous.map((x) => x.dv.resume?.loyerMensuelHT || 0);
+  const panier = loyers.length ? Math.round(loys.reduce((a, b) => a + b, 0) / loyers.length) : 0;
+  const mois = Math.floor(AUJ / 100); // aaaamm courant
+  const duMois = tous.filter((x) => Math.floor(cle(x.dv.dateFr) / 100) === mois);
+  const villes = new Map<string, { nb: number; pipe: number }>();
+  envoyes.forEach(({ e, dv }) => { const v = (e.ville || "").trim() || "Ville à qualifier"; const z = villes.get(v) || { nb: 0, pipe: 0 }; z.nb++; z.pipe += dv.resume?.loyerMensuelHT || 0; villes.set(v, z); });
+  const topVilles = [...villes.entries()].sort((a, b) => b[1].pipe - a[1].pipe).slice(0, 5);
+  const total = tous.length;
+
+  return (
+    <Card>
+      <div className="text-sm font-semibold mb-1">📈 Stats des devis générés</div>
+      {total === 0 ? <div className="text-xs text-slate-400">Aucun devis archivé pour l'instant — les statistiques se rempliront dès le premier devis sauvegardé sur une fiche entreprise.</div> : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="rounded-xl bg-slate-50 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400">Taux de concrétisation</div>
+              <div className="text-lg font-bold text-emerald-700">{taux}%</div>
+              <div className="text-[10px] text-slate-400">{acceptes.length} accepté{acceptes.length > 1 ? "s" : ""} / {parts} envoyé{parts > 1 ? "s" : ""}</div>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400">Délai moyen d'acceptation</div>
+              <div className="text-lg font-bold text-cyan-700">{delaiMoyen == null ? "—" : delaiMoyen + " j"}</div>
+              <div className="text-[10px] text-slate-400">{delaiMoyen == null ? "aucun devis accepté pour l'instant" : "envoi → acceptation"}</div>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400">Panier moyen</div>
+              <div className="text-lg font-bold text-slate-800">{panier.toLocaleString("fr-FR")} €</div>
+              <div className="text-[10px] text-slate-400">loyer HT/mois par devis</div>
+            </div>
+            <div className="rounded-xl bg-slate-50 p-2.5">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400">Volume du mois</div>
+              <div className="text-lg font-bold text-sky-700">{duMois.length}</div>
+              <div className="text-[10px] text-slate-400">{eur(duMois.reduce((t, x) => t + (x.dv.resume?.loyerMensuelHT || 0), 0))}</div>
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-600 mb-1">Répartition des statuts</div>
+            <div className="flex h-4 overflow-hidden rounded-lg">
+              {brouillons.length > 0 && <div style={{ width: (brouillons.length / total) * 100 + "%", background: "#fbbf24" }} title={"Brouillons : " + brouillons.length} />}
+              {envoyes.length > 0 && <div style={{ width: (envoyes.length / total) * 100 + "%", background: "#0ea5e9" }} title={"Envoyés : " + envoyes.length} />}
+              {acceptes.length > 0 && <div style={{ width: (acceptes.length / total) * 100 + "%", background: "#10b981" }} title={"Acceptés : " + acceptes.length} />}
+            </div>
+            <div className="mt-1 flex gap-3 flex-wrap">
+              <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="h-2 w-2 rounded-sm" style={{ background: "#fbbf24" }} />Brouillons : {brouillons.length}</span>
+              <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="h-2 w-2 rounded-sm" style={{ background: "#0ea5e9" }} />Envoyés : {envoyes.length}</span>
+              <span className="flex items-center gap-1 text-[10px] text-slate-500"><span className="h-2 w-2 rounded-sm" style={{ background: "#10b981" }} />Acceptés : {acceptes.length}</span>
+            </div>
+          </div>
+          {topVilles.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-slate-600 mb-1">Top villes du pipe (devis envoyés en cours)</div>
+              <div className="space-y-1">
+                {topVilles.map(([v, z]) => (
+                  <div key={v} className="flex justify-between text-[11px]">
+                    <span className="text-slate-600 font-medium">{v} <span className="text-slate-400">({z.nb} devis)</span></span>
+                    <span className="font-semibold text-sky-700">{eur(z.pipe)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /* ═══════════════════ CONSOLE (onglets) ═══════════════════ */
 export function ConsoleManager({ etat }: { etat: EtatConsole }) {
   const [tab, setTab] = useState("brief");
@@ -592,10 +698,11 @@ export function ConsoleManager({ etat }: { etat: EtatConsole }) {
             className={"rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors " + (tab === k ? "bg-cyan-700 text-white" : "bg-white border border-slate-200 text-slate-500 hover:bg-slate-50")}>{l}</button>
         ))}
       </div>
-      {tab === "brief" && <Brief d={d} />}
+      {tab === "brief" && <Brief d={d} etat={etat} />}
       {tab === "conversations" && <Conversations d={d} />}
       {tab === "deals" && <Deals d={d} etat={etat} />}
       {tab === "devis" && <DevisVue d={d} etat={etat} />}
+      {tab === "devis" && <StatsDevis etat={etat} />}
       {tab === "prospection" && <Prospection d={d} etat={etat} />}
       {tab === "coaching" && <Coaching d={d} />}
       {tab === "insights" && <Insights d={d} />}
