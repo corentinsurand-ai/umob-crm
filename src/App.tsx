@@ -2563,7 +2563,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               <input type="date" value={dateRelance} onChange={(ev) => setDateRelance(ev.target.value)} className="rounded-lg border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700" />
                               <button
-                                <button
                                 disabled={!dateRelance}
                                 onClick={() => { setModeleChoisiFiche(""); setModelePour(dv.id); }}
                                 className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed">✉️ Envoyer le devis</button>
