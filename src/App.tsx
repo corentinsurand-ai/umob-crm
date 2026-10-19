@@ -5,6 +5,19 @@ import { Splash } from "./connexion";
 import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, DocumentDevis, telechargerPdfDevis, envoyerDevisParMail, rendreModeleMail } from "./devis";
 import { ConsoleManager } from "./console";
 
+// ── Fermeture « au clic sur le fond » SANS piège de sélection de texte ──
+// Quand on sélectionne du texte dans un champ du panneau et que le curseur
+// glisse HORS de la fenêtre en relâchant, le navigateur déclenche un clic sur
+// le fond assombri : la fenêtre se fermait et la saisie était perdue. On ne
+// ferme donc que si le mousedown a AUSSI commencé sur le fond (vrai clic
+// « hors de la fenêtre »), jamais pendant une sélection de texte qui déborde.
+let fondMouseDown: unknown = null;
+const fermerAuClicFond = (fermer: () => void) => ({
+  onMouseDown: (ev: React.MouseEvent) => { fondMouseDown = ev.target; },
+  onClick: (ev: React.MouseEvent) => { if (ev.target === ev.currentTarget && fondMouseDown === ev.currentTarget) fermer(); },
+});
+
+
 /* ============================== MODÈLE (structure HubSpot) ============================== */
 
 // Les 5 étapes du pipeline commercial, dans l'ordre de progression d'un deal.
@@ -1197,7 +1210,7 @@ function Modale({
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
-      onClick={onClose}
+      {...fermerAuClicFond(onClose)}
     >
       {/* stopPropagation : un clic à l'intérieur du panneau ne doit PAS fermer. */}
       <motion.div
@@ -2645,7 +2658,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                           const objetFinal = mChoisi ? rendreModeleMail(mChoisi.objet, res) : (dv.mail?.objet || "Offre de location U'mob");
                           const corpsFinal = mChoisi ? rendreModeleMail(mChoisi.corps, res) : (dv.mail?.corps || corpsCourt);
                           return (
-                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => setModelePour(null)}>
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" {...fermerAuClicFond(() => setModelePour(null))}>
                               <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(ev) => ev.stopPropagation()}>
                                 <div className="flex items-center justify-between px-4 py-2.5 border-b bg-slate-50">
                                   <p className="font-semibold text-sm text-slate-700">✉️ Avec quel modèle veux-tu envoyer ce devis ?</p>
@@ -3276,7 +3289,7 @@ function ModaleTache({ kind, titre, contexte, dateFr, heure, fait, lien, onOuvre
   const [suivCalOuvert, setSuivCalOuvert] = useState(false);
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      onClick={onFermer}
+      {...fermerAuClicFond(onFermer)}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
       <motion.div onClick={(e) => e.stopPropagation()}
         initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
@@ -3741,7 +3754,7 @@ function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; on
       <AnimatePresence>
         {nouvelleOuverte && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={() => setNouvelleOuverte(false)}
+            {...fermerAuClicFond(() => setNouvelleOuverte(false))}
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
             <motion.div onClick={(e) => e.stopPropagation()}
               initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
@@ -3793,7 +3806,7 @@ function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; on
       <AnimatePresence>
         {formOuvert && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            onClick={fermerForm}
+            {...fermerAuClicFond(fermerForm)}
             className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
             <motion.div onClick={(e) => e.stopPropagation()}
               initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}

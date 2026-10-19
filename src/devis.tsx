@@ -6,6 +6,19 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 // ---------- Helpers de fusion de classes (évite les conflits Tailwind) ----------
 const sansHover = (cls: string) => cls.replace(/(hover|focus|group-hover)[:?]bg-[\w/.-]+/g, "");
+
+// ── Fermeture « au clic sur le fond » SANS piège de sélection de texte ──
+// Quand on sélectionne du texte dans un champ du panneau et que le curseur
+// glisse HORS de la fenêtre en relâchant, le navigateur déclenche un clic sur
+// le fond assombri : la fenêtre se fermait et la saisie était perdue. On ne
+// ferme donc que si le mousedown a AUSSI commencé sur le fond (vrai clic
+// « hors de la fenêtre »), jamais pendant une sélection de texte qui déborde.
+let fondMouseDown: unknown = null;
+const fermerAuClicFond = (fermer: () => void) => ({
+  onMouseDown: (ev: React.MouseEvent) => { fondMouseDown = ev.target; },
+  onClick: (ev: React.MouseEvent) => { if (ev.target === ev.currentTarget && fondMouseDown === ev.currentTarget) fermer(); },
+});
+
 const aBg = (cls: string) => sansHover(cls).includes("bg-");
 
 // ---------- Shims UI natifs (Card, Button, Input, Label, Badge, Separator, Checkbox) ----------
@@ -794,7 +807,7 @@ function GestionModelesMail({ modelesMail, onModelesMail, signatureMail, onSigna
     setMessage("✅ Signature enregistrée — elle sera ajoutée automatiquement à chaque envoi de devis par mail.");
   };
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4" onClick={onFermer}>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4" {...fermerAuClicFond(onFermer)}>
       <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b bg-slate-50 shrink-0">
           <div className="flex gap-1">
@@ -2233,7 +2246,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
         const modeleChoisi = listeModeles.find((m) => m.id === mailSelection) ?? null;
         const apercuResume = construireResume();
         return (
-          <div className="fixed inset-0 z-[60] flex justify-end bg-slate-900/40" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>
+          <div className="fixed inset-0 z-[60] flex justify-end bg-slate-900/40" {...fermerAuClicFond(() => { setVoletMailOuvert(false); setMailEdition(false); })}>
             <div className="h-full w-full max-w-md bg-white shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-4 py-3 border-b bg-white shrink-0">
                 <p className="font-semibold text-slate-800 text-sm">
@@ -2357,7 +2370,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
         const sigTexteApercu = (signatureMail || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr)>/gi, "\n\n").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\n{3,}/g, "\n\n").trim();
         const docsApercu = (documentsDevis ?? []).filter((x) => docsSelectionnes.has(x.id));
         return (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => setApercuMailOuvert(false)}>
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4" {...fermerAuClicFond(() => setApercuMailOuvert(false))}>
             <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-4 py-2.5 border-b bg-slate-50">
                 <p className="font-semibold text-sm text-slate-700">✉️ À quoi ressemblera le mail</p>
