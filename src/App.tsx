@@ -2013,6 +2013,12 @@ const valDate = (s: string, iso?: string) => {
   if ((s || "").trim() === "auj.") { const d = new Date(); return jma(d.getDate(), d.getMonth() + 1, d.getFullYear()); }
   return parseInt(s, 10) || 0;
 };
+// Tri « plus récent en haut » : date (AAAAMMJJ) décroissante, puis départage
+// par l'heure (hh:mm, comparaison lexicale suffisante) pour les activités
+// du MÊME jour — sans ça, elles restaient dans l'ordre de création.
+const triRecentes = (a: Activite, b: Activite) =>
+  valDate(b.date, b.dateISO) - valDate(a.date, a.dateISO) ||
+  (b.heure || "").localeCompare(a.heure || "");
 
 // Timeline d'activités des fiches. Chaque event peut être :
 //  - une activité de la fiche elle-même (note, appel… sans deal rattaché)
@@ -2457,7 +2463,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   // Timeline = les activités de l'entreprise (source unique : les activités
   // des contacts et des deals vivent ICI, avec liens `contactId`/`dealId`),
   // triées de la plus récente à la plus ancienne.
-  const events = [...e.activites].sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
+  const events = [...e.activites].sort(triRecentes);
   // ── Prochaine action en attente (1er deal non fermé avec une action à faire) :
   // elle alimente le résumé « IA » affiché en bas de la colonne droite. ──
   const prochaine = deals.find((d) => d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu");
@@ -2869,7 +2875,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
   const idsDeals = new Set(deals.map((d) => d.id));
   const events = entreprises.flatMap((en) =>
     en.activites.filter((a) => a.contactId === c.id || (a.dealId && idsDeals.has(a.dealId)))
-  ).sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
+  ).sort(triRecentes);
   // Prochaine action en attente : alimente le résumé « IA » de la colonne droite.
   const prochaine = deals.find((d) => d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu");
 
@@ -3009,7 +3015,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
   const entreprise = etat.entreprises.find((x) => x.id === d.entrepriseId);
   const contact = etat.contacts.find((x) => x.id === d.contactId);
   const events = (entreprise ? entreprise.activites.filter((a) => a.dealId === d.id) : [])
-    .slice().sort((x, y) => valDate(y.date, y.dateISO) - valDate(x.date, x.dateISO));
+    .slice().sort(triRecentes);
   // Prochaine action en attente : alimente le résumé « IA » (null si faite/fermée).
   const prochaine = d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu" ? d : null;
 
