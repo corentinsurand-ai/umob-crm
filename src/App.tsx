@@ -1996,14 +1996,28 @@ function ResumeIA({ nom, events, prochaine, faits, suggestions }: {
 // réalisation réelle (dateISO, jj/mm/aaaa) quand elle existe, sinon le libellé
 // court historique (« auj. » en tête, sinon jour du mois parsé).
 const valDate = (s: string, iso?: string) => {
-  if (iso) { const p = iso.split("/").map(Number); return p.length === 3 ? p[0] + p[1] * 100 + p[2] * 10000 : 0; }
-  return s === "auj." ? 9999 : parseInt(s, 10) || 0;
+  // ── Tri robuste : dateISO est parfois au format ISO (YYYY-MM-DD) et non
+  //    jj/mm/aaaa — sans ça, les activités récentes tombaient en BAS de la
+  //    timeline. On normalise tout en AAAAMMJJ comparable : ISO, jj/mm/aaaa
+  //    (année optionnelle), « auj. » = date du jour. ──
+  const jma = (j: number, m: number, a: number) => j + m * 100 + a * 10000;
+  const isoM = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(iso || "");
+  if (isoM) return jma(Number(isoM[3]), Number(isoM[2]), Number(isoM[1]));
+  const p = (iso || "").split("/").map(Number);
+  if (p.length === 3 && p.every((n) => !isNaN(n)) && p[2] > 31) return jma(p[0], p[1], p[2]);
+  const sM = /^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/.exec((s || "").trim());
+  if (sM) {
+    const aBrut = sM[3] ? Number(sM[3].length === 2 ? "20" + sM[3] : sM[3]) : new Date().getFullYear();
+    return jma(Number(sM[1]), Number(sM[2]), aBrut);
+  }
+  if ((s || "").trim() === "auj.") { const d = new Date(); return jma(d.getDate(), d.getMonth() + 1, d.getFullYear()); }
+  return parseInt(s, 10) || 0;
 };
 
 // Timeline d'activités des fiches. Chaque event peut être :
 //  - une activité de la fiche elle-même (note, appel… sans deal rattaché)
 //  - une activité d'un deal associé (porte une référence `deal` → lien cliquable)
-function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[]; onSupprimer?: (ev: Activite & { deal?: Deal }) => void; onMaj?: (ev: Activite & { deal?: Deal }, patch: Partial<Activite>) => void }) {
+function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onOuvrirTache }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[]; onSupprimer?: (ev: Activite & { deal?: Deal }) => void; onMaj?: (ev: Activite & { deal?: Deal }, patch: Partial<Activite>) => void; onOuvrirTache?: (ev: Activite & { deal?: Deal }) => void }) {
   if (events.length === 0) {
     return (
       <div className="text-[12px] text-slate-400">
@@ -2033,14 +2047,14 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj }: {
               <div className="text-[10px] font-black uppercase tracking-wider" style={{ color: meta.couleur }}>{meta.libelle}</div>
               {/* Badge « À faire / Réalisée » des tâches & réunions : cliquable
                   quand le parent fournit onMaj (clôturer / rouvrir en place). */}
-              {onMaj && (ev.type === "tache" || ev.type === "reunion") && (ev.fait ? (
-                <button onClick={() => onMaj(ev, { fait: false, clotureLe: undefined })}
+              {(onMaj || onOuvrirTache) && (ev.type === "tache" || ev.type === "reunion") && (ev.fait ? (
+                <button onClick={() => onOuvrirTache ? onOuvrirTache(ev) : onMaj?.(ev, { fait: false, clotureLe: undefined })}
                   title="Tâche clôturée — cliquer pour la rouvrir"
                   className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700 hover:bg-emerald-200">
                   ✓ Réalisée{ev.clotureLe ? " le " + ev.clotureLe : ""} · rouvrir
                 </button>
               ) : (
-                <button onClick={() => onMaj(ev, { fait: true, clotureLe: dateParis() })}
+                <button onClick={() => onOuvrirTache ? onOuvrirTache(ev) : onMaj?.(ev, { fait: true, clotureLe: dateParis() })}
                   title="Marquer cette tâche comme réalisée"
                   className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black text-violet-700 hover:bg-violet-200">
                   ○ À faire · cliquer pour clôturer
@@ -2424,6 +2438,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   const [envoiFicheEnCours, setEnvoiFicheEnCours] = useState(false);
   const [modelePour, setModelePour] = useState<string | null>(null);
   const [modeleChoisiFiche, setModeleChoisiFiche] = useState<string>("");
+  // ── Panneau « tâche » ouvert depuis la timeline (MÊME modale que l'agenda) :
+  //    l'activité cliquée via un badge « À faire / Réalisée ». ──
+  const [tachePanel, setTachePanel] = useState<Activite | null>(null);
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
   // fiche, on n'affiche que le bouton retour (évite un écran blanc cassé).
@@ -2681,8 +2698,31 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} onOuvrirDevis={onOuvrirDevis} />
             <div className="mt-3">
-              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} onMaj={onMajActivite} />
+              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} onMaj={onMajActivite} onOuvrirTache={setTachePanel} />
             </div>
+            {/* Panneau « tâche » de la timeline : MÊME modale que l'agenda,
+                ouverte par les badges « À faire / Réalisée ». */}
+            <AnimatePresence>
+              {tachePanel && (() => {
+                const t = tachePanel;
+                return (
+                  <ModaleTache key={t.id || (t.texte + (t.echeance || ""))}
+                    kind={t.type === "reunion" ? "reunion" : "tache"} titre={t.texte}
+                    contexte={e.nomCommercial || e.nom}
+                    dateFr={t.echeance || dateParis()} heure={t.heure} fait={!!t.fait}
+                    lien={{ type: "entreprise", id: e.id }}
+                    onOuvre={onOuvre} onFermer={() => setTachePanel(null)}
+                    onModifier={(ti, d, h) => { onMajActivite?.(t, { texte: ti, echeance: d, heure: h }); setTachePanel(null); }}
+                    onCloturer={() => { onMajActivite?.(t, { fait: true, clotureLe: dateParis() }); setTachePanel(null); }}
+                    onRouvrir={() => { onMajActivite?.(t, { fait: false, clotureLe: undefined }); setTachePanel(null); }}
+                    onCloturerEtSuivante={(txt, d) => {
+                      onMajActivite?.(t, { fait: true, clotureLe: dateParis() });
+                      ajouterActivite("tache", txt, d, undefined, { contactId: t.contactId, dealId: t.dealId });
+                      setTachePanel(null);
+                    }} />
+                );
+              })()}
+            </AnimatePresence>
           </div>
 
           {/* Colonne droite : associations puis résumé (comme HubSpot). */}
@@ -3197,6 +3237,115 @@ function Dictee({ valeur, onTexte }: { valeur: string; onTexte: (t: string) => v
   );
 }
 
+
+// ── Modale « tâche » PARTAGÉE : le même panneau s'ouvre depuis l'agenda
+// (pastille d'un jour) ET depuis les badges « À faire / Réalisée » de la
+// timeline d'une fiche entreprise — modifier, clôturer, rouvrir, ouvrir la
+// fiche, clôturer & créer la tâche suivante. Montée conditionnellement :
+// ses champs repartent des props à chaque ouverture. ──
+function ModaleTache({ kind, titre, contexte, dateFr, heure, fait, lien, onOuvre, onFermer, onModifier, onCloturer, onRouvrir, onCloturerEtSuivante }: {
+  kind: "tache" | "reunion"; titre: string; contexte: string; dateFr: string; heure?: string; fait: boolean;
+  lien: Cible; onOuvre: (c: Cible) => void; onFermer: () => void;
+  onModifier: (titre: string, echeance: string, heure?: string) => void;
+  onCloturer: () => void; onRouvrir: () => void;
+  onCloturerEtSuivante: (texte: string, echeance: string) => void;
+}) {
+  const CH_FORM = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500";
+  const COULEUR_KIND: Record<string, string> = { tache: "#8b5cf6", reunion: "#ef8f3c", deal: "#4f9ee8" };
+  const ICONES_KIND: Record<string, string> = { tache: "📌", reunion: "📅", deal: "🎯" };
+  const [modTitre, setModTitre] = useState(titre);
+  const [modDate, setModDate] = useState(dateFr);
+  const [modHeure, setModHeure] = useState(heure || "");
+  const [modCalOuvert, setModCalOuvert] = useState(false);
+  const [suivTexte, setSuivTexte] = useState("");
+  const [suivDate, setSuivDate] = useState(dateFr);
+  const [suivCalOuvert, setSuivCalOuvert] = useState(false);
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      onClick={onFermer}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+      <motion.div onClick={(e) => e.stopPropagation()}
+        initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
+        className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+        <div className="mb-1 flex items-center gap-2 text-[15px] font-black text-slate-800">
+          <span>{fait ? "✓" : ICONES_KIND[kind]}</span>
+          <span style={{ color: fait ? "#059669" : COULEUR_KIND[kind] }}>{fait ? "Tâche clôturée" : kind === "reunion" ? "Réunion planifiée" : "Tâche à faire"}</span>
+        </div>
+        <div className="mb-4 text-[11.5px] text-slate-400">{contexte} · échéance {dateFr}{heure ? " · " + heure : ""}</div>
+
+        {/* ── 1. Modifier ── */}
+        <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">✏️ Modifier</div>
+        <input value={modTitre} onChange={(e) => setModTitre(e.target.value)}
+          placeholder="Titre de la tâche…"
+          className={CH_FORM + " mt-1.5"} />
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <div>
+            <button onClick={() => setModCalOuvert((v) => !v)}
+              className={CH_FORM + " bg-white text-left " + (modDate ? "font-bold text-slate-800" : "text-slate-400")}>
+              📅 {modDate || "Choisir la date…"}
+            </button>
+            {modCalOuvert && (
+              <MiniCalendrier valeur={modDate}
+                onChoisit={(v) => { setModDate(v); setModCalOuvert(false); }} />
+            )}
+          </div>
+          <input type="time" value={modHeure} onChange={(e) => setModHeure(e.target.value)}
+            title="Heure (optionnelle)"
+            className={CH_FORM} />
+        </div>
+        <button onClick={() => onModifier(modTitre.trim(), modDate.trim(), modHeure.trim() || undefined)} disabled={!modTitre.trim() || !modDate}
+          className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 text-[12px] font-black text-slate-600 hover:bg-slate-100 disabled:opacity-40">
+          💾 Enregistrer la modification
+        </button>
+
+        {/* ── 2. Clôturer / rouvrir ── */}
+        <div className="mt-4 flex gap-2">
+          {fait ? (
+            <button onClick={onRouvrir}
+              className="flex-1 rounded-xl border border-amber-200 bg-amber-50 py-2 text-[12px] font-black text-amber-700 hover:bg-amber-100">
+              ↩️ Rouvrir cette tâche
+            </button>
+          ) : (
+            <button onClick={onCloturer}
+              className="flex-1 rounded-xl border border-emerald-200 bg-emerald-50 py-2 text-[12px] font-black text-emerald-700 hover:bg-emerald-100">
+              ✓ Clôturer (réalisée)
+            </button>
+          )}
+          <button onClick={() => { onOuvre(lien); onFermer(); }}
+            className="rounded-xl border border-slate-200 px-3 py-2 text-[12px] font-bold text-slate-500 hover:bg-slate-50">
+            Ouvrir la fiche ↗
+          </button>
+        </div>
+
+        {/* ── 3. Clôturer & créer la tâche suivante ── */}
+        {!fait && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+            <div className="text-[10.5px] font-black uppercase tracking-wider text-violet-600">➕ Clôturer & créer la tâche suivante</div>
+            <input value={suivTexte} onChange={(e) => setSuivTexte(e.target.value)}
+              placeholder="Que doit-on faire ensuite ?"
+              className={CH_FORM + " mt-1.5"} />
+            <div className="mt-2">
+              <button onClick={() => setSuivCalOuvert((v) => !v)}
+                className={CH_FORM + " bg-white text-left " + (suivDate ? "font-bold text-slate-800" : "text-slate-400")}>
+                📅 {suivDate || "Choisir la date…"}
+              </button>
+              {suivCalOuvert && (
+                <MiniCalendrier valeur={suivDate}
+                  onChoisit={(v) => { setSuivDate(v); setSuivCalOuvert(false); }} />
+              )}
+            </div>
+            <button onClick={() => onCloturerEtSuivante(suivTexte.trim(), suivDate.trim())} disabled={!suivTexte.trim() || !suivDate.trim()}
+              className="mt-2 w-full rounded-xl py-2 text-[12px] font-black text-white disabled:opacity-40"
+              style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
+              ✓ Clôturer & planifier la suivante
+            </button>
+            <p className="mt-1 text-[10.5px] text-slate-400">La tâche courante passe en « réalisée » et la nouvelle apparaît dans l'agenda à la date choisie.</p>
+          </div>
+        )}
+      </motion.div>
+    </motion.div>
+  );
+}
 function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; onOuvre: (c: Cible) => void; onAjouter: (id: string, activite: Activite) => void; onMajActivite: (id: string, ev: Activite, patch: Partial<Activite>) => void }) {
   const auj = new Date();
   const [mode, setMode] = useState<"mois" | "semaine">("mois");
@@ -3539,95 +3688,37 @@ function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; on
       </div>
 
       {/* ── Overlay « Consigner une activité » : ce qui a été fait (+ liens
-      {/* ── Panneau « tâche » : modifier / clôturer / créer la tâche suivante,
-          directement depuis une pastille de l'agenda. ── */}
+      {/* ── Panneau « tâche » : la modale partagée ModaleTache — le MÊME
+          panneau que depuis les badges de la timeline d'une fiche entreprise. ── */}
       <AnimatePresence>
         {tacheOuverte && tacheOuverte.act && (() => {
           const ev = tacheOuverte;
           return (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              onClick={() => setTacheOuverte(null)}
-              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
-              <motion.div onClick={(e) => e.stopPropagation()}
-                initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
-                className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
-                <div className="mb-1 flex items-center gap-2 text-[15px] font-black text-slate-800">
-                  <span>{ev.fait ? "✓" : ICONES_KIND[ev.kind]}</span>
-                  <span style={{ color: ev.fait ? "#059669" : COULEUR_KIND[ev.kind] }}>{ev.fait ? "Tâche clôturée" : ev.kind === "reunion" ? "Réunion planifiée" : "Tâche à faire"}</span>
-                </div>
-                <div className="mb-4 text-[11.5px] text-slate-400">{ev.contexte} · échéance {ev.date.j}/{ev.date.m + 1}/{ev.date.a}{ev.heure ? " · " + ev.heure : ""}</div>
-
-                {/* ── 1. Modifier ── */}
-                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">✏️ Modifier</div>
-                <input value={modTitre} onChange={(e) => setModTitre(e.target.value)}
-                  placeholder="Titre de la tâche…"
-                  className={CH_FORM + " mt-1.5"} />
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <div>
-                    <button onClick={() => setModCalOuvert((v) => !v)}
-                      className={CH_FORM + " bg-white text-left " + (modDate ? "font-bold text-slate-800" : "text-slate-400")}>
-                      📅 {modDate || "Choisir la date…"}
-                    </button>
-                    {modCalOuvert && (
-                      <MiniCalendrier valeur={modDate}
-                        onChoisit={(v) => { setModDate(v); setModCalOuvert(false); }} />
-                    )}
-                  </div>
-                  <input type="time" value={modHeure} onChange={(e) => setModHeure(e.target.value)}
-                    title="Heure (optionnelle)"
-                    className={CH_FORM} />
-                </div>
-                <button onClick={validerModif} disabled={!modTitre.trim() || !modDate}
-                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 text-[12px] font-black text-slate-600 hover:bg-slate-100 disabled:opacity-40">
-                  💾 Enregistrer la modification
-                </button>
-
-                {/* ── 2. Clôturer / rouvrir ── */}
-                <div className="mt-4 flex gap-2">
-                  {ev.fait ? (
-                    <button onClick={rouvrirTache}
-                      className="flex-1 rounded-xl border border-amber-200 bg-amber-50 py-2 text-[12px] font-black text-amber-700 hover:bg-amber-100">
-                      ↩️ Rouvrir cette tâche
-                    </button>
-                  ) : (
-                    <button onClick={cloturerTache}
-                      className="flex-1 rounded-xl border border-emerald-200 bg-emerald-50 py-2 text-[12px] font-black text-emerald-700 hover:bg-emerald-100">
-                      ✓ Clôturer (réalisée)
-                    </button>
-                  )}
-                  <button onClick={() => { onOuvre(ev.lien); setTacheOuverte(null); }}
-                    className="rounded-xl border border-slate-200 px-3 py-2 text-[12px] font-bold text-slate-500 hover:bg-slate-50">
-                    Ouvrir la fiche ↗
-                  </button>
-                </div>
-
-                {/* ── 3. Clôturer & créer la tâche suivante ── */}
-                {!ev.fait && (
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                    <div className="text-[10.5px] font-black uppercase tracking-wider text-violet-600">➕ Clôturer & créer la tâche suivante</div>
-                    <input value={suivTexte} onChange={(e) => setSuivTexte(e.target.value)}
-                      placeholder="Que doit-on faire ensuite ?"
-                      className={CH_FORM + " mt-1.5"} />
-                    <div className="mt-2">
-                      <button onClick={() => setSuivCalOuvert((v) => !v)}
-                        className={CH_FORM + " bg-white text-left " + (suivDate ? "font-bold text-slate-800" : "text-slate-400")}>
-                        📅 {suivDate || "Choisir la date…"}
-                      </button>
-                      {suivCalOuvert && (
-                        <MiniCalendrier valeur={suivDate}
-                          onChoisit={(v) => { setSuivDate(v); setSuivCalOuvert(false); }} />
-                      )}
-                    </div>
-                    <button onClick={cloturerEtSuivante} disabled={!suivTexte.trim() || !suivDate.trim()}
-                      className="mt-2 w-full rounded-xl py-2 text-[12px] font-black text-white disabled:opacity-40"
-                      style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
-                      ✓ Clôturer & planifier la suivante
-                    </button>
-                    <p className="mt-1 text-[10.5px] text-slate-400">La tâche courante passe en « réalisée » et la nouvelle apparaît dans l'agenda à la date choisie.</p>
-                  </div>
-                )}
-              </motion.div>
-            </motion.div>
+            <ModaleTache kind={ev.kind} titre={ev.titre} contexte={ev.contexte}
+              dateFr={ev.date.j + "/" + (ev.date.m + 1) + "/" + ev.date.a}
+              heure={ev.heure} fait={!!ev.fait} lien={ev.lien}
+              onOuvre={onOuvre} onFermer={() => setTacheOuverte(null)}
+              onModifier={(t, d, h) => {
+                onMajActivite(ev.entId, ev.act, { texte: t, echeance: d, heure: h });
+                setBandeau("✅ Tâche modifiée (le calendrier suit la nouvelle date).");
+                setTacheOuverte(null);
+              }}
+              onCloturer={() => {
+                onMajActivite(ev.entId, ev.act, { fait: true, clotureLe: dateParis() });
+                setBandeau("✅ Tâche clôturée — elle reste visible dans le calendrier (barrée).");
+                setTacheOuverte(null);
+              }}
+              onRouvrir={() => {
+                onMajActivite(ev.entId, ev.act, { fait: false, clotureLe: undefined });
+                setBandeau("↩️ Tâche rouverte — elle redevient « à faire ».");
+                setTacheOuverte(null);
+              }}
+              onCloturerEtSuivante={(txt, d) => {
+                onMajActivite(ev.entId, ev.act, { fait: true, clotureLe: dateParis() });
+                onAjouter(ev.entId, { date: "auj.", texte: txt, type: "tache", echeance: d, dateISO: dateParis(), heure: heureParis(), contactId: ev.act.contactId, dealId: ev.act.dealId });
+                setBandeau("✅ Tâche clôturée + tâche suivante créée pour le " + d + ".");
+                setTacheOuverte(null);
+              }} />
           );
         })()}
       </AnimatePresence>
