@@ -3464,11 +3464,16 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
                   <option value="">👤 Contact lié (optionnel)</option>
                   {contactsEnt.map((c) => <option key={c.id} value={c.id}>{c.prenom} {c.nom}</option>)}
                 </select>
-                <select value={dlId} onChange={(e) => setDlId(e.target.value)} disabled={!entId}
-                  className={CH_FORM + " bg-white disabled:bg-slate-50 disabled:text-slate-300"}>
-                  <option value="">🎯 Deal lié (optionnel)</option>
-                  {dealsEnt.map((d) => <option key={d.id} value={d.id}>{d.nom}</option>)}
-                </select>
+                <div className="flex items-center gap-1">
+                  <select value={dlId} onChange={(e) => setDlId(e.target.value)} disabled={!entId}
+                    className={"min-w-0 flex-1 " + CH_FORM + " bg-white disabled:bg-slate-50 disabled:text-slate-300"}>
+                    <option value="">🎯 Deal lié (optionnel)</option>
+                    {dealsEnt.map((d) => <option key={d.id} value={d.id}>{d.nom}</option>)}
+                  </select>
+                  <button onClick={() => onOuvre({ type: "deal", id: null, preset: entId })} disabled={!entId}
+                    title="Créer un nouveau deal pour cette entreprise — sans quitter l’agenda"
+                    className="shrink-0 rounded-xl border border-cyan-200 bg-cyan-50 px-2.5 py-[7px] font-black text-cyan-600 hover:bg-cyan-100 disabled:opacity-40 disabled:cursor-not-allowed">+</button>
+                </div>
               </div>
 
               {/* Section 1 : ce qui a été fait. */}
