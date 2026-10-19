@@ -1,9 +1,12 @@
 // –– Endpoint serverless Vercel : envoi RÉEL du devis par mail via Resend (CRM U'mob).
-// POST { dest, objet, corps, pdfBase64, nomPdf } → 200 { ok: true, id }.
+// POST { dest, objet, corps, html?, pdfBase64, nomPdf, docs?: [{nom, contenuBase64, contentType?}] } → 200 { ok: true, id }.
 // Expéditeur : Corentin Surand — U'mob <corentin.surand@umob.fr> (domaine umob.fr
 // vérifié côté Resend). Clé API uniquement côté serveur (jamais navigateur).
 // Le PDF est construit par le navigateur (genererPdfDevis) et passé en base64
-// en pièce jointe — aucune donnée devis n'est stockée ici.
+// en pièce jointe, avec les documents supplémentaires éventuels (onglet
+// « ✉️ Modèles & documents » du module Devis). Le champ html optionnel porte
+// la signature Outlook mise en forme (colle une version texte brute dans
+// « corps » pour les lecteurs sans HTML).
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") return res.status(405).json({ erreur: "POST uniquement" });
@@ -13,6 +16,9 @@ export default async function handler(req: any, res: any) {
     const dest = (c.dest || "").trim();
     if (!dest || !/.+@.+\..+/.test(dest)) return res.status(400).json({ erreur: "Adresse destinataire manquante ou invalide." });
     if (!c.pdfBase64) return res.status(400).json({ erreur: "PDF manquant." });
+    const docs = Array.isArray(c.docs)
+      ? c.docs.filter((d: any) => d && d.nom && d.contenuBase64).map((d: any) => ({ filename: d.nom, content: d.contenuBase64, contentType: d.contentType || "application/octet-stream" }))
+      : [];
     const rep = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + process.env.RESEND_API_KEY },
@@ -22,7 +28,8 @@ export default async function handler(req: any, res: any) {
         reply_to: "corentin.surand@umob.fr",
         subject: c.objet || "Offre de location U'mob",
         text: c.corps || "",
-        attachments: [{ filename: c.nomPdf || "Devis-Umob.pdf", content: c.pdfBase64 }],
+        ...(c.html ? { html: c.html } : {}),
+        attachments: [{ filename: c.nomPdf || "Devis-Umob.pdf", content: c.pdfBase64 }, ...docs],
       }),
     });
     if (!rep.ok) {

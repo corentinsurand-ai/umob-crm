@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
-import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, telechargerPdfDevis, envoyerDevisParMail, rendreModeleMail } from "./devis";
+import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, DocumentDevis, telechargerPdfDevis, envoyerDevisParMail, rendreModeleMail } from "./devis";
 import { ConsoleManager } from "./console";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
@@ -347,7 +347,7 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
 interface Deal { id: string; nom: string; entrepriseId: string; contactId: string; montant: number; etape: Etape; action: string; echeance: string; notes: string; fait: boolean }
 
 // L'état global de l'application : la base de données entière tient dans cet objet.
-interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[]; devis?: DevisBrouillon | null; modelesMailDevis?: ModeleMailDevis[] }
+interface Etat { entreprises: Entreprise[]; contacts: Contact[]; deals: Deal[]; devis?: DevisBrouillon | null; modelesMailDevis?: ModeleMailDevis[]; signatureMail?: string; documentsDevis?: DocumentDevis[] }
 
 // Couleur officielle de chaque étape (réutilisée partout : kanban, badges, fiches…).
 const ETAPES: { nom: Etape; couleur: string }[] = [
@@ -589,7 +589,7 @@ function normaliser(s: Etat): Etat {
   // plus dans le modèle : seule l'entreprise porte des activités).
   const contactsFinaux = contacts.map(({ activites, ...reste }: { activites?: Activite[] } & Contact) => reste);
   const dealsFinaux = deals.map(({ activites, ...reste }: { activites?: Activite[] } & Deal) => reste);
-  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice() };
+  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -2672,7 +2672,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                                       if (!mailCt) { window.alert("Aucune adresse e-mail connue sur ce compte \u2014 renseigne l'e-mail de la société ou d'un contact, puis réessaie."); return; }
                                       const p = dateRelance.split("-"); const fr = p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : dateRelance;
                                       setEnvoiFicheEnCours(true);
-                                      const rep = await envoyerDevisParMail(res, objetFinal, corpsFinal, mailCt);
+                                      const rep = await envoyerDevisParMail(res, objetFinal, corpsFinal, mailCt, { signatureHtml: etat.signatureMail });
                                       setEnvoiFicheEnCours(false);
                                       if (!rep.ok) {
                                         window.alert("L'envoi a échoué : " + (rep.erreur || "erreur inconnue") + "\n\nLe mail n'est PAS parti et le devis n'est PAS marqué envoyé \u2014 vérifie et réessaie.");
@@ -5022,7 +5022,7 @@ export default function App() {
               ouvertureDirecte={assistantDirect}
               compteInitial={devisPresetEnt || undefined}
               onDemarrerNouveau={() => { setAssistantDirect(true); setDevisKey((k) => k + 1); }}
-              onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
+              onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} signatureMail={etat.signatureMail} onSignatureMail={(s) => setEtat((e) => ({ ...e, signatureMail: s }))} documentsDevis={etat.documentsDevis ?? []} onDocumentsDevis={(ds) => setEtat((e) => ({ ...e, documentsDevis: ds }))} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>
         )}

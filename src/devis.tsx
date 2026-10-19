@@ -271,6 +271,8 @@ export type DevisArchive = SauvegardeDevis & { id: string; dateISO: string; date
 // via etat.modelesMailDevis → Supabase). Les variables {{...}} sont remplacées
 // au moment de l'envoi par les valeurs du devis en cours.
 export interface ModeleMailDevis { id: string; nom: string; objet: string; corps: string; }
+// Pièce jointe supplémentaire stockée DANS le CRM (base64, max 3 Mo), cochée ou non au moment de l'envoi du devis.
+export interface DocumentDevis { id: string; nom: string; taille: number; contentType: string; contenuBase64: string; }
 // Variables insérables dans un modèle (chips cliquables du volet).
 export const VARIABLES_MAIL: { code: string; label: string }[] = [
   { code: "{{societe}}", label: "Société" },
@@ -548,16 +550,49 @@ export function blobVersBase64(blob: Blob): Promise<string> {
 // Envoi REEL du devis par mail (Resend, PDF en piece jointe) : construit le
 // PDF cote navigateur, le convertit en base64 et le POST a /api/devis-email.
 // Retour : { ok: true, nomPdf } en cas de succes, sinon { ok: false, erreur }.
-export async function envoyerDevisParMail(r: DevisResume, objet: string, corps: string, dest: string): Promise<{ ok: boolean; erreur?: string; nomPdf?: string }> {
+// Envoi REEL du devis par mail (Resend, PDF en piece jointe) : construit le
+// PDF cote navigateur, le convertit en base64 et le POST a /api/devis-email.
+// Options : signatureHtml = signature Outlook (HTML, collee une fois dans
+// l'onglet Devis → Modeles & documents → Signature) ajoutee en fin de corps
+// (une version texte est generee automatiquement pour les lecteurs sans HTML) ;
+// docs = documents supplementaires a joindre en plus du PDF (coches au moment
+// de l'envoi, jamais automatiquement). Retour : { ok: true, nomPdf } en cas de
+// succes, sinon { ok: false, erreur }.
+export async function envoyerDevisParMail(r: DevisResume, objet: string, corps: string, dest: string, opts?: { signatureHtml?: string; docs?: DocumentDevis[] }): Promise<{ ok: boolean; erreur?: string; nomPdf?: string }> {
   const destTrim = (dest || "").trim();
   if (!destTrim) return { ok: false, erreur: "Aucune adresse e-mail connue pour ce compte - renseigne l'e-mail de la societe ou d'un contact, puis reessaie." };
   const nomPdf = "Devis-Umob-" + (r.numOffre || "offre").replace(/[^\w.-]/g, "") + ".pdf";
   try {
     const pdfBase64 = await blobVersBase64(genererPdfDevis(r));
+    const sig = (opts?.signatureHtml || "").trim();
+    const docs = (opts?.docs ?? []).filter((d) => d && d.nom && d.contenuBase64);
+    // Version TEXTE : corps + signature ramenee en texte brut (sans balises).
+    const sigTexte = sig
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|tr)>/gi, "\n\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    const texteComplet = (corps || "").trim() + (sigTexte ? "\n\n" + sigTexte : "");
+    // Version HTML : corps echappe + signature Outlook telle quelle (mise en
+    // forme, logo, liens conserves) - envoyee via le champ html de Resend.
+    const htmlComplet = sig
+      ? `<div style="white-space:pre-wrap;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1e293b">${(corps || "").trim().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div><br/><div>${sig}</div>`
+      : "";
     const rep = await fetch("/api/devis-email", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dest: destTrim, objet, corps, pdfBase64, nomPdf }),
+      body: JSON.stringify({
+        dest: destTrim,
+        objet,
+        corps: texteComplet,
+        html: htmlComplet || undefined,
+        pdfBase64,
+        nomPdf,
+        docs: docs.map((d) => ({ nom: d.nom, contenuBase64: d.contenuBase64, contentType: d.contentType })),
+      }),
     });
     const data: any = await rep.json().catch(() => ({}));
     if (!rep.ok || !data.ok) return { ok: false, erreur: data.erreur || ("L'envoi a echoue (HTTP " + rep.status + ").") };
@@ -566,6 +601,7 @@ export async function envoyerDevisParMail(r: DevisResume, objet: string, corps: 
     return { ok: false, erreur: (e && e.message) || "Echec reseau pendant l'envoi." };
   }
 }
+
 export function telechargerPdfDevis(r: DevisResume): string {
   const nom = `Devis-Umob-${(r.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf`;
   try {
@@ -671,16 +707,34 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
   );
 }
 
-// ==================== GESTION DES MODÈLES DE MAIL (accessible depuis l'onglet Devis) ====================
-// Panneau autonome : créer, modifier, supprimer les modèles SANS devis en cours.
-// Mêmes données (modelesMail persistés dans le CRM) que le volet d'envoi.
-function GestionModelesMail({ modelesMail, onModelesMail, onFermer }: { modelesMail: ModeleMailDevis[]; onModelesMail?: (m: ModeleMailDevis[]) => void; onFermer: () => void }) {
+// ==================== GESTION DES MODÈLES DE MAIL, DOCUMENTS & SIGNATURE (onglet Devis) ====================
+// Panneau autonome à 3 onglets :
+//  - ✉️ Modèles : créer / modifier / supprimer les modèles de corps de mail.
+//  - 📎 Documents : pièces jointes supplémentaires stockées DANS le CRM
+//    (base64, max 3 Mo par fichier) — au moment de l'envoi d'un devis, on
+//    coche ceux que l'on veut joindre EN PLUS du PDF (non cochés par défaut).
+//  - ✍️ Signature : la signature Outlook est collée UNE fois ici (mise en
+//    forme et logo conservés, collage HTML) puis ajoutée automatiquement à
+//    CHAQUE envoi de devis par mail.
+function GestionModelesMail({ modelesMail, onModelesMail, signatureMail, onSignatureMail, documentsDevis, onDocumentsDevis, onFermer }: { modelesMail: ModeleMailDevis[]; onModelesMail?: (m: ModeleMailDevis[]) => void; signatureMail?: string; onSignatureMail?: (s: string) => void; documentsDevis?: DocumentDevis[]; onDocumentsDevis?: (d: DocumentDevis[]) => void; onFermer: () => void }) {
+  const [onglet, setOnglet] = useState<"modeles" | "documents" | "signature">("modeles");
   const [edition, setEdition] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [fNom, setFNom] = useState("");
   const [fObjet, setFObjet] = useState("");
   const [fCorps, setFCorps] = useState("");
   const [message, setMessage] = useState("");
+  const sigRef = useRef<HTMLDivElement | null>(null);
+  const [sigPret, setSigPret] = useState(false);
+  const docsInputRef = useRef<HTMLInputElement | null>(null);
+  // Le contentEditable n'est rempli qu'une fois, à l'ouverture de l'onglet :
+  // sinon React écraserait le collage de la signature à chaque re-rendu.
+  useEffect(() => {
+    if (onglet === "signature" && sigRef.current && !sigPret) {
+      if (signatureMail) sigRef.current.innerHTML = signatureMail;
+      setSigPret(true);
+    }
+  }, [onglet]);
   const demarrerCreation = () => {
     setEditId(null); setFNom(""); setFObjet("Votre offre U'mob n° {{numero}}"); setFCorps(""); setEdition(true); setMessage("");
   };
@@ -693,7 +747,7 @@ function GestionModelesMail({ modelesMail, onModelesMail, onFermer }: { modelesM
       onModelesMail?.(modelesMail.map((m) => (m.id === editId ? { ...m, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps } : m)));
       setMessage("✅ Modèle « " + fNom.trim() + " » mis à jour.");
     } else {
-      onModelesMail?.([...modelesMail, { id: `mm${Date.now()}`, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps }]);
+      onModelesMail?.([...modelesMail, { id: "mm" + Date.now(), nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps }]);
       setMessage("✅ Modèle « " + fNom.trim() + " » enregistré — il sera proposé à chaque envoi de devis.");
     }
     setEdition(false);
@@ -705,16 +759,100 @@ function GestionModelesMail({ modelesMail, onModelesMail, onFermer }: { modelesM
     if (editId === id) setEdition(false);
     setMessage("🗑️ Modèle supprimé.");
   };
+  // Ajout de documents (PDF, image…) : lus en base64 dans le navigateur et
+  // persistés avec le reste de l'état du CRM. Limite 3 Mo par fichier.
+  const ajouterFichiers = async (ev: any) => {
+    const fichiers: File[] = Array.from(ev.target?.files || []);
+    if (!fichiers.length) return;
+    setMessage("");
+    const LIMITE = 3 * 1024 * 1024;
+    const tropGros = fichiers.filter((f) => f.size > LIMITE).map((f) => f.name);
+    const okFichiers = fichiers.filter((f) => f.size <= LIMITE);
+    let nouveaux: DocumentDevis[] = [];
+    if (okFichiers.length) {
+      nouveaux = await Promise.all(okFichiers.map((f) => new Promise<DocumentDevis>((res, rej) => {
+        const fr = new FileReader();
+        fr.onload = () => res({ id: "doc" + Date.now() + "-" + Math.random().toString(36).slice(2, 8), nom: f.name, taille: f.size, contentType: f.type || "application/octet-stream", contenuBase64: String(fr.result || "").split(",").pop() || "" });
+        fr.onerror = () => rej(new Error("Lecture de « " + f.name + " » impossible"));
+        fr.readAsDataURL(f);
+      })));
+      onDocumentsDevis?.([...(documentsDevis ?? []), ...nouveaux]);
+    }
+    if (docsInputRef.current) docsInputRef.current.value = "";
+    if (nouveaux.length) setMessage("✅ " + nouveaux.length + " document(s) ajouté(s) — tu choisis à chaque envoi de devis lesquels joindre." + (tropGros.length ? " ⚠️ Ignoré(s) (>3 Mo) : " + tropGros.join(", ") : ""));
+    else setMessage("⚠️ Aucun document ajouté (limite 3 Mo par fichier)." + (tropGros.length ? " Trop volumineux : " + tropGros.join(", ") : ""));
+  };
+  const supprimerDocument = (id: string) => {
+    onDocumentsDevis?.((documentsDevis ?? []).filter((x) => x.id !== id));
+    setMessage("🗑️ Document supprimé.");
+  };
+  const enregistrerSignature = () => {
+    const html = (sigRef.current?.innerHTML || "").trim();
+    const texte = (sigRef.current?.textContent || "").trim();
+    if (!texte) { onSignatureMail?.(""); setMessage("ℹ️ Signature vide — les envois partiront sans signature."); return; }
+    onSignatureMail?.(html);
+    setMessage("✅ Signature enregistrée — elle sera ajoutée automatiquement à chaque envoi de devis par mail.");
+  };
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4" onClick={onFermer}>
       <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b bg-slate-50 shrink-0">
-          <p className="font-semibold text-sm text-slate-700">✉️ Modèles de mail</p>
+          <div className="flex gap-1">
+            <button type="button" onClick={() => { setOnglet("modeles"); setEdition(false); setMessage(""); }} className={"rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors " + (onglet === "modeles" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100")}>✉️ Modèles</button>
+            <button type="button" onClick={() => { setOnglet("documents"); setMessage(""); }} className={"rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors " + (onglet === "documents" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100")}>📎 Documents</button>
+            <button type="button" onClick={() => { setOnglet("signature"); setMessage(""); }} className={"rounded-lg px-3 py-1.5 text-xs font-bold cursor-pointer transition-colors " + (onglet === "signature" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100")}>✍️ Signature</button>
+          </div>
           <button type="button" className="text-slate-400 hover:text-slate-700 text-xl leading-none cursor-pointer" onClick={onFermer}>×</button>
         </div>
         <div className="overflow-y-auto px-5 py-4 space-y-3">
           {message && <p className="text-xs font-semibold text-emerald-700">{message}</p>}
-          {edition ? (
+          {onglet === "signature" ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+                <p className="font-bold">Comment récupérer ta signature Outlook (une seule fois) :</p>
+                <p>1. Dans Outlook, crée un nouveau mail (ta signature s'affiche en bas).</p>
+                <p>2. Sélectionne-la entièrement et copie-la (Ctrl+C).</p>
+                <p>3. Colle-la dans la zone ci-dessous (Ctrl+V) puis clique sur « 💾 Enregistrer ».</p>
+                <p>La mise en forme (logo, couleurs, liens) est conservée et la signature est ajoutée à <b>chaque</b> envoi de devis.</p>
+              </div>
+              <div>
+                <Label>Signature Outlook (zone de collage)</Label>
+                <div
+                  ref={sigRef}
+                  contentEditable
+                  suppressContentEditableWarning
+                  className="min-h-32 rounded-lg border border-slate-300 bg-white p-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+                />
+              </div>
+              <div className="flex gap-2">
+                <Button onClick={enregistrerSignature}>💾 Enregistrer la signature</Button>
+                <Button variant="outline" className="bg-white" onClick={() => { if (sigRef.current) sigRef.current.innerHTML = ""; setMessage(""); }}>🗑️ Effacer la zone</Button>
+              </div>
+            </div>
+          ) : onglet === "documents" ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
+                Documents stockés directement dans le CRM (max 3 Mo par fichier) : plaquette, flyer, CGV… Au moment d'envoyer un devis, tu coches ceux à joindre en plus du PDF — aucun n'est joint sans ton accord.
+              </div>
+              <input ref={docsInputRef} type="file" multiple className="hidden" onChange={ajouterFichiers} />
+              <Button variant="outline" className="w-full bg-white" onClick={() => docsInputRef.current?.click()}>📎 Ajouter un document (PDF, image…)</Button>
+              {(documentsDevis ?? []).length === 0 ? (
+                <div className="py-8 text-center">
+                  <p className="text-4xl mb-2">📎</p>
+                  <p className="text-sm text-slate-500">Aucun document pour l'instant.</p>
+                  <p className="text-xs text-slate-400 mt-1">Ajoute une plaquette U'mob, des CGV, un flyer…</p>
+                </div>
+              ) : (documentsDevis ?? []).map((d) => (
+                <div key={d.id} className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-800 flex-1 truncate">📎 {d.nom}</p>
+                    <span className="text-[11px] text-slate-400 shrink-0">{(d.taille / 1024).toFixed(0)} Ko</span>
+                    <button type="button" title="Supprimer" className="text-slate-400 hover:text-red-600 cursor-pointer px-1" onClick={() => supprimerDocument(d.id)}>🗑️</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : edition ? (
             <div className="space-y-3">
               <div>
                 <Label>Nom du modèle</Label>
@@ -772,7 +910,7 @@ function GestionModelesMail({ modelesMail, onModelesMail, onFermer }: { modelesM
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, signatureMail, onSignatureMail, documentsDevis, onDocumentsDevis, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -806,6 +944,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // Modèles de corps de mail pour l'envoi du devis (persistés dans le CRM).
   modelesMail?: ModeleMailDevis[];
   onModelesMail?: (m: ModeleMailDevis[]) => void;
+  // Signature Outlook (HTML) ajoutée automatiquement à chaque envoi de devis.
+  signatureMail?: string;
+  onSignatureMail?: (s: string) => void;
+  // Pièces jointes stockées dans le CRM, cochées au moment de l'envoi.
+  documentsDevis?: DocumentDevis[];
+  onDocumentsDevis?: (d: DocumentDevis[]) => void;
   // Signale au CRM qu'un devis vient d'être envoyé au client (mail + PDF) :
   // le CRM marque « Envoyé » l'archive correspondante sur la fiche entreprise.
   onDevisEnvoye?: (societe: string, numOffre: string, dateRelanceFr: string, entId?: string) => void;
@@ -908,6 +1052,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // ── Volet « modèles de mail » (envoi du devis) ──
   const [voletMailOuvert, setVoletMailOuvert] = useState(false);
   const [apercuMailOuvert, setApercuMailOuvert] = useState(false);
+  // Documents cochés pour le prochain envoi (id de DocumentDevis).
+  const [docsSelectionnes, setDocsSelectionnes] = useState<Set<string>>(new Set());
   const [mailSelection, setMailSelection] = useState<string | null>(null);
   const [mailEdition, setMailEdition] = useState(false);
   const [mailEditId, setMailEditId] = useState<string | null>(null);
@@ -1164,7 +1310,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
     const pRel = dateRelance.split("-"); const dateRelanceFr = pRel.length === 3 ? `${pRel[2]}/${pRel[1]}/${pRel[0]}` : dateRelance;
     setEnvoiEnCours(true);
     setRetourAction("⏳ Envoi du devis en cours…");
-    const rep = await envoyerDevisParMail(resume, objetFinal, corpsFinal, mail.destinataire);
+    const rep = await envoyerDevisParMail(resume, objetFinal, corpsFinal, mail.destinataire, { signatureHtml: signatureMail, docs: (documentsDevis ?? []).filter((x) => docsSelectionnes.has(x.id)) });
     setEnvoiEnCours(false);
     if (!rep.ok) {
       setRetourAction(`❌ L'envoi a échoué : ${rep.erreur || "erreur inconnue"}. Le mail n'est PAS parti et le devis n'est PAS marqué envoyé — vérifie et réessaie.`);
@@ -1262,7 +1408,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
     <div>
       {/* Barre d'outils : gestion des modèles de mail (créer / modifier / supprimer). */}
       <div className="flex justify-end mb-2">
-        <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles de mail</Button>
+        <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles & documents</Button>
       </div>
       <ListeDevis
         items={tousDevis ?? []}
@@ -1278,7 +1424,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
         onSupprimerBrouillon={onSupprimerBrouillon}
       />
       {gestionMailOuverte && (
-        <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} onFermer={() => setGestionMailOuverte(false)} />
+        <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} signatureMail={signatureMail} onSignatureMail={onSignatureMail} documentsDevis={documentsDevis ?? []} onDocumentsDevis={onDocumentsDevis} onFermer={() => setGestionMailOuverte(false)} />
       )}
     </div>
   );
@@ -1302,11 +1448,11 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
         </div>
 
         <div className="flex justify-end gap-2">
-          <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles de mail</Button>
+          <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles & documents</Button>
           <Button variant="outline" size="sm" className="bg-white" onClick={() => setVueListe(true)}>← Retour à la liste des devis</Button>
         </div>
         {gestionMailOuverte && (
-          <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} onFermer={() => setGestionMailOuverte(false)} />
+          <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} signatureMail={signatureMail} onSignatureMail={onSignatureMail} documentsDevis={documentsDevis ?? []} onDocumentsDevis={onDocumentsDevis} onFermer={() => setGestionMailOuverte(false)} />
         )}
         <Stepper step={step} onGoTo={setStep} />
 
@@ -2164,6 +2310,21 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                       <pre className="text-xs text-slate-600 whitespace-pre-wrap font-sans">{rendreModeleMail(modeleChoisi.corps, apercuResume)}</pre>
                     </div>
                   )}
+                  {(documentsDevis ?? []).length > 0 && (
+                    <div className="border-t border-slate-200 bg-white px-4 py-3 shrink-0">
+                      <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">📎 Documents à joindre EN PLUS du PDF</p>
+                      <div className="space-y-1.5">
+                        {(documentsDevis ?? []).map((doc) => (
+                          <label key={doc.id} className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+                            <input type="checkbox" checked={docsSelectionnes.has(doc.id)} onChange={(e) => setDocsSelectionnes((prev) => { const s = new Set(prev); if (e.target.checked) s.add(doc.id); else s.delete(doc.id); return s; })} className="accent-emerald-600" />
+                            <span className="truncate flex-1">{doc.nom}</span>
+                            <span className="text-slate-400 shrink-0">{(doc.taille / 1024).toFixed(0)} Ko</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1.5">Non cochés par défaut — le PDF du devis est toujours joint automatiquement.</p>
+                    </div>
+                  )}
                   <div className="border-t bg-white p-4 space-y-2 shrink-0">
                     <Button variant="outline" className="w-full bg-white" onClick={() => setApercuMailOuvert(true)}>👁 À quoi ressemblera le mail ?</Button>
                     <Button
@@ -2193,6 +2354,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
         const modeleApercu = (modelesMail ?? []).find((m) => m.id === mailSelection) ?? null;
         const objetApercu = modeleApercu ? rendreModeleMail(modeleApercu.objet, resumeApercu) : mailApercu.objet;
         const corpsApercu = modeleApercu ? rendreModeleMail(modeleApercu.corps, resumeApercu) : corpsCourtMail(resumeApercu);
+        const sigTexteApercu = (signatureMail || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr)>/gi, "\n\n").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/\n{3,}/g, "\n\n").trim();
+        const docsApercu = (documentsDevis ?? []).filter((x) => docsSelectionnes.has(x.id));
         return (
           <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => setApercuMailOuvert(false)}>
             <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -2207,10 +2370,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                 <div className="border-t border-slate-200 pt-3">
                   <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700">{corpsApercu}</pre>
                   <div className="mt-3 border-t border-dashed border-slate-300 pt-3">
-                    <p className="text-xs italic text-slate-400">— La signature U'mob (adresse, téléphone, site) figure en fin de corps de mail —</p>
+                    <p className="text-xs italic text-slate-400">{sigTexteApercu ? "— ✍️ Ta signature Outlook sera ajoutée automatiquement en fin de mail —" : "— La signature U'mob (adresse, téléphone, site) figure en fin de corps de mail —"}</p>{sigTexteApercu ? (<div className="mt-2 whitespace-pre-wrap text-xs text-slate-500">{sigTexteApercu}</div>) : null}
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">📎 À l'envoi, le PDF « Devis-Umob-{(resumeApercu.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf » est joint AUTOMATIQUEMENT — le mail part dès le clic, rien à joindre à la main.</p>
+                <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">📎 À l'envoi, le PDF « Devis-Umob-{(resumeApercu.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf » est joint AUTOMATIQUEMENT — le mail part dès le clic, rien à joindre à la main.</p>{docsApercu.length > 0 ? (<p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">📎 Et aussi (cochés dans le volet) : {docsApercu.map((x) => x.nom).join(", ")}</p>) : null}
               </div>
             </div>
           </div>
