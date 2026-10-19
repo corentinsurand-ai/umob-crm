@@ -37,6 +37,8 @@ const PROMPT_SYSTEME =
   "activite : choisi parmi [" + OPTIONS_ACTIVITE.join(", ") + "]. " +
   "modeLivraison : mode de livraison utilisé, choisi parmi [" + OPTIONS_MODE_LIVRAISON.join(", ") + "] ; si une plateforme de livraison est mentionnée (Uber Eats, Deliveroo, Just Eat, Stuart…), réponds 'Uber Eats / Deliveroo' ; plusieurs modes cités -> 'Mixte'. " +
   "nomEntreprise : nom de l'entreprise s'il le dit ; ville : ville mentionnée ; secteur : secteur d'activité mentionné ; prenom/nom/role : UNIQUEMENT si c'est l'INTERLOCUTEUR EXTERNE (le client ou prospect appelé) qui se présente ; JAMAIS le salarié U'mob qui répond (il dit souvent son propre prénom en décrochant) ; email : adresse dictée ; besoin : besoin exprimé en une phrase courte (nombre de scooters, zone, budget, délai…). " +
+  "ATTENTION AU SENS DE L'APPEL : la transcription peut être un appel SORTANT, voire un MESSAGE LAISSÉ SUR UN RÉPONDEUR par un commercial U'mob (il se présente, ex. « Corentin Surand de la société U'mob », et laisse un numéro de rappel). Si c'est le cas : resume doit dire que le commercial U'mob a laissé un message de rappel au prospect (cite le motif et le numéro à rappeler) ; extraction (nomEntreprise, ville, secteur, franchiseur, activite, modeLivraison, prenom, nom, role, email) reste TOTALEMENT VIDE ; action = une action tournée vers le PROSPECT (ex. « Relancer le prospect par SMS s'il n'a pas rappelé »), JAMAIS « relancer Corentin Surand » ni relancer un membre de l'équipe U'mob. " +
+  "nomEntreprise : ne mets JAMAIS « U'mob », « Umob », « Youmab », « UMAB », « Youmob » ni aucune variante : c'est NOTRE propre société, jamais le client. " +
   "RÈGLES ABSOLUES : n'invente RIEN, ne devine RIEN ; chaque champ de extraction reste une chaîne vide si l'information n'est pas explicitement dite dans la transcription.";
 
 const attendre = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -363,9 +365,12 @@ export default async function handler(req: any, res: any) {
 
   // ── Remplissage automatique de la fiche (uniquement champs vides, valeurs normalisées) ──
   const extr: any = (ia && ia.extraction && typeof ia.extraction === "object") ? ia.extraction : {};
+  // Garde-fou : « U'mob » (ou une variante entendue par la transcription : Youmab, UMAB…) est NOTRE société — jamais le nom du client/prospect.
+  const estNomUmob = (s: any): boolean => ["umob", "youmab", "umab", "youmob", "yumob", "umov"].includes(String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z]/g, ""));
   const appliquerExtraction = (e: any, a: any): boolean => {
     let m = false;
-    if (extr.nomEntreprise && (!e.nom || /^Appel /.test(e.nom))) { e.nom = String(extr.nomEntreprise).slice(0, 120); m = true; }
+    if (extr.nomEntreprise && !estNomUmob(extr.nomEntreprise) && (!e.nom || /^Appel /.test(e.nom))) { e.nom = String(extr.nomEntreprise).slice(0, 120); m = true; }
+    if (estNomUmob(extr.nomEntreprise)) console.log("nomEntreprise ignoré : c'est U'mob (notre société), pas le client");
     if (extr.ville && !e.ville) { e.ville = String(extr.ville).slice(0, 80); m = true; }
     if (extr.secteur && !e.secteur) { e.secteur = String(extr.secteur).slice(0, 80); m = true; }
     if (extr.franchiseur && !e.franchiseur) {
