@@ -38,6 +38,11 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // contrat réel. ──
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
+  // ── SIREN + adresse postale du siège : champs PERMANENTS (fiche À propos,
+  //  modale). Remplis automatiquement par la recherche SIREN / API gouv à la
+  //  création, ou saisis à la main. Vides si inconnus (jamais d'invention).
+  //  Alimentent le pré-remplissage DocuSign (adresse, CP, SIREN). ──
+  siren?: string; adresse?: string; cp?: string;
   // Origine de la relation commerciale : Groupe Client, Demande entrante, Autre.
   origine?: string;
   // ── Contrat & flotte (source : Sheet « Infos Service Client ») ──
@@ -796,7 +801,7 @@ type ContactSimple = { prenom: string; nom: string; role: string; email: string;
 type SocieteSimple = { nom: string; nomCommercial: string; ville: string; secteur: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; dejaClient?: string; proprietaire?: string };
 
 // Modèles vierges servant de point de départ en mode création.
-const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "", modeles: [], contrats: [] };
+const ENT_VIDE: Entreprise = { id: "", nom: "", nomCommercial: "", secteur: "", ville: "", site: "", tel: "", franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect", notes: "", activites: [], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "", risque: "", modeles: [], contrats: [], siren: "", adresse: "", cp: "" };
 const CTC_VIDE: Contact = { id: "", prenom: "", nom: "", role: "", email: "", tel: "", entrepriseIds: [] };
 const DEAL_VIDE: Deal = { id: "", nom: "", entrepriseId: "", contactId: "", montant: 0, etape: "À qualifier", action: "", echeance: "", notes: "", fait: false };
 
@@ -853,6 +858,7 @@ function Modale({
       ...e,
       nom: f.nom, nomCommercial: f.nomCommercial, ville: f.ville, secteur: f.secteur, tel: f.telAffiche, site: f.site,
       franchiseur: f.franchiseur, modeLivraison: f.modeLivraison, activite: f.activite,
+      siren: f.siren || "", adresse: (f as any).adresse || "", cp: (f as any).cp || "",
     }));
     // Contacts identifiés : proposés COCHÉS par défaut (on pourra décocher).
     setContactsProposes(f.contactsTrouves.map((ct) => ({ ...ct, coche: true })));
@@ -1070,6 +1076,7 @@ function Modale({
     return {
       fiche: {
         siren: String(r.siren || ""), tel: "", telAffiche: "",
+        adresse: String(siege.adresse || ""), cp: String(siege.code_postal || ""),
         nom: String(r.nom_complet || r.nom_raison_sociale || ""),
         nomCommercial: enseigne && ville ? enseigne + " — " + ville : enseigne,
         ville,
@@ -1407,6 +1414,13 @@ function Modale({
                   anti-fausses-informations). */}
               <div className="col-span-2"><label className={label}>Nom commercial <span className="font-normal normal-case text-slate-400">(enseigne + ville, ex. Domino's Pizza — Nanterre)</span></label>
                 <input className={champ} value={ent.nomCommercial} onChange={(e) => setEnt({ ...ent, nomCommercial: e.target.value })} placeholder="ex. Domino's Pizza — Nanterre" /></div>
+              {/* SIREN + adresse du siège : permanents, remplis par la recherche SIREN ou à la main (jamais d'invention). */}
+              <div><label className={label}>SIREN</label>
+                <input className={champ} value={ent.siren ?? ""} onChange={(e) => setEnt({ ...ent, siren: e.target.value })} placeholder="123 456 789" /></div>
+              <div><label className={label}>Code postal</label>
+                <input className={champ} value={ent.cp ?? ""} onChange={(e) => setEnt({ ...ent, cp: e.target.value })} placeholder="69003" /></div>
+              <div className="col-span-2"><label className={label}>Adresse postale</label>
+                <input className={champ} value={ent.adresse ?? ""} onChange={(e) => setEnt({ ...ent, adresse: e.target.value })} placeholder="12 rue de la Paix" /></div>
               {/* Statut du cycle de vie (Suspect / Prospect / Client) : c'est
                   l'équipe commerciale qui le fait évoluer — jamais auto. */}
               <div><label className={label}>Statut</label>
@@ -2564,6 +2578,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               {/* Origine de la relation : comment cette entreprise est entrée dans le CRM. */}
               <PropSelect label="Origine" valeur={e.origine ?? ""} options={OPTIONS_ORIGINE} onChange={(v) => onModifie({ origine: v })} />
               <PropTexte label="Secteur" valeur={e.secteur} onChange={(v) => onModifie({ secteur: v })} />
+              <PropTexte label="SIREN" valeur={e.siren ?? ""} onChange={(v) => onModifie({ siren: v })} />
+              <PropTexte label="Adresse postale" valeur={e.adresse ?? ""} onChange={(v) => onModifie({ adresse: v })} />
+              <PropTexte label="Code postal" valeur={e.cp ?? ""} onChange={(v) => onModifie({ cp: v })} />
               <PropTexte label="Ville" valeur={e.ville} onChange={(v) => onModifie({ ville: v })} />
               {/* Enseigne officielle (champ « nom commercial » de l'INSEE) avec
                   la ville ajoutée à la fin, ex. « Domino's Pizza — Nanterre ».
