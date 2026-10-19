@@ -672,7 +672,7 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -690,6 +690,9 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // le module s'ouvre alors directement sur l'assistant. Par défaut (clic
   // sur l'onglet 🧾 Devis), on ouvre TOUJOURS la liste des devis.
   ouvertureDirecte?: boolean;
+  // Pré-remplissage du compte (ID fiche entreprise) quand le module est ouvert
+  // depuis une fiche entreprise via le bouton Devis.
+  compteInitial?: string;
   // Comptes du CRM avec nom légal + téléphone pour le volet de recherche
   // de compte (match nom commercial + nom légal + téléphone).
   comptesCRM?: { affiche: string; nom: string; tel: string; entId?: string }[];
@@ -725,10 +728,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // (le flux « 🚀 Rouvrir » d'une fiche entreprise reste identique).
   const [vueListe, setVueListe] = useState<boolean>(!ouvertureDirecte);
 
-  // Config
-  const [societe, setSociete] = useState<string>(b.societe ?? "");
+  // Config — compte pré-rempli si le module est ouvert depuis une fiche
+  // entreprise (bouton Devis) : société + entId posés d’emblée.
+  const compteInitialFiche = compteInitial ? (comptesCRM ?? []).find((f) => f.entId === compteInitial) : undefined;
+  const [societe, setSociete] = useState<string>(b.societe ?? compteInitialFiche?.affiche ?? "");
   // Fiche entreprise ciblée (ID) — prioritaire sur le nom pour l'archivage.
-  const [entId, setEntId] = useState<string | undefined>(b.entId);
+  const [entId, setEntId] = useState<string | undefined>(b.entId ?? (compteInitial || undefined));
   const [anciennete, setAnciennete] = useState<string>(b.anciennete ?? "Plus de 2 bilans");
   const [mode, setMode] = useState<string>(b.mode ?? "LOCATION");
   const [duree, setDuree] = useState<number>(b.duree ?? 50);
