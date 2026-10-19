@@ -525,6 +525,47 @@ export function genererPdfDevis(r: DevisResume): Blob {
 // Télécharge le PDF du devis dans le navigateur (déclenché par un clic) et
 // renvoie le nom du fichier — utilisé par l'envoi mail (pièce à joindre) et
 // par la fiche entreprise.
+// Blob -> base64 par tranches (btoa n'avale pas un gros buffer d'un coup) -
+// passe le PDF a l'API d'envoi reel (/api/devis-email, serverless Vercel ->
+// Resend, cle API uniquement cote serveur).
+export function blobVersBase64(blob: Blob): Promise<string> {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const binaire = String(fr.result || "");
+      let out = "";
+      const T = 8192;
+      for (let i = 0; i < binaire.length; i += T) {
+        const tranche = Array.from(binaire.slice(i, i + T)).map((c) => c.charCodeAt(0));
+        out += String.fromCharCode.apply(null, tranche);
+      }
+      res(btoa(out));
+    };
+    fr.onerror = () => rej(new Error("Lecture du PDF impossible"));
+    fr.readAsBinaryString(blob);
+  });
+}
+// Envoi REEL du devis par mail (Resend, PDF en piece jointe) : construit le
+// PDF cote navigateur, le convertit en base64 et le POST a /api/devis-email.
+// Retour : { ok: true, nomPdf } en cas de succes, sinon { ok: false, erreur }.
+export async function envoyerDevisParMail(r: DevisResume, objet: string, corps: string, dest: string): Promise<{ ok: boolean; erreur?: string; nomPdf?: string }> {
+  const destTrim = (dest || "").trim();
+  if (!destTrim) return { ok: false, erreur: "Aucune adresse e-mail connue pour ce compte - renseigne l'e-mail de la societe ou d'un contact, puis reessaie." };
+  const nomPdf = "Devis-Umob-" + (r.numOffre || "offre").replace(/[^\w.-]/g, "") + ".pdf";
+  try {
+    const pdfBase64 = await blobVersBase64(genererPdfDevis(r));
+    const rep = await fetch("/api/devis-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dest: destTrim, objet, corps, pdfBase64, nomPdf }),
+    });
+    const data: any = await rep.json().catch(() => ({}));
+    if (!rep.ok || !data.ok) return { ok: false, erreur: data.erreur || ("L'envoi a echoue (HTTP " + rep.status + ").") };
+    return { ok: true, nomPdf };
+  } catch (e: any) {
+    return { ok: false, erreur: (e && e.message) || "Echec reseau pendant l'envoi." };
+  }
+}
 export function telechargerPdfDevis(r: DevisResume): string {
   const nom = `Devis-Umob-${(r.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf`;
   try {
@@ -1002,23 +1043,29 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   };
   const corpsCourtMail = (resume: DevisResume): string =>
     `Bonjour,\n\nVeuillez trouver ci-joint notre offre de location pour ${societe || "votre société"} (n° ${resume.numOffre}), valable jusqu'au ${resume.dateValiditeFr}.\n\nJe reste à votre disposition pour en discuter.\n\nBien cordialement,\n${commercial || "L'équipe U'mob"}`;
-  // Envoi : mailto → ouvre un brouillon dans le client mail PAR DÉFAUT du PC
-  // (Outlook desktop, compte SMTP de Corentin). Outlook insère la signature
-  // par défaut (logo inclus) sur les nouveaux messages ; sinon Insertion →
-  // Signature (1 clic). Le PDF est téléchargé au préalable, il ne reste
-  // qu'à le joindre (1 clic) et à envoyer soi-même.
-  const envoyerMail = (objetMail?: string, corpsMail?: string) => {
+  // Envoi REEL du devis par mail (Resend) : le PDF est genere cote navigateur
+// puis envoye par /api/devis-email (serverless Vercel -> Resend) en piece
+// jointe, depuis corentin.surand@umob.fr. En cas d'echec : message d'erreur
+// affiche et le devis n'est PAS marque envoye (le mail n'est pas parti).
+  const envoyerMail = async (objetMail?: string, corpsMail?: string) => {
     if (!dateRelance) { setRetourAction("⚠️ Choisis d'abord la date de relance du devis (obligatoire)."); return; }
+    if (envoiEnCours) return;
     const resume = construireResume();
-    const nomPdf = telechargerPdfDevis(resume);
     const mail = construireMail(resume);
     const objetFinal = objetMail ?? mail.objet;
     const corpsFinal = corpsMail ?? corpsCourtMail(resume);
-    window.location.href = `mailto:${mail.destinataire}?subject=${encodeURIComponent(objetFinal)}&body=${encodeURIComponent(corpsFinal)}`;
-    // Le devis part au client : la fiche entreprise le marque « Envoyé ».
     const pRel = dateRelance.split("-"); const dateRelanceFr = pRel.length === 3 ? `${pRel[2]}/${pRel[1]}/${pRel[0]}` : dateRelance;
+    setEnvoiEnCours(true);
+    setRetourAction("⏳ Envoi du devis en cours…");
+    const rep = await envoyerDevisParMail(resume, objetFinal, corpsFinal, mail.destinataire);
+    setEnvoiEnCours(false);
+    if (!rep.ok) {
+      setRetourAction(`❌ L'envoi a échoué : ${rep.erreur || "erreur inconnue"}. Le mail n'est PAS parti et le devis n'est PAS marqué envoyé — vérifie et réessaie.`);
+      return;
+    }
+    // Le devis est reellement parti : la fiche entreprise le marque envoye.
     onDevisEnvoye?.(societe, resume.numOffre, dateRelanceFr, entId);
-    setRetourAction(`✉️ Brouillon ouvert dans ton Outlook — ta signature par défaut (logo inclus) s'insère normalement ; sinon un clic dans Insertion → Signature. Joins le PDF « ${nomPdf} » (déjà téléchargé), relis, et envoie !`);
+    setRetourAction(`✅ Devis ${resume.numOffre} envoyé par mail à ${mail.destinataire} — PDF « ${rep.nomPdf} » joint, expéditeur corentin.surand@umob.fr. Tâche de relance créée pour le ${dateRelanceFr}.`);
     setVoletMailOuvert(false);
   };
   // ── Volet « modèles de mail » ──
@@ -1908,7 +1955,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                 <p className="text-xs text-slate-400">
                   Le devis complet (brouillon ré-ouvrable) est archivé avec le commentaire — on le relance depuis la fiche entreprise → « 🚀 Rouvrir ».
                   « ⬇ Télécharger PDF » génère le devis en PDF (logo officiel + couleurs U'mob) et le télécharge directement, sans ouvrir de mail.
-                  « ✉️ Envoyer par mail » ouvre le volet des modèles de corps de mail : tu choisis un modèle (ou le message court par défaut) et un brouillon s'ouvre dans ton Outlook — ta signature par défaut (logo inclus) s'insère normalement, le PDF est déjà téléchargé (à joindre en 1 clic), tu relis et tu envoies toi-même.
+                  « ✉️ Envoyer par mail » ouvre le volet des modèles de corps de mail : tu choisis un modèle (ou le message court par défaut) puis le devis part RÉELLEMENT par mail (expéditeur corentin.surand@umob.fr) avec le PDF joint automatiquement — la date de relance reste obligatoire avant l'envoi.
                 </p>
               </CardContent>
             </Card>
@@ -2003,17 +2050,14 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                       className="w-full"
                       disabled={envoiEnCours}
                       onClick={() => {
-                        setEnvoiEnCours(true);
-                        try {
                           const mail = construireMail(apercuResume);
                           const objet = modeleChoisi ? rendreModeleMail(modeleChoisi.objet, apercuResume) : mail.objet;
                           const corps = modeleChoisi ? rendreModeleMail(modeleChoisi.corps, apercuResume) : corpsCourtMail(apercuResume);
                           if (!mail.destinataire) { setRetourAction("⚠️ Aucun e-mail connu sur ce compte — renseigne l'e-mail de la société ou d'un contact, puis réessaie."); return; }
                           envoyerMail(objet, corps);
-                        } finally { setEnvoiEnCours(false); }
-                      }}
+                        }}
                     >
-                      {envoiEnCours ? "⏳ Ouverture…" : modeleChoisi ? `✉️ Ouvrir le brouillon avec « ${modeleChoisi.nom} »` : "✉️ Ouvrir le brouillon (message court)"}
+                      {envoiEnCours ? "⏳ Envoi en cours…" : modeleChoisi ? `✉️ Envoyer le mail avec « ${modeleChoisi.nom} »` : "✉️ Envoyer le mail (message court)"}
                     </Button>
                     <Button variant="outline" className="w-full bg-white" onClick={() => { setVoletMailOuvert(false); setMailEdition(false); }}>Annuler</Button>
                   </div>
@@ -2038,15 +2082,15 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
               </div>
               <div className="px-5 py-4 space-y-3 max-h-[70vh] overflow-y-auto">
                 <p className="text-xs text-slate-500"><span className="font-semibold text-slate-600">À :</span> {mailApercu.destinataire || "(aucun e-mail connu sur ce compte)"}</p>
-                <p className="text-xs text-slate-500"><span className="font-semibold text-slate-600">De :</span> toi — depuis ton Outlook (signature par défaut, logo inclus)</p>
+                <p className="text-xs text-slate-500"><span className="font-semibold text-slate-600">De :</span> Corentin Surand — U'mob &lt;corentin.surand@umob.fr&gt; (envoi réel via Resend, PDF joint)</p>
                 <p className="text-xs text-slate-500"><span className="font-semibold text-slate-600">Objet :</span> {objetApercu}</p>
                 <div className="border-t border-slate-200 pt-3">
                   <pre className="whitespace-pre-wrap font-sans text-sm text-slate-700">{corpsApercu}</pre>
                   <div className="mt-3 border-t border-dashed border-slate-300 pt-3">
-                    <p className="text-xs italic text-slate-400">— Ta signature par défaut Outlook (logo inclus) s'insère ici (sinon : Insertion → Signature) —</p>
+                    <p className="text-xs italic text-slate-400">— La signature U'mob (adresse, téléphone, site) figure en fin de corps de mail —</p>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">📎 À l'envoi, le PDF « Devis-Umob-{(resumeApercu.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf » est téléchargé — tu n'as plus qu'à le joindre (1 clic) puis à envoyer.</p>
+                <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">📎 À l'envoi, le PDF « Devis-Umob-{(resumeApercu.numOffre || "offre").replace(/[^\w.-]/g, "")}.pdf » est joint AUTOMATIQUEMENT — le mail part dès le clic, rien à joindre à la main.</p>
               </div>
             </div>
           </div>

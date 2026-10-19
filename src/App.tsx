@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
-import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, telechargerPdfDevis } from "./devis";
+import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, telechargerPdfDevis, envoyerDevisParMail, rendreModeleMail } from "./devis";
 import { ConsoleManager } from "./console";
 
 /* ============================== MODÈLE (structure HubSpot) ============================== */
@@ -2390,6 +2390,13 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   // OBLIGATOIRE — l'envoi est bloqué tant qu'elle n'est pas choisie). ──
   const [relancePour, setRelancePour] = useState<string | null>(null);
   const [dateRelance, setDateRelance] = useState<string>("");
+  // Envoi REEL du devis par mail (Resend) depuis la fiche : pendant l'appel
+  // réseau le bouton est désactivé (anti double envoi), et une FENÊTRE demande
+  // de choisir le MODÈLE de mail souhaité avant l'envoi (même logique que le
+  // module Devis).
+  const [envoiFicheEnCours, setEnvoiFicheEnCours] = useState(false);
+  const [modelePour, setModelePour] = useState<string | null>(null);
+  const [modeleChoisiFiche, setModeleChoisiFiche] = useState<string>("");
   const e = etat.entreprises.find((x) => x.id === id);
   // Garde-fou : si l'entreprise a été supprimée pendant qu'on était sur sa
   // fiche, on n'affiche que le bouton retour (évite un écran blanc cassé).
@@ -2556,19 +2563,76 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               <input type="date" value={dateRelance} onChange={(ev) => setDateRelance(ev.target.value)} className="rounded-lg border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700" />
                               <button
+                                <button
                                 disabled={!dateRelance}
-                                onClick={() => {
-                                  const p = dateRelance.split("-"); const fr = p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : dateRelance;
-                                  onMarquerDevisEnvoye(dv.id, fr); // statut ✅ « Envoyé » + tâche de relance à la date choisie par le commercial
-                                  setRelancePour(null);
-                                  const nomPdf = telechargerPdfDevis(dv.resume);
-                                                                window.location.href = `mailto:${mailCt}?subject=${encodeURIComponent(dv.mail?.objet || "Offre de location U'mob")}&body=${encodeURIComponent(`Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n° ${dv.resume?.numOffre || ""} pour ${e.nom}, valable jusqu'au ${dv.resume?.dateValiditeFr || dv.dateFr}.\n\nBien cordialement,\n${dv.resume?.commercial || ""}\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78`)}`;
-                                }}
+                                onClick={() => { setModeleChoisiFiche(""); setModelePour(dv.id); }}
                                 className="rounded-xl border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10.5px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed">✉️ Envoyer le devis</button>
                               <button onClick={() => setRelancePour(null)} className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-500 hover:bg-slate-50">Annuler</button>
                             </div>
                           </div>
                         )}
+                        {modelePour === dv.id && (() => {
+                          const res = dv.resume;
+                          if (!res) return null;
+                          const modeles = etat.modelesMailDevis ?? [];
+                          const mChoisi = modeles.find((m) => m.id === modeleChoisiFiche) ?? null;
+                          const corpsCourt = "Bonjour,\n\nVeuillez trouver ci-joint notre offre de location n\u00b0 " + (res.numOffre || "") + " pour " + e.nom + ", valable jusqu'au " + (res.dateValiditeFr || dv.dateFr) + ".\n\nBien cordialement,\n" + (res.commercial || "") + "\nU'MOB — 53 avenue Carnot, 69250 Neuville-sur-Saône — 04 82 29 96 78 — www.umob.fr";
+                          const objetFinal = mChoisi ? rendreModeleMail(mChoisi.objet, res) : (dv.mail?.objet || "Offre de location U'mob");
+                          const corpsFinal = mChoisi ? rendreModeleMail(mChoisi.corps, res) : (dv.mail?.corps || corpsCourt);
+                          return (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" onClick={() => setModelePour(null)}>
+                              <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden" onClick={(ev) => ev.stopPropagation()}>
+                                <div className="flex items-center justify-between px-4 py-2.5 border-b bg-slate-50">
+                                  <p className="font-semibold text-sm text-slate-700">✉️ Avec quel modèle veux-tu envoyer ce devis ?</p>
+                                  <button type="button" className="text-slate-400 hover:text-slate-700 text-xl leading-none cursor-pointer" onClick={() => setModelePour(null)}>×</button>
+                                </div>
+                                <div className="px-4 py-3 space-y-2 max-h-[60vh] overflow-y-auto">
+                                  {modeles.length === 0 && (
+                                    <p className="text-[11px] text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">Aucun modèle enregistré pour l'instant — tu peux en créer depuis le module Devis (étape 5 → envoyer par mail). Le message ci-dessous sera utilisé.</p>
+                                  )}
+                                  <label className={"flex items-start gap-2 rounded-xl border px-3 py-2 cursor-pointer " + (modeleChoisiFiche === "" ? "border-emerald-400 bg-emerald-50" : "border-slate-200")}>
+                                    <input type="radio" checked={modeleChoisiFiche === ""} onChange={() => setModeleChoisiFiche("")} className="mt-0.5 accent-emerald-600" />
+                                    <div><p className="text-[12.5px] font-bold text-slate-700">Message enregistré avec le devis (par défaut)</p><p className="text-[11px] text-slate-400">L'objet et le corps sauvegardés au moment du devis</p></div>
+                                  </label>
+                                  {modeles.map((m) => (
+                                    <label key={m.id} className={"flex items-start gap-2 rounded-xl border px-3 py-2 cursor-pointer " + (modeleChoisiFiche === m.id ? "border-emerald-400 bg-emerald-50" : "border-slate-200")}>
+                                      <input type="radio" checked={modeleChoisiFiche === m.id} onChange={() => setModeleChoisiFiche(m.id)} className="mt-0.5 accent-emerald-600" />
+                                      <div className="min-w-0"><p className="text-[12.5px] font-bold text-slate-700 truncate">{m.nom}</p><p className="text-[11px] text-slate-400 truncate">{m.objet}</p></div>
+                                    </label>
+                                  ))}
+                                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Aperçu</p>
+                                    <p className="text-xs font-semibold text-slate-700 mb-1">{objetFinal}</p>
+                                    <pre className="text-xs text-slate-600 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto">{corpsFinal}</pre>
+                                  </div>
+                                  <p className="text-[11px] text-slate-400">📎 Le PDF du devis sera joint automatiquement — le mail part de corentin.surand@umob.fr dès le clic.</p>
+                                </div>
+                                <div className="border-t bg-white p-4 flex gap-2">
+                                  <button
+                                    disabled={envoiFicheEnCours}
+                                    onClick={async () => {
+                                      if (envoiFicheEnCours) return;
+                                      if (!mailCt) { window.alert("Aucune adresse e-mail connue sur ce compte \u2014 renseigne l'e-mail de la société ou d'un contact, puis réessaie."); return; }
+                                      const p = dateRelance.split("-"); const fr = p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : dateRelance;
+                                      setEnvoiFicheEnCours(true);
+                                      const rep = await envoyerDevisParMail(res, objetFinal, corpsFinal, mailCt);
+                                      setEnvoiFicheEnCours(false);
+                                      if (!rep.ok) {
+                                        window.alert("L'envoi a échoué : " + (rep.erreur || "erreur inconnue") + "\n\nLe mail n'est PAS parti et le devis n'est PAS marqué envoyé \u2014 vérifie et réessaie.");
+                                        return;
+                                      }
+                                      onMarquerDevisEnvoye(dv.id, fr); // uniquement si le mail est réellement parti
+                                      setModelePour(null);
+                                      setRelancePour(null);
+                                    }}
+                                    className="flex-1 rounded-xl px-3 py-1.5 text-[12px] font-black text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                                    style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>{envoiFicheEnCours ? "⏳ Envoi en cours…" : "✉️ Envoyer le devis"}</button>
+                                  <button onClick={() => setModelePour(null)} className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-500 hover:bg-slate-50">Annuler</button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
