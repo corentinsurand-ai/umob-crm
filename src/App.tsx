@@ -4,6 +4,8 @@ import { supabase, chargerEtat, sauverEtat } from "./lib/supabase";
 import { Splash } from "./connexion";
 import { DevisModule, DevisBrouillon, DevisArchive, SauvegardeDevis, ModeleMailDevis, DocumentDevis, telechargerPdfDevis, envoyerDevisParMail, rendreModeleMail } from "./devis";
 import { ConsoleManager } from "./console";
+import { DocusignVue } from "./docusign";
+import type { DevisResume } from "./devis";
 
 // ── Fermeture « au clic sur le fond » SANS piège de sélection de texte ──
 // Quand on sélectionne du texte dans un champ du panneau et que le curseur
@@ -4410,6 +4412,14 @@ export default function App() {
   // Remonte le module Devis à neuf (clé de rendu) : « ➕ Nouveau devis »
   // repart de zéro — tous les états internes sont réinitialisés au montage.
   const [devisKey, setDevisKey] = useState(0);
+  // ── Vue DocuSign (PowerForms pré-remplis) ouverte depuis le module Devis
+  // via le bouton « ✍️ Envoyer en signature DocuSign » (étape 5). ──
+  const [docusignResume, setDocusignResume] = useState<DevisResume | null>(null);
+  const [dsEnt, setDsEnt] = useState<any>(null); // entreprise CRM liée au devis
+  const [dsContacts, setDsContacts] = useState<any[]>([]); // contacts de cette entreprise
+  const [dsLocam, setDsLocam] = useState("");
+  const [dsRenouv, setDsRenouv] = useState(false);
+  const [dsKm, setDsKm] = useState("");
   const [monEmail, setMonEmail] = useState(""); // email du compte connecté (réserve la Console manager)
   useEffect(() => { supabase.auth.getSession().then(({ data }) => setMonEmail((data.session?.user?.email || "").toLowerCase())); }, []);
   const estManager = EMAILS_CONSOLE.has(monEmail);
@@ -5054,12 +5064,28 @@ export default function App() {
               ouvertureDirecte={assistantDirect}
               compteInitial={devisPresetEnt || undefined}
               onDemarrerNouveau={() => { setAssistantDirect(true); setDevisKey((k) => k + 1); }}
-              onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} signatureMail={etat.signatureMail} onSignatureMail={(s) => setEtat((e) => ({ ...e, signatureMail: s }))} documentsDevis={etat.documentsDevis ?? []} onDocumentsDevis={(ds) => setEtat((e) => ({ ...e, documentsDevis: ds }))} />}
+              onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} signatureMail={etat.signatureMail} onSignatureMail={(s) => setEtat((e) => ({ ...e, signatureMail: s }))} documentsDevis={etat.documentsDevis ?? []} onDocumentsDevis={(ds) => setEtat((e) => ({ ...e, documentsDevis: ds }))}
+              onEnvoyerDocusign={(r, locamContrat, kmContrat) => {
+                const entDs = trouverEntrepriseDevis(r.societe, etat.devis?.entId);
+                setDsEnt(entDs ?? null);
+                setDsContacts(entDs ? etat.contacts.filter((c) => c.entrepriseIds.includes(entDs.id)) : []);
+                setDocusignResume(r);
+                setDsLocam(locamContrat || "");
+                setDsRenouv(!!locamContrat);
+                setDsKm(kmContrat || "");
+              }} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
           </>
         )}
       </main>
       </div>
+
+      {/* Vue DocuSign plein écran (PowerForms pré-remplis depuis le devis) : */}
+      {docusignResume && (
+        <div className="fixed inset-0 z-[100] overflow-y-auto bg-slate-50">
+          <DocusignVue resume={docusignResume} onRetour={() => setDocusignResume(null)} renouvellement={dsRenouv} setRenouvellement={setDsRenouv} numContratLocam={dsLocam} setNumContratLocam={setDsLocam} kmDevis={dsKm} entreprise={dsEnt} contacts={dsContacts} />
+        </div>
+      )}
 
       {/* Modale en overlay : la key force le remontage du state interne quand
           on change de cible (création ↔ modification d'un autre objet). */}

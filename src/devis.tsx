@@ -227,6 +227,8 @@ export interface DevisBrouillon {
   mode: string;
   duree: number;
   grille: string;
+  // Kilométrage annuel du contrat (reprise dans le DocuSign) — par défaut illimité.
+  kmContratDevis?: string;
   renouvellement: boolean;
   qtes: Record<string, string>;
   remises: Record<string, string>;
@@ -923,7 +925,7 @@ function GestionModelesMail({ modelesMail, onModelesMail, signatureMail, onSigna
 }
 
 // ==================== MODULE ====================
-export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, signatureMail, onSignatureMail, documentsDevis, onDocumentsDevis, onDevisEnvoye, numerosExistants }: {
+export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, signatureMail, onSignatureMail, documentsDevis, onDocumentsDevis, onDevisEnvoye, numerosExistants, onEnvoyerDocusign }: {
   brouillon: DevisBrouillon | null;
   onBrouillon?: (d: DevisBrouillon) => void;
   entreprisesNom?: string[];
@@ -969,6 +971,10 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // N° d'offre déjà archivés dans tout le CRM (toutes fiches) — sert à
   // attribuer un numéro UNIQUE (suffixe -1, -2, -3…) par jour et commercial.
   numerosExistants?: string[];
+  // ⭐ Bouton fin de parcours : envoie le devis vers le menu signature DocuSign.
+  // locamContrat : n° de contrat Locam du renouvellement, pré-rempli automatiquement côté DocuSign.
+  // kmContrat : kilométrage annuel du contrat saisi dans le devis, repris dans le DocuSign.
+  onEnvoyerDocusign?: (resume: DevisResume, locamContrat?: string, kmContrat?: string) => void;
 }) {
   const b: Partial<DevisBrouillon> = brouillon ?? {};
 
@@ -996,7 +1002,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   const [anciennete, setAnciennete] = useState<string>(b.anciennete ?? "Plus de 2 bilans");
   const [mode, setMode] = useState<string>(b.mode ?? "LOCATION");
   const [duree, setDuree] = useState<number>(b.duree ?? 50);
-  const [grille, setGrille] = useState<string>(b.grille ?? "SGC 5 à 9");
+  const [grille, setGrille] = useState<string>(b.grille ?? "IND");
+  const [kmContratDevis, setKmContratDevis] = useState<string>(b.kmContratDevis ?? "Illimité");
   const [renouvellement, setRenouvellement] = useState<boolean>(b.renouvellement ?? false);
 
   // Lignes — quantités & remises stockées en texte libre pour une édition fluide
@@ -1106,13 +1113,13 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   useEffect(() => {
     if (premier.current) { premier.current = false; return; }
     onBrouillonRef.current?.({
-      step, societe, entId, anciennete, mode, duree, grille, renouvellement,
+      step, societe, entId, anciennete, mode, duree, grille, kmContratDevis, renouvellement,
       qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
       remisesEnEuros: true,
       miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
       ...(offreLiee && offreLiee.societe === (societe || "").trim() ? { idOrigine: offreLiee.id, numOffreOrigine: offreLiee.num } : {}),
     });
-  }, [step, societe, entId, anciennete, mode, duree, grille, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement, offreLiee]);
+  }, [step, societe, entId, anciennete, mode, duree, grille, kmContratDevis, renouvellement, qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial, miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement, offreLiee]);
 
   // N° d'offre dynamique : L + initiales du commercial + aaaammjj + position du jour
   const aujourdhui = new Date();
@@ -1284,7 +1291,7 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   });
   // Brouillon complet au moment T (même contenu que celui remonté via onBrouillon).
   const brouillonCourant = (): DevisBrouillon => ({
-    step, societe, entId, anciennete, mode, duree, grille, renouvellement,
+    step, societe, entId, anciennete, mode, duree, grille, kmContratDevis, renouvellement,
     qtes, remises, packsCoches, coupDePoing, remiseLibre, afficherRemise, commercial,
     remisesEnEuros: true,
     miseADispoStr, fraisDossierStr, flotteReprise, dureeAmort, locamRenouvellement,
@@ -1553,6 +1560,14 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                   <select value={grille} onChange={(e) => setGrille(e.target.value)} className={SEL}>
                     {GRILLES.map((g) => <option key={g} value={g}>{g}</option>)}
                   </select>
+                </Field>
+                <Field label="Kilométrage annuel du contrat" hint="Repris dans le contrat DocuSign (km annuel par produit)">
+                  <select value={kmContratDevis} onChange={(e) => setKmContratDevis(e.target.value)} className={SEL}>
+                    {["Illimité", "1500", "2000", "2500", "3000", "4000", "5000"].map((k) => <option key={k} value={k}>{k === "Illimité" ? "Illimité" : k + " km/an"}</option>)}
+                  </select>
+                  {kmContratDevis !== "Illimité" && (
+                    <Input inputMode="numeric" className="mt-1" value={kmContratDevis} onChange={(e) => setKmContratDevis(e.target.value)} placeholder="Autre valeur (km/an)" />
+                  )}
                 </Field>
                 <div className="rounded-lg border bg-slate-50 p-3">
                   <p className="text-sm font-medium">Renouvellement</p>
@@ -2226,6 +2241,12 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
                     style={{ background: "#b0c300", color: "#3d4200", border: "1px solid #b0c300" }}
                     title="Génère le devis en PDF (logo officiel U'mob, couleurs du site, totaux matériel & prestations) et le télécharge — sans ouvrir de mail"
                   >⬇ Télécharger PDF</Button>
+                  <Button
+                    onClick={() => onEnvoyerDocusign?.(construireResume(), renouvellement ? locamRenouvellement.contrat : undefined, kmContratDevis || undefined)}
+                    disabled={!societe.trim()}
+                    style={{ background: "#0ea5e9", color: "#ffffff", border: "1px solid #0ea5e9" }}
+                    title="Ouvre le menu de signature DocuSign pré-rempli avec les données du devis (matériel, loyers, durée) — Bon de commande U'mob"
+                  >✍️ Envoyer en signature DocuSign</Button>
                   <Button onClick={sauvegarder} disabled={!societe.trim()}>💾 Sauvegarder sur la fiche entreprise</Button>
                   <Button variant="outline" onClick={ouvrirVoletMail}>✉️ Envoyer par mail + PDF</Button>
                   <Button variant="outline" onClick={copierTexte}>📋 Copier le texte du devis</Button>
@@ -2398,3 +2419,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
 }
 
 
+
+
+// ══════════════════════════════════════════════════════════════
+// VUE DOCUSIGN — menu de signature pré-rempli depuis le devis
+// (tabLabels validés par test réel le 19/10/2026)
