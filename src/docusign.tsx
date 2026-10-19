@@ -36,7 +36,7 @@ export function DocusignVue({ resume, onRetour, renouvellement, setRenouvellemen
   const [interloc, setInterloc] = useState({ raisonSociale: "", adresse1: "", cp: "", ville: "" });
   const [delaiLivraison, setDelaiLivraison] = useState("2 semaines");
   const [kmContrat, setKmContrat] = useState(kmDevis || "Illimité");
-  const [depotGarantie, setDepotGarantie] = useState("0");
+  const [depotGarantie, setDepotGarantie] = useState(""); // vide = pas de dépôt → « Aucun » (affiché et transmis)
   const [observations, setObservations] = useState("");
   const [copie, setCopie] = useState("");
   const [lienAffiche, setLienAffiche] = useState("");
@@ -301,7 +301,7 @@ export function DocusignVue({ resume, onRetour, renouvellement, setRenouvellemen
           <label><span className={lblPF}>Km annuel / produit</span>
             <input className={champPF} value={kmContrat} onChange={(e) => setKmContrat(e.target.value)} /></label>
           <label><span className={lblPF}>Dépôt de garantie (€ HT)</span>
-            <input className={champPF} inputMode="decimal" value={depotGarantie} onChange={(e) => setDepotGarantie(e.target.value)} placeholder="0" /></label>
+            <input className={champPF} inputMode="decimal" value={depotGarantie} onChange={(e) => setDepotGarantie(e.target.value)} placeholder="Aucun" /></label>
           <div><span className={lblPF}>Lieu de signature</span><div className={roPF}>LYON</div></div>
           <div className="col-span-4"><span className={lblPF}>Dont (tarif remisé de chaque article du devis)</span>
             <div className={roPF}>{texteDont || "—"}</div></div>
