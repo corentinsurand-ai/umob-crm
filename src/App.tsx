@@ -321,14 +321,14 @@ const fusionnerContrats = (cs: ContratLigne[]): { pack: string; dateDebut: strin
 // "etape" est un type interne : il trace les mouvements de deals dans le pipeline
 // (généré automatiquement, jamais saisi à la main par l'utilisateur).
 // Les autres types sont consignés manuellement depuis le composer des fiches.
-type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape";
+type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape" | "devis";
 // dateISO : date de RÉALISATION réelle (jj/mm/aaaa), enregistrée automatiquement
 // à la création et modifiable au moment de la saisie (rattrapage d'une activité
 // passée). `date` garde le libellé court historique ("auj.", "15/10") pour la
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; fait?: boolean; clotureLe?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -340,6 +340,7 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
   reunion: { icone: "📅", libelle: "Réunion", couleur: "#ef8f3c" },
   etape: { icone: "➜", libelle: "Étape du deal", couleur: "#4f9ee8" },
 };
+  devis: { icone: "🧾", libelle: "Devis", couleur: "#94a3b8" },
 
 // Même chose pour le deal : plus de liste d'activités propre. Les « étapes »
 // horodatées sont journalisées sur l'entreprise avec un lien `dealId`.
@@ -2002,7 +2003,7 @@ const valDate = (s: string, iso?: string) => {
 // Timeline d'activités des fiches. Chaque event peut être :
 //  - une activité de la fiche elle-même (note, appel… sans deal rattaché)
 //  - une activité d'un deal associé (porte une référence `deal` → lien cliquable)
-function Chronologie({ events, onOuvre, contacts, deals, onSupprimer }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[]; onSupprimer?: (ev: Activite & { deal?: Deal }) => void }) {
+function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj }: { events: (Activite & { deal?: Deal })[]; onOuvre: (c: Cible) => void; contacts?: Contact[]; deals?: Deal[]; onSupprimer?: (ev: Activite & { deal?: Deal }) => void; onMaj?: (ev: Activite & { deal?: Deal }, patch: Partial<Activite>) => void }) {
   if (events.length === 0) {
     return (
       <div className="text-[12px] text-slate-400">
@@ -2030,7 +2031,22 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer }: { events
               style={{ background: `${meta.couleur}18` }}>{meta.icone}</span>
             <div className="min-w-0 flex-1">
               <div className="text-[10px] font-black uppercase tracking-wider" style={{ color: meta.couleur }}>{meta.libelle}</div>
-              <div className="text-[12.5px] leading-relaxed text-slate-700">{ev.texte}</div>
+              {/* Badge « À faire / Réalisée » des tâches & réunions : cliquable
+                  quand le parent fournit onMaj (clôturer / rouvrir en place). */}
+              {onMaj && (ev.type === "tache" || ev.type === "reunion") && (ev.fait ? (
+                <button onClick={() => onMaj(ev, { fait: false, clotureLe: undefined })}
+                  title="Tâche clôturée — cliquer pour la rouvrir"
+                  className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700 hover:bg-emerald-200">
+                  ✓ Réalisée{ev.clotureLe ? " le " + ev.clotureLe : ""} · rouvrir
+                </button>
+              ) : (
+                <button onClick={() => onMaj(ev, { fait: true, clotureLe: dateParis() })}
+                  title="Marquer cette tâche comme réalisée"
+                  className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-black text-violet-700 hover:bg-violet-200">
+                  ○ À faire · cliquer pour clôturer
+                </button>
+              ))}
+              <div className={"text-[12.5px] leading-relaxed " + (ev.fait ? "text-slate-400 line-through" : "text-slate-700")}>{ev.texte}</div>
               {(ev.type === "appel" && !!(ev.resumeIA || ev.transcription || ev.sentiment)) && (
                 <div className="mt-1.5 rounded-lg border border-emerald-100 bg-emerald-50/60 px-2.5 py-2">
                   <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-bold">
@@ -2099,8 +2115,9 @@ const TYPES_COMPOSER: { type: "note" | "email" | "appel" | "tache" | "reunion"; 
 // puis un mini-formulaire adapté au type choisi. Machine à états simple :
 //  - typeSel : type en cours de saisie (null = aucun formulaire ouvert)
 //  - texte / echeance : champs du formulaire, réinitialisés à chaque fermeture
-function ComposerActivites({ onAjouter, contacts, deals }: {
+function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
   onAjouter: (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => void;
+  onOuvrirDevis?: () => void; // ouvre le module Devis avec le compte de la fiche pré-rempli
   // Listes optionnelles de rattachement (contacts & deals de l'entreprise
   // affichée) : quand elles sont fournies, deux petits menus permettent de
   // lier l'activité à un contact et/ou un deal.
@@ -2142,6 +2159,14 @@ function ComposerActivites({ onAjouter, contacts, deals }: {
             <span>{b.icone}</span> {b.libelle}
           </button>
         ))}
+        {onOuvrirDevis && (
+          <button onClick={onOuvrirDevis}
+            title="Créer un devis pour cette entreprise — le module Devis s'ouvre avec le compte pré-rempli"
+            className="flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[12px] font-bold transition-colors"
+            style={{ borderColor: "#94a3b8", background: "#f1f5f9", color: "#475569" }}>
+            📄 Devis
+          </button>
+        )}
       </div>
       {/* Formulaire contextuel : placeholder adapté au type, champ échéance
           supplémentaire pour les tâches et les réunions uniquement. */}
@@ -2370,7 +2395,7 @@ function VoletRecherche({ q, etat, onOuvre }: { q: string; etat: Etat; onOuvre: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite, onMajActivite, onOuvrirDevis }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -2384,6 +2409,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onAnnulerDevisAccepte: (devisId: string) => void; // annule une acceptation faite par erreur (tâche de relance recréée)
   onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
   onSupprimerActivite: (ev: Activite) => void; // supprime une activité de la timeline (erreur de saisie)
+  onMajActivite?: (ev: Activite, patch: Partial<Activite>) => void; // clôture / réouverture d'une tâche depuis la timeline
+  onOuvrirDevis?: () => void; // ouvre le module Devis avec ce compte pré-rempli
 }) {
   // ── Choix de la DATE DE RELANCE avant l'envoi d'un devis par mail : la
   // relance n'est plus imposée à J+7, c'est le commercial qui décide (date
@@ -2441,6 +2468,14 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
               ✎ Modifier
             </button>
+            {/* Devis : ouvre le module Devis avec ce compte pré-rempli. */}
+            {onOuvrirDevis && (
+              <button onClick={onOuvrirDevis}
+                title="Créer un devis pour cette entreprise — module Devis pré-rempli"
+                className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+                📄 Devis
+              </button>
+            )}
             {/* Nouveau contact pré-rattaché à cette entreprise (preset). */}
             <button onClick={() => onOuvre({ type: "contact", id: null, preset: e.id })}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
@@ -2644,9 +2679,9 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               bandeau central de la fiche HubSpot. */}
           <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
-            <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} />
+            <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} onOuvrirDevis={onOuvrirDevis} />
             <div className="mt-3">
-              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} />
+              <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} onMaj={onMajActivite} />
             </div>
           </div>
 
@@ -3162,7 +3197,7 @@ function Dictee({ valeur, onTexte }: { valeur: string; onTexte: (t: string) => v
   );
 }
 
-function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cible) => void; onAjouter: (id: string, activite: Activite) => void }) {
+function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; onOuvre: (c: Cible) => void; onAjouter: (id: string, activite: Activite) => void; onMajActivite: (id: string, ev: Activite, patch: Partial<Activite>) => void }) {
   const auj = new Date();
   const [mode, setMode] = useState<"mois" | "semaine">("mois");
   const [curseur, setCurseur] = useState({ a: auj.getFullYear(), m: auj.getMonth() }); // mois affiché
@@ -3190,6 +3225,23 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   const [rechercheEnt, setRechercheEnt] = useState("");
   const [calFaitOuvert, setCalFaitOuvert] = useState(false);
   const [calOuvert, setCalOuvert] = useState(false);
+  // ── Panneau « tâche » : ouvrir une pastille de l'agenda pour MODIFIER,
+  //    CLÔTURER ou créer la tâche suivante — sans quitter l'agenda. ──
+  const [tacheOuverte, setTacheOuverte] = useState<EvenementAgenda | null>(null);
+  const [modTitre, setModTitre] = useState("");
+  const [modDate, setModDate] = useState("");
+  const [modHeure, setModHeure] = useState("");
+  const [modCalOuvert, setModCalOuvert] = useState(false);
+  const [suivTexte, setSuivTexte] = useState("");
+  const [suivDate, setSuivDate] = useState("");
+  const [suivCalOuvert, setSuivCalOuvert] = useState(false);
+  const [bandeau, setBandeau] = useState("");
+  // ── Création rapide d'une tâche sur le jour sélectionné ──
+  const [nouvelleOuverte, setNouvelleOuverte] = useState(false);
+  const [nvEnt, setNvEnt] = useState("");
+  const [nvRech, setNvRech] = useState("");
+  const [nvTitre, setNvTitre] = useState("");
+  const [nvHeure, setNvHeure] = useState("");
   // Entreprise choisie (pour l'affichage en « chip ») + résultats de recherche
   // (nom, enseigne, ville — et TÉLÉPHONE en saisie souple).
   const entChoisie = etat.entreprises.find((x) => x.id === entId);
@@ -3232,7 +3284,7 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   // activités (portées par les entreprises, liens contact/deal résolus) +
   // prochaines actions des deals. Index par
   // date « j/m/a » → un seul calcul par changement de `etat` (perf).
-  type EvenementAgenda = { date: { j: number; m: number; a: number }; kind: "tache" | "reunion" | "deal"; titre: string; contexte: string; lien: Cible };
+  type EvenementAgenda = { date: { j: number; m: number; a: number }; kind: "tache" | "reunion" | "deal"; titre: string; contexte: string; lien: Cible; entId: string; act?: Activite; fait?: boolean; heure?: string };
   const parJour = useMemo(() => {
     const evts: EvenementAgenda[] = [];
     const nomEntreprise = new Map(etat.entreprises.map((e) => [e.id, e.nom]));
@@ -3250,6 +3302,7 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
           lien: ac.dealId ? ({ type: "deal", id: ac.dealId, preset: "" } as Cible)
             : ac.contactId ? ({ type: "contact", id: ac.contactId } as Cible)
             : ({ type: "entreprise", id: e.id } as Cible),
+          entId: e.id, act: ac, fait: !!ac.fait, heure: ac.heure,
         });
       }
     }
@@ -3257,7 +3310,7 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
       // Contexte = entreprise liée au deal (repli sur le nom du deal).
       const soc = nomEntreprise.get(d.entrepriseId) || ("Deal « " + d.nom + " »");
       const ed = parseEcheance(d.echeance);
-      if (d.action && !d.fait && ed) evts.push({ date: ed, kind: "deal", titre: d.action, contexte: soc, lien: { type: "deal", id: d.id, preset: "" } as Cible });
+      if (d.action && !d.fait && ed) evts.push({ date: ed, kind: "deal", titre: d.action, contexte: soc, lien: { type: "deal", id: d.id, preset: "" } as Cible, entId: d.entrepriseId });
     }
     const idx = new Map<string, EvenementAgenda[]>();
     for (const ev of evts) {
@@ -3277,19 +3330,77 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
   // Rendu d’une puce d’événement (fonction simple, PAS un composant :
   // évite le remontage de toutes les puces à chaque interaction).
   const puce = (ev: EvenementAgenda) => (
-    <button key={ev.titre + ev.contexte} onClick={(e) => { e.stopPropagation(); onOuvre(ev.lien); }}
+    <button key={ev.titre + ev.contexte + (ev.act ? "a" : "d")} onClick={(e) => { e.stopPropagation(); ouvrirTache(ev); }}
+      title="Cliquer pour modifier, clôturer ou créer la tâche suivante"
       className="flex w-full items-start gap-1 rounded-md px-1 py-0.5 text-left text-[9.5px] font-bold hover:bg-white/70"
-      style={{ background: COULEUR_KIND[ev.kind] + "18", color: COULEUR_KIND[ev.kind] }}>
-      <span className="shrink-0 text-[8px] leading-3">{ICONES_KIND[ev.kind]}</span>
-      {/* Titre de l'événement + 2e ligne grise : qui / quelle entreprise */}
+      style={{ background: ev.fait ? "#10b98118" : COULEUR_KIND[ev.kind] + "18", color: ev.fait ? "#059669" : COULEUR_KIND[ev.kind] }}>
+      <span className="shrink-0 text-[8px] leading-3">{ev.fait ? "✓" : ICONES_KIND[ev.kind]}</span>
+      {/* Titre de l'événement + 2e ligne grise : qui / quelle entreprise.
+          Les tâches clôturées RESTENT visibles (vert, barrées). */}
       <span className="min-w-0 flex-1">
-        <span className="block truncate leading-tight">{ev.titre}</span>
+        <span className={"block truncate leading-tight" + (ev.fait ? " line-through opacity-70" : "")}>{ev.titre}</span>
         <span className="block truncate text-[7.5px] font-semibold leading-tight text-slate-400">{ev.contexte}</span>
       </span>
     </button>
   );
 
   const selEvenements = jourSel ? duJour(jourSel) : [];
+  // Ouvre le panneau « tâche » (modifier / clôturer / créer la suivante).
+  // Les événements « deal » n'ont pas d'activité modifiable : fiche directe.
+  const ouvrirTache = (ev: EvenementAgenda) => {
+    if (!ev.act) { onOuvre(ev.lien); return; }
+    setTacheOuverte(ev);
+    setModTitre(ev.titre);
+    setModDate(ev.date.j + "/" + (ev.date.m + 1) + "/" + ev.date.a);
+    setModHeure(ev.heure || "");
+    setModCalOuvert(false);
+    setSuivTexte("");
+    setSuivDate(ev.date.j + "/" + (ev.date.m + 1) + "/" + ev.date.a);
+    setSuivCalOuvert(false);
+  };
+  // Enregistre la modification (titre / date / heure) de la tâche ouverte.
+  const validerModif = () => {
+    if (!tacheOuverte?.act || !modTitre.trim() || !modDate.trim()) return;
+    onMajActivite(tacheOuverte.entId, tacheOuverte.act, { texte: modTitre.trim(), echeance: modDate.trim(), heure: modHeure.trim() || undefined });
+    setBandeau("✅ Tâche modifiée (le calendrier suit la nouvelle date).");
+    setTacheOuverte(null);
+  };
+  // Clôture la tâche ouverte (elle reste visible, barrée en vert).
+  const cloturerTache = () => {
+    if (!tacheOuverte?.act) return;
+    onMajActivite(tacheOuverte.entId, tacheOuverte.act, { fait: true, clotureLe: dateParis() });
+    setBandeau("✅ Tâche clôturée — elle reste visible dans le calendrier (barrée).");
+    setTacheOuverte(null);
+  };
+  // Rouvre une tâche clôturée par erreur.
+  const rouvrirTache = () => {
+    if (!tacheOuverte?.act) return;
+    onMajActivite(tacheOuverte.entId, tacheOuverte.act, { fait: false, clotureLe: undefined });
+    setBandeau("↩️ Tâche rouverte — elle redevient « à faire ».");
+    setTacheOuverte(null);
+  };
+  // Clôture la tâche courante ET crée la tâche suivante (nouvelle date + commentaire).
+  const cloturerEtSuivante = () => {
+    if (!tacheOuverte?.act || !suivTexte.trim() || !suivDate.trim()) return;
+    onMajActivite(tacheOuverte.entId, tacheOuverte.act, { fait: true, clotureLe: dateParis() });
+    onAjouter(tacheOuverte.entId, { date: "auj.", texte: suivTexte.trim(), type: "tache", echeance: suivDate.trim(), dateISO: dateParis(), heure: heureParis(), contactId: tacheOuverte.act.contactId, dealId: tacheOuverte.act.dealId });
+    setBandeau("✅ Tâche clôturée + tâche suivante créée pour le " + suivDate.trim() + ".");
+    setTacheOuverte(null);
+  };
+  // ── Création rapide d'une tâche sur le jour sélectionné ──
+  const resultatNvEnt = etat.entreprises.filter((x) => {
+    const q2 = nvRech.toLowerCase().trim();
+    if (!q2) return true;
+    return [x.nom, x.nomCommercial, x.ville].join(" ").toLowerCase().includes(q2) || telCorrespond(q2, x.tel);
+  });
+  const creerNouvelleTache = () => {
+    if (!nvEnt || !nvTitre.trim()) return;
+    const d = jourSel ? jourSel.j + "/" + (jourSel.m + 1) + "/" + jourSel.a : "";
+    onAjouter(nvEnt, { date: "auj.", texte: nvTitre.trim(), type: "tache", echeance: d, dateISO: dateParis(), heure: nvHeure.trim() || heureParis() });
+    setBandeau("📌 Tâche créée" + (d ? " pour le " + d : "") + ".");
+    setNouvelleOuverte(false); setNvEnt(""); setNvRech(""); setNvTitre(""); setNvHeure("");
+  };
+
 
   // ── Grille du mois (mode « mois ») ──
   const nbJours = new Date(curseur.a, curseur.m + 1, 0).getDate();
@@ -3394,18 +3505,28 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
           {jourSel ? jourSel.j + " " + MOIS_FR[jourSel.m] + " " + jourSel.a : "—"}
           {jourSel && estAuj(jourSel) && <span className="ml-1.5 rounded-full bg-cyan-100 px-1.5 py-0.5 text-[9px] font-black text-cyan-700">aujourd’hui</span>}
         </div>
+        {bandeau && (
+          <div className="mb-2 rounded-xl border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700">{bandeau}</div>
+        )}
+        <div className="mb-2">
+          <button onClick={() => { setNouvelleOuverte(true); setNvEnt(""); setNvRech(""); setNvTitre(""); setNvHeure(""); }}
+            className="rounded-xl border border-cyan-200 bg-cyan-50 px-2.5 py-1 text-[11px] font-black text-cyan-700 hover:bg-cyan-100">
+            ➕ Nouvelle tâche {jourSel ? "le " + jourSel.j + "/" + (jourSel.m + 1) : ""}
+          </button>
+        </div>
         {jourSel && duJour(jourSel).length === 0 && (
           <div className="text-[12px] text-slate-400">Rien à faire ce jour-là. 🎉</div>
         )}
         <div className="space-y-1.5">
           {selEvenements.map((ev, i) => (
-            <button key={i} onClick={() => onOuvre(ev.lien)}
+            <button key={i} onClick={() => ouvrirTache(ev)}
               className="w-full rounded-xl border border-slate-100 p-2 text-left hover:bg-slate-50">
               <div className="flex items-center gap-1.5">
-                <span className="text-[11px]">{ICONES_KIND[ev.kind]}</span>
-                <span className="truncate text-[11.5px] font-bold" style={{ color: COULEUR_KIND[ev.kind] }}>{ev.contexte}</span>
+                <span className="text-[11px]">{ev.fait ? "✓" : ICONES_KIND[ev.kind]}</span>
+                <span className="truncate text-[11.5px] font-bold" style={{ color: ev.fait ? "#059669" : COULEUR_KIND[ev.kind] }}>{ev.contexte}</span>
               </div>
-              <div className="text-[12px] leading-snug text-slate-700">{ev.titre}</div>
+              <div className={"text-[12px] leading-snug " + (ev.fait ? "text-slate-400 line-through" : "text-slate-700")}>{ev.titre}</div>
+              {ev.act && <div className="mt-0.5 text-[10px] font-bold text-slate-300">cliquer pour modifier · clôturer · créer la suivante</div>}
             </button>
           ))}
         </div>
@@ -3418,6 +3539,150 @@ function VueAgenda({ etat, onOuvre, onAjouter }: { etat: Etat; onOuvre: (c: Cibl
       </div>
 
       {/* ── Overlay « Consigner une activité » : ce qui a été fait (+ liens
+      {/* ── Panneau « tâche » : modifier / clôturer / créer la tâche suivante,
+          directement depuis une pastille de l'agenda. ── */}
+      <AnimatePresence>
+        {tacheOuverte && tacheOuverte.act && (() => {
+          const ev = tacheOuverte;
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setTacheOuverte(null)}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+              <motion.div onClick={(e) => e.stopPropagation()}
+                initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
+                className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+                <div className="mb-1 flex items-center gap-2 text-[15px] font-black text-slate-800">
+                  <span>{ev.fait ? "✓" : ICONES_KIND[ev.kind]}</span>
+                  <span style={{ color: ev.fait ? "#059669" : COULEUR_KIND[ev.kind] }}>{ev.fait ? "Tâche clôturée" : ev.kind === "reunion" ? "Réunion planifiée" : "Tâche à faire"}</span>
+                </div>
+                <div className="mb-4 text-[11.5px] text-slate-400">{ev.contexte} · échéance {ev.date.j}/{ev.date.m + 1}/{ev.date.a}{ev.heure ? " · " + ev.heure : ""}</div>
+
+                {/* ── 1. Modifier ── */}
+                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">✏️ Modifier</div>
+                <input value={modTitre} onChange={(e) => setModTitre(e.target.value)}
+                  placeholder="Titre de la tâche…"
+                  className={CH_FORM + " mt-1.5"} />
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <button onClick={() => setModCalOuvert((v) => !v)}
+                      className={CH_FORM + " bg-white text-left " + (modDate ? "font-bold text-slate-800" : "text-slate-400")}>
+                      📅 {modDate || "Choisir la date…"}
+                    </button>
+                    {modCalOuvert && (
+                      <MiniCalendrier valeur={modDate}
+                        onChoisit={(v) => { setModDate(v); setModCalOuvert(false); }} />
+                    )}
+                  </div>
+                  <input type="time" value={modHeure} onChange={(e) => setModHeure(e.target.value)}
+                    title="Heure (optionnelle)"
+                    className={CH_FORM} />
+                </div>
+                <button onClick={validerModif} disabled={!modTitre.trim() || !modDate}
+                  className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 py-2 text-[12px] font-black text-slate-600 hover:bg-slate-100 disabled:opacity-40">
+                  💾 Enregistrer la modification
+                </button>
+
+                {/* ── 2. Clôturer / rouvrir ── */}
+                <div className="mt-4 flex gap-2">
+                  {ev.fait ? (
+                    <button onClick={rouvrirTache}
+                      className="flex-1 rounded-xl border border-amber-200 bg-amber-50 py-2 text-[12px] font-black text-amber-700 hover:bg-amber-100">
+                      ↩️ Rouvrir cette tâche
+                    </button>
+                  ) : (
+                    <button onClick={cloturerTache}
+                      className="flex-1 rounded-xl border border-emerald-200 bg-emerald-50 py-2 text-[12px] font-black text-emerald-700 hover:bg-emerald-100">
+                      ✓ Clôturer (réalisée)
+                    </button>
+                  )}
+                  <button onClick={() => { onOuvre(ev.lien); setTacheOuverte(null); }}
+                    className="rounded-xl border border-slate-200 px-3 py-2 text-[12px] font-bold text-slate-500 hover:bg-slate-50">
+                    Ouvrir la fiche ↗
+                  </button>
+                </div>
+
+                {/* ── 3. Clôturer & créer la tâche suivante ── */}
+                {!ev.fait && (
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="text-[10.5px] font-black uppercase tracking-wider text-violet-600">➕ Clôturer & créer la tâche suivante</div>
+                    <input value={suivTexte} onChange={(e) => setSuivTexte(e.target.value)}
+                      placeholder="Que doit-on faire ensuite ?"
+                      className={CH_FORM + " mt-1.5"} />
+                    <div className="mt-2">
+                      <button onClick={() => setSuivCalOuvert((v) => !v)}
+                        className={CH_FORM + " bg-white text-left " + (suivDate ? "font-bold text-slate-800" : "text-slate-400")}>
+                        📅 {suivDate || "Choisir la date…"}
+                      </button>
+                      {suivCalOuvert && (
+                        <MiniCalendrier valeur={suivDate}
+                          onChoisit={(v) => { setSuivDate(v); setSuivCalOuvert(false); }} />
+                      )}
+                    </div>
+                    <button onClick={cloturerEtSuivante} disabled={!suivTexte.trim() || !suivDate.trim()}
+                      className="mt-2 w-full rounded-xl py-2 text-[12px] font-black text-white disabled:opacity-40"
+                      style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
+                      ✓ Clôturer & planifier la suivante
+                    </button>
+                    <p className="mt-1 text-[10.5px] text-slate-400">La tâche courante passe en « réalisée » et la nouvelle apparaît dans l'agenda à la date choisie.</p>
+                  </div>
+                )}
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      {/* ── Création rapide d'une tâche (bouton « ➕ Nouvelle tâche ») ── */}
+      <AnimatePresence>
+        {nouvelleOuverte && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setNouvelleOuverte(false)}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+            <motion.div onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
+              className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+              <div className="mb-1 text-[15px] font-black text-slate-800">📌 Nouvelle tâche{jourSel ? " — " + jourSel.j + " " + MOIS_FR[jourSel.m] + " " + jourSel.a : ""}</div>
+              <div className="mb-4 text-[11.5px] text-slate-400">Rattachée à une entreprise : elle apparaît dans l'agenda et sur sa fiche.</div>
+              {nvEnt ? (
+                <div className="flex items-center justify-between rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2">
+                  <span className="truncate text-[12.5px] font-bold text-cyan-800">🏢 {etat.entreprises.find((x) => x.id === nvEnt)?.nom}</span>
+                  <button onClick={() => setNvEnt("")} className="ml-2 shrink-0 text-[12px] font-black text-cyan-400 hover:text-cyan-600">✕</button>
+                </div>
+              ) : (
+                <div>
+                  <input value={nvRech} onChange={(e) => setNvRech(e.target.value)}
+                    placeholder="🔎 Entreprise…"
+                    className={CH_FORM} />
+                  <div className="mt-1.5 max-h-36 overflow-y-auto rounded-xl border border-slate-100">
+                    {resultatNvEnt.slice(0, 20).map((x) => (
+                      <button key={x.id} onClick={() => setNvEnt(x.id)}
+                        className="flex w-full items-center justify-between gap-2 border-b border-slate-50 px-3 py-1.5 text-left last:border-0 hover:bg-slate-50">
+                        <span className="truncate text-[12px] font-bold text-slate-700">{x.nom}</span>
+                        <span className="shrink-0 text-[10px] font-medium text-slate-400">{x.ville}</span>
+                      </button>
+                    ))}
+                    {resultatNvEnt.length === 0 && <div className="px-3 py-2 text-[11.5px] text-slate-400">Aucune entreprise trouvée.</div>}
+                  </div>
+                </div>
+              )}
+              <input value={nvTitre} onChange={(e) => setNvTitre(e.target.value)}
+                placeholder="Que doit-on faire ?"
+                className={CH_FORM + " mt-2"} />
+              <input type="time" value={nvHeure} onChange={(e) => setNvHeure(e.target.value)}
+                title="Heure (optionnelle)"
+                className={CH_FORM + " mt-2"} />
+              <div className="mt-4 flex gap-2">
+                <button onClick={() => setNouvelleOuverte(false)}
+                  className="flex-1 rounded-xl border border-slate-200 py-2.5 text-[13px] font-bold text-slate-400 hover:bg-slate-50">Annuler</button>
+                <button onClick={creerNouvelleTache} disabled={!nvEnt || !nvTitre.trim()}
+                  className="flex-1 rounded-xl py-2.5 text-[13px] font-black text-white disabled:opacity-40"
+                  style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Créer</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
           entreprise/contact/deal), puis l'action suivante qui atterrit
           directement dans l'agenda. ── */}
       <AnimatePresence>
@@ -4009,6 +4274,10 @@ export default function App() {
   // s'ouvre alors directement sur l'assistant. Un clic sur l'onglet 🧾 Devis
   // de la navigation remet à false → ouverture sur la LISTE à chaque fois.
   const [assistantDirect, setAssistantDirect] = useState(false);
+  // Fiche entreprise pré-remplie dans le module Devis après un clic « 📄 Devis »
+  // (effacée juste après le montage pour ne pas polluer les ouvertures suivantes).
+  const [devisPresetEnt, setDevisPresetEnt] = useState("");
+  useEffect(() => { if (devisPresetEnt) setDevisPresetEnt(""); }, [devisPresetEnt]);
   // Remonte le module Devis à neuf (clé de rendu) : « ➕ Nouveau devis »
   // repart de zéro — tous les états internes sont réinitialisés au montage.
   const [devisKey, setDevisKey] = useState(0);
@@ -4048,6 +4317,18 @@ export default function App() {
   // Navigation entre pages record (associations cliquables) : la modale se ferme
   // pour laisser place à la fiche (comme HubSpot qui navigue d'une fiche à l'autre).
   const ouvrirFiche = (f: FicheRef) => { setFiche(f); setCible(null); };
+
+  // « 📄 Devis » d'une fiche entreprise : ouvre le module Devis DIRECTEMENT
+  // sur l'assistant, avec le compte de la fiche pré-rempli (société + entId).
+  // Le brouillon en cours est écarté (même logique que « ➕ Nouveau devis »).
+  const ouvrirDevisPour = (entId: string) => {
+    setEtat((s) => ({ ...s, devis: null }));
+    setDevisPresetEnt(entId);
+    setAssistantDirect(true);
+    setDevisKey((k) => k + 1);
+    setFiche(null);
+    setVue("devis");
+  };
 
   // ── Persistance de la NAVIGATION : un refresh (F5 / Ctrl+F5) ne doit PAS
   // renvoyer sur la page d'accueil. La vue et la fiche ouvertes sont mémorisées
@@ -4167,6 +4448,13 @@ export default function App() {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: x.activites.filter((a) => a !== ev) } : x)) }));
   };
 
+  // Mise à jour d'une activité existante (modification, clôture, réouverture)
+  // depuis l'agenda ou la timeline : remplacement par RÉFÉRENCE d'objet,
+  // même mécanisme immuable que la suppression.
+  const majActivite = (id: string, ev: Activite, patch: Partial<Activite>) => {
+    setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, activites: x.activites.map((a) => (a === ev ? { ...a, ...patch } : a)) } : x)) }));
+  };
+
   // Édition directe depuis le panneau « À propos » de la fiche entreprise :
   // on n'applique que le PATCH (champs modifiés) sur l'objet existant, de façon
   // immuable. La sauvegarde Supabase suit toute seule via le useEffect.
@@ -4206,7 +4494,7 @@ export default function App() {
         entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
           ...x,
           devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === archive.id ? archive : dv),
-          activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
+          activites: [...x.activites, { date: "auj.", texte, type: "devis", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
         } : x),
       }));
       return archive.id;
@@ -4218,7 +4506,7 @@ export default function App() {
       entreprises: s2.entreprises.map((x) => x.id === ent.id ? {
         ...x,
         devisHistorique: [archive, ...(x.devisHistorique ?? [])].slice(0, 30),
-        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
+        activites: [...x.activites, { date: "auj.", texte, type: "devis", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
     return archive.id;
@@ -4240,7 +4528,7 @@ export default function App() {
       entreprises: s2.entreprises.map((x) => x.id === entId ? {
         ...x,
         devisHistorique: (x.devisHistorique ?? []).filter((d) => d.id !== devisId),
-        activites: [...x.activites, { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
+        activites: [...x.activites, { date: "auj.", texte, type: "devis", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
   };
@@ -4278,7 +4566,7 @@ export default function App() {
         devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: "accepte" as const, dateAcceptationFr: dateHeureParis(maintenant) } : d),
         activites: [
           ...x.activites.filter((a) => !(a.type === "tache" && (a.texte || "").startsWith(prefixeTache))),
-          { date: "auj.", texte: `🎉 Devis n° ${num} accepté par le client`, type: "note" as const, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
+          { date: "auj.", texte: `🎉 Devis n° ${num} accepté par le client`, type: "devis" as const, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
         ],
       } : x),
     }));
@@ -4297,7 +4585,7 @@ export default function App() {
       ...x,
       devisHistorique: (x.devisHistorique ?? []).map((d) => d.id === devisId ? { ...d, statut: (d.dateEnvoiFr ? "envoye" : "enregistre") as "envoye" | "enregistre", dateAcceptationFr: undefined } : d),
       activites: (() => {
-        const sansNote = x.activites.filter((a) => !(a.type === "note" && a.texte === noteAccept));
+        const sansNote = x.activites.filter((a) => !(a.type === "devis" && a.texte === noteAccept));
         const dejaRelance = sansNote.some((a) => a.type === "tache" && (a.texte || "").startsWith(prefixeTache));
         if (dejaRelance || !dv.dateRelanceFr) return sansNote;
         const maintenant = new Date();
@@ -4319,7 +4607,7 @@ export default function App() {
         ...x,
         devisHistorique: (x.devisHistorique ?? []).map((dv) => dv.id === cible.id ? { ...dv, statut: "envoye" as const, dateEnvoiFr: dateHeureParis(maintenant), dateRelanceFr } : dv),
         activites: [...x.activites,
-          { date: "auj.", texte, type: "note", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
+          { date: "auj.", texte, type: "devis", dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite,
           { date: "auj.", texte: `Relancer le devis n° ${numOffre} (envoyé le ${dateHeureParis(maintenant)})`, type: "tache" as const, echeance: dateRelanceFr, dateISO: dateParis(maintenant), heure: heureParis(maintenant) } as Activite],
       } : x),
     }));
@@ -4611,7 +4899,9 @@ export default function App() {
             onMarquerDevisAccepte={(devisId) => marquerDevisAccepte(fiche.id, devisId)}
             onAnnulerDevisAccepte={(devisId) => annulerDevisAccepte(fiche.id, devisId)}
             onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)}
-            onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)} />
+            onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)}
+            onMajActivite={(ev, patch) => majActivite(fiche.id, ev, patch)}
+            onOuvrirDevis={() => ouvrirDevisPour(fiche.id)} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
             onOuvre={setCible} onOuvreFiche={ouvrirFiche} />
@@ -4626,13 +4916,14 @@ export default function App() {
             {vue === "contacts" && <VueContacts etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
-            {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} />}
+            {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} onMajActivite={majActivite} />}
             {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel, entId: x.id }))}
               tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
               onOuvrirFiche={(id) => { setFiche({ type: "entreprise", id }); setCible(null); }}
               onSupprimerBrouillon={() => setEtat((e) => ({ ...e, devis: null }))}
               ouvertureDirecte={assistantDirect}
+              compteInitial={devisPresetEnt || undefined}
               onDemarrerNouveau={() => { setAssistantDirect(true); setDevisKey((k) => k + 1); }}
               onSauvegarder={sauvegarderDevisSurFiche} onDevisEnvoye={marquerDevisEnvoye} numerosExistants={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => dv.resume?.numOffre || ""))} emailSociete={emailDuCompte} modelesMail={etat.modelesMailDevis ?? []} onModelesMail={(m) => setEtat((e) => ({ ...e, modelesMailDevis: m }))} />}
             {vue === "console" && estManager && <ConsoleManager etat={etat} />}
