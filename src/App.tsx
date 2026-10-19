@@ -3683,8 +3683,8 @@ function VueAgenda({ etat, onOuvre, onAjouter, onMajActivite }: { etat: Etat; on
         )}
       </AnimatePresence>
 
-          entreprise/contact/deal), puis l'action suivante qui atterrit
-          directement dans l'agenda. ── */}
+      {/* Formulaire « action suivante » : ouverte depuis une tâche clôturée,
+          l'action suivante atterrit dans l'agenda. */}
       <AnimatePresence>
         {formOuvert && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
