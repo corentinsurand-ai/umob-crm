@@ -671,6 +671,106 @@ function ListeDevis({ items, brouillonExiste, onReprendre, onNouveau, onOuvrirFi
   );
 }
 
+// ==================== GESTION DES MODÈLES DE MAIL (accessible depuis l'onglet Devis) ====================
+// Panneau autonome : créer, modifier, supprimer les modèles SANS devis en cours.
+// Mêmes données (modelesMail persistés dans le CRM) que le volet d'envoi.
+function GestionModelesMail({ modelesMail, onModelesMail, onFermer }: { modelesMail: ModeleMailDevis[]; onModelesMail?: (m: ModeleMailDevis[]) => void; onFermer: () => void }) {
+  const [edition, setEdition] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [fNom, setFNom] = useState("");
+  const [fObjet, setFObjet] = useState("");
+  const [fCorps, setFCorps] = useState("");
+  const [message, setMessage] = useState("");
+  const demarrerCreation = () => {
+    setEditId(null); setFNom(""); setFObjet("Votre offre U'mob n° {{numero}}"); setFCorps(""); setEdition(true); setMessage("");
+  };
+  const demarrerEdition = (m: ModeleMailDevis) => {
+    setEditId(m.id); setFNom(m.nom); setFObjet(m.objet); setFCorps(m.corps); setEdition(true); setMessage("");
+  };
+  const enregistrer = () => {
+    if (!fNom.trim() || !fObjet.trim()) { setMessage("⚠️ Le modèle a besoin d'un nom et d'un objet."); return; }
+    if (editId) {
+      onModelesMail?.(modelesMail.map((m) => (m.id === editId ? { ...m, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps } : m)));
+      setMessage("✅ Modèle « " + fNom.trim() + " » mis à jour.");
+    } else {
+      onModelesMail?.([...modelesMail, { id: `mm${Date.now()}`, nom: fNom.trim(), objet: fObjet.trim(), corps: fCorps }]);
+      setMessage("✅ Modèle « " + fNom.trim() + " » enregistré — il sera proposé à chaque envoi de devis.");
+    }
+    setEdition(false);
+  };
+  const supprimer = (id: string) => {
+    const m = modelesMail.find((x) => x.id === id);
+    if (!m || !window.confirm("Supprimer le modèle « " + m.nom + " » ?")) return;
+    onModelesMail?.(modelesMail.filter((x) => x.id !== id));
+    if (editId === id) setEdition(false);
+    setMessage("🗑️ Modèle supprimé.");
+  };
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/50 p-4" onClick={onFermer}>
+      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-3 border-b bg-slate-50 shrink-0">
+          <p className="font-semibold text-sm text-slate-700">✉️ Modèles de mail</p>
+          <button type="button" className="text-slate-400 hover:text-slate-700 text-xl leading-none cursor-pointer" onClick={onFermer}>×</button>
+        </div>
+        <div className="overflow-y-auto px-5 py-4 space-y-3">
+          {message && <p className="text-xs font-semibold text-emerald-700">{message}</p>}
+          {edition ? (
+            <div className="space-y-3">
+              <div>
+                <Label>Nom du modèle</Label>
+                <Input value={fNom} onChange={(e) => setFNom(e.target.value)} placeholder="Ex. Relance sympa" autoFocus />
+              </div>
+              <div>
+                <Label>Objet</Label>
+                <Input value={fObjet} onChange={(e) => setFObjet(e.target.value)} />
+              </div>
+              <div>
+                <Label>Corps du mail</Label>
+                <textarea value={fCorps} onChange={(e) => setFCorps(e.target.value)} rows={8}
+                  placeholder="Bonjour,&#10;&#10;Veuillez trouver ci-joint notre offre…"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30" />
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">Variables (remplacées à l'envoi par les données du devis)</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {VARIABLES_MAIL.map((v) => (
+                    <span key={v.code} title={v.label} className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-mono text-emerald-800">{v.code}</span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button onClick={enregistrer}>💾 Enregistrer</Button>
+                <Button variant="outline" className="bg-white" onClick={() => setEdition(false)}>Annuler</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <Button variant="outline" className="w-full bg-white" onClick={demarrerCreation}>✨ Créer un modèle de mail</Button>
+              {modelesMail.length === 0 ? (
+                <div className="py-8 text-center">
+                  <p className="text-4xl mb-2">✉️</p>
+                  <p className="text-sm text-slate-500">Aucun modèle pour l'instant.</p>
+                  <p className="text-xs text-slate-400 mt-1">Crée ton premier modèle : il sera proposé à chaque envoi de devis par mail.</p>
+                </div>
+              ) : modelesMail.map((m) => (
+                <div key={m.id} className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-800 flex-1 truncate">✉️ {m.nom}</p>
+                    <button type="button" title="Modifier" className="text-slate-400 hover:text-emerald-600 cursor-pointer px-1" onClick={() => demarrerEdition(m)}>✏️</button>
+                    <button type="button" title="Supprimer" className="text-slate-400 hover:text-red-600 cursor-pointer px-1" onClick={() => supprimer(m.id)}>🗑️</button>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1">{m.objet}</p>
+                  <pre className="text-[11px] text-slate-500 whitespace-pre-wrap font-sans mt-1 max-h-24 overflow-y-auto">{m.corps || "(corps vide)"}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== MODULE ====================
 export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis, onOuvrirFiche, onSupprimerBrouillon, onDemarrerNouveau, ouvertureDirecte, compteInitial, comptesCRM, onSauvegarder, emailSociete, modelesMail, onModelesMail, onDevisEnvoye, numerosExistants }: {
   brouillon: DevisBrouillon | null;
@@ -727,6 +827,8 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
   // bouton « ➕ Nouveau devis » — ou directement si un brouillon est en cours
   // (le flux « 🚀 Rouvrir » d'une fiche entreprise reste identique).
   const [vueListe, setVueListe] = useState<boolean>(!ouvertureDirecte);
+  // ── Gestion des modèles de mail : panneau ouvert depuis la liste ET l'assistant. ──
+  const [gestionMailOuverte, setGestionMailOuverte] = useState(false);
 
   // Config — compte pré-rempli si le module est ouvert depuis une fiche
   // entreprise (bouton Devis) : société + entId posés d’emblée.
@@ -1157,19 +1259,28 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
 
   // Vue liste : tous les devis du CRM + bouton « ➕ Nouveau devis ».
   if (vueListe) return (
-    <ListeDevis
-      items={tousDevis ?? []}
-      brouillonExiste={!!brouillon}
-      onReprendre={() => setVueListe(false)}
-      onNouveau={() => {
-        if (brouillon && !window.confirm("Un devis est en préparation (« " + (brouillon.societe || "sans société") + " »). Démarrer un NOUVEAU devis ?\n\nL'ancien brouillon sera supprimé et tout repartira de zéro.")) return;
-        onSupprimerBrouillon?.();
-        onDemarrerNouveau?.();
-        setVueListe(false);
-      }}
-      onOuvrirFiche={onOuvrirFiche}
-      onSupprimerBrouillon={onSupprimerBrouillon}
-    />
+    <div>
+      {/* Barre d'outils : gestion des modèles de mail (créer / modifier / supprimer). */}
+      <div className="flex justify-end mb-2">
+        <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles de mail</Button>
+      </div>
+      <ListeDevis
+        items={tousDevis ?? []}
+        brouillonExiste={!!brouillon}
+        onReprendre={() => setVueListe(false)}
+        onNouveau={() => {
+          if (brouillon && !window.confirm("Un devis est en préparation (« " + (brouillon.societe || "sans société") + " »). Démarrer un NOUVEAU devis ?\n\nL'ancien brouillon sera supprimé et tout repartira de zéro.")) return;
+          onSupprimerBrouillon?.();
+          onDemarrerNouveau?.();
+          setVueListe(false);
+        }}
+        onOuvrirFiche={onOuvrirFiche}
+        onSupprimerBrouillon={onSupprimerBrouillon}
+      />
+      {gestionMailOuverte && (
+        <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} onFermer={() => setGestionMailOuverte(false)} />
+      )}
+    </div>
   );
 
   return (
@@ -1190,9 +1301,13 @@ export function DevisModule({ brouillon, onBrouillon, entreprisesNom, tousDevis,
           </div>
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" className="bg-white" onClick={() => setGestionMailOuverte(true)}>✉️ Modèles de mail</Button>
           <Button variant="outline" size="sm" className="bg-white" onClick={() => setVueListe(true)}>← Retour à la liste des devis</Button>
         </div>
+        {gestionMailOuverte && (
+          <GestionModelesMail modelesMail={modelesMail ?? []} onModelesMail={onModelesMail} onFermer={() => setGestionMailOuverte(false)} />
+        )}
         <Stepper step={step} onGoTo={setStep} />
 
         {/* ============ ÉTAPE 1 : CONFIGURATION ============ */}
