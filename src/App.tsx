@@ -339,8 +339,8 @@ const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: 
   tache: { icone: "✅", libelle: "Tâche", couleur: "#8b5cf6" },
   reunion: { icone: "📅", libelle: "Réunion", couleur: "#ef8f3c" },
   etape: { icone: "➜", libelle: "Étape du deal", couleur: "#4f9ee8" },
-};
   devis: { icone: "🧾", libelle: "Devis", couleur: "#94a3b8" },
+};
 
 // Même chose pour le deal : plus de liste d'activités propre. Les « étapes »
 // horodatées sont journalisées sur l'entreprise avec un lien `dealId`.
