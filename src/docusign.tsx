@@ -117,7 +117,7 @@ export function DocusignVue({ resume, onRetour, renouvellement, setRenouvellemen
       });
       add("duree_contrat", pfContrat.duree);
       add("km_annuel_produit", kmContrat);
-      add("depot_garantie", pfEur(depotGarantie));
+      add("depot_garantie", pfEur(depotGarantie) || "Aucun"); // 0 € (ou vide) = pas de dépôt → « Aucun » transmis au PowerForm
       add("montant_loyer_mensuel", pfEur(pfContrat.frais)); // ⚠️ = frais de mise à disposition
       add(PF_LOYER_TAB, pfEur(pfContrat.loyerMensuel));      // = loyer mensuel HT
       add("montant_loyer_dont", texteDont);
