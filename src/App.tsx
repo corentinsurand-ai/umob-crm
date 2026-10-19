@@ -70,6 +70,12 @@ interface Contact { id: string; prenom: string; nom: string; role: string; email
 // même téléphone (chiffres uniquement), ou même prénom+nom → c'est la MÊME
 // personne (ex. gérant de plusieurs franchises : on RATTACHE, on ne duplique jamais).
 const normTel = (t: string) => t.replace(/\D/g, "");
+const formaterTelFr = (t: any): string => {
+  const d = String(t || "").replace(/\D/g, "");
+  const nat = d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d;
+  if (nat.length === 10 && nat.startsWith("0")) return nat.replace(/(\d{2})(?=\d)/g, "$1 ");
+  return String(t || "").trim();
+};
 // Recherche téléphone « SOUPLE » : les formats ne sont jamais les bons dans la
 // vraie vie (espaces, points, tirets, +33, 0 initial…). On ne garde que les
 // chiffres et on équivalise le préfixe international 33 ↔ 0 national :
@@ -567,6 +573,10 @@ function normaliser(s: Etat): Etat {
     ...x,
     contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
     activites: (x.activites || []).slice(),
+    // Téléphone au format français lisible (06 13 88 67 56) : corrige les
+    // anciens numéros bruts « 33698824873 » venus de Ringover. Le matching
+    // téléphonique (normTel) ignore les espaces — aucun impact recherche.
+    tel: formaterTelFr(x.tel),
     // Devis archivés : même logique de migration douce que les activités.
     devisHistorique: (x.devisHistorique || []).slice(),
   }));
@@ -576,6 +586,7 @@ function normaliser(s: Etat): Etat {
   const contacts = (s.contacts || []).map((x) => ({
     ...x,
     entrepriseIds: x.entrepriseIds || ((x as { entrepriseId?: string }).entrepriseId ? [(x as { entrepriseId: string }).entrepriseId] : []),
+    tel: formaterTelFr(x.tel),
   }));
   const deals = (s.deals || []).map((x) => ({ ...x }));
 

@@ -247,6 +247,13 @@ export default async function handler(req: any, res: any) {
   }
 
   const normeTel = (t: any) => { const x = String(t || "").replace(/\D/g, ""); return x.startsWith("33") && x.length === 11 ? "0" + x.slice(2) : x; };
+  // Format d'affichage français : 33698824873 → « 06 98 82 48 73 » (jamais « 33 69 88 24 87 3 »).
+  const formaterTelFr = (t: any): string => {
+  const d = String(t || "").replace(/\D/g, "");
+  const nat = d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d;
+  if (nat.length === 10 && nat.startsWith("0")) return nat.replace(/(\d{2})(?=\d)/g, "$1 ");
+  return String(t || "").trim();
+};
   let caller = String(d.caller_number ?? d.from ?? d.caller ?? d.from_number ?? d.source_number ?? "");
   let receiver = String(d.receiver_number ?? d.to ?? d.callee ?? d.to_number ?? d.destination_number ?? "");
   let duration = Number(d.duration ?? d.call_duration ?? 0) || 0;
@@ -518,11 +525,11 @@ export default async function handler(req: any, res: any) {
   const date = now.toLocaleTimeString("fr-FR", { timeZone: "Europe/Paris", hour: "2-digit", minute: "2-digit", hour12: false });
   const dureeTxt = duration ? Math.max(1, Math.round(duration / 60)) + " min" : "";
   const sens = entrant ? "entrant" : "sortant";
-  const numAffiche = (numeroClient || "").replace(/(\d{2})(?=\d)/g, "$1 ").trim();
+  const numAffiche = formaterTelFr(numeroClient);
   const act: any = {
     date, dateISO, heure: date, type: "appel", appelId,
     texte: "📞 Appel " + sens + (numeroClient ? (entrant ? " de " : " vers ") + numAffiche : "") + (dureeTxt ? " · " + dureeTxt : "") + (transcription ? "" : " (transcription en attente)"),
-    numeroAppel: numeroClient, directionAppel: sens, dureeAppel: dureeTxt,
+    numeroAppel: formaterTelFr(numeroClient), directionAppel: sens, dureeAppel: dureeTxt,
   };
   if (contactId) act.contactId = contactId;
   if (ia.resume) act.resumeIA = String(ia.resume) + (ia.action ? " → Action recommandée : " + ia.action : "");
@@ -539,7 +546,7 @@ export default async function handler(req: any, res: any) {
     const id = "e" + now.getTime();
     (etat.entreprises = etat.entreprises || []).push({
       id, nom: "Appel " + (numAffiche || "inconnu"), nomCommercial: "", secteur: "", ville: "", site: "",
-      tel: numeroClient, franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect",
+      tel: formaterTelFr(numeroClient), franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect",
       notes: "Fiche créée automatiquement par un appel Ringover " + sens + " non identifié dans le CRM. À qualifier (vérifier l'entreprise derrière ce numéro).",
       activites: [act], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "",
       immatriculations: "", modeles: [], contrats: [], risque: "",
