@@ -23,6 +23,8 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // contrat réel. ──
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
+  // Origine de la relation commerciale : Groupe Client, Demande entrante, Autre.
+  origine?: string;
   // ── Contrat & flotte (source : Sheet « Infos Service Client ») ──
   // Renseignés pour les SOCIÉTÉS CLIENTES : pack choisi, période du contrat,
   // nombre de véhicules, immatriculations. Comme tous les
@@ -546,6 +548,8 @@ function normaliser(s: Etat): Etat {
     pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "",
     // Migration « Risque » : champ absent des vieilles sauvegardes → vide.
     risque: "",
+    // Migration « Origine » : champ absent des vieilles sauvegardes → vide.
+    origine: "",
     modeles: [],
     ...x,
     contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
@@ -627,6 +631,8 @@ const label = "mb-1 block text-[11px] font-bold text-slate-500";
 const OPTIONS_FRANCHISEUR = ["Indépendant", "Domino's Pizza", "Burger King", "McDonald's", "KFC", "Subway", "Pizza Hut", "O'Tacos", "La Boîte à Pizza"];
 const OPTIONS_MODE_LIVRAISON = ["U'mob", "Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Uber Eats / Deliveroo", "Mixte"];
 const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", "Livraison de repas", "Boulangerie / Pâtisserie", "Commerce floral", "Alimentation bio", "Commerce de détail", "Services", "Autre"];
+// ── Origine de la relation (champ « Origine » du panneau À propos) ──
+const OPTIONS_ORIGINE = ["Groupe Client", "Demande entrante", "Autre"];
 // Valeurs du champ « Risque » (source Sheet SAV : Statut_risque_client,
 // Impayes, Procedure_collective). L'option vide « — » de ChampSelect vaut
 // « aucun risque signalé ».
@@ -2529,6 +2535,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                   piloté à 100 % par l'équipe commerciale (ni les API ni l'IA
                   ne « devinent » qu'un prospect est devenu client). */}
               <PropSelect label="Statut" valeur={e.statut} options={[...STATUTS]} onChange={(v) => onModifie({ statut: v as Statut })} />
+              {/* Origine de la relation : comment cette entreprise est entrée dans le CRM. */}
+              <PropSelect label="Origine" valeur={e.origine ?? ""} options={OPTIONS_ORIGINE} onChange={(v) => onModifie({ origine: v })} />
               <PropTexte label="Secteur" valeur={e.secteur} onChange={(v) => onModifie({ secteur: v })} />
               <PropTexte label="Ville" valeur={e.ville} onChange={(v) => onModifie({ ville: v })} />
               {/* Enseigne officielle (champ « nom commercial » de l'INSEE) avec
