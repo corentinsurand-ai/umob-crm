@@ -85,6 +85,16 @@ export default async function handler(req: any, res: any) {
     return res.status(502).json({ ok: false, status: rep.status, reponse: rep.body.slice(0, 500), note: "Format à calibrer — voir logs Vercel" });
   }
 
+  // --- Mode GET ?list=1 : LISTER les contacts côté Ringover (vérification) ---
+  if (req.method === "GET" && base.searchParams.get("list") === "1") {
+    const cleList = process.env.RINGOVER_API_KEY;
+    if (!cleList) return res.status(503).json({ erreur: "RINGOVER_API_KEY absente" });
+    const rep = await ringo("GET", "/contacts?limit_count=100", cleList);
+    let contacts: any = null;
+    try { contacts = JSON.parse(rep.body); } catch (e) { contacts = rep.body.slice(0, 500); }
+    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: Array.isArray(contacts) ? contacts.length : "?", apercu: Array.isArray(contacts) ? contacts.slice(0, 10) : contacts });
+  }
+
   // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
   const lancerSync = req.method === "GET" && base.searchParams.get("run") === "1";
   if (lancerSync) req.method = "POST-BATCH";
