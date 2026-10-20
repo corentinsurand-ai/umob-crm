@@ -474,7 +474,10 @@ export default async function handler(req: any, res: any) {
     const garbage = a.transcription && lignes.length >= 30 && lignes.every((l: string) => l.trim().split(/\s+/).length <= 3);
     if (garbage) delete a.transcription;
     let modifie = false;
-    if (transcription && !a.transcription) { a.transcription = transcription; modifie = true; }
+    // transcription : on remplit si absente, et on REMPLACE si la nouvelle est plus
+    // complète (appel long : le 1er événement peut stocker une transcription
+    // PARTIELE que l'événement tardif (summary/record_available) doit écraser)
+    if (transcription && (!a.transcription || transcription.length > String(a.transcription).length)) { a.transcription = transcription; modifie = true; }
     if (enregistrement && !a.urlEnregistrement) { a.urlEnregistrement = enregistrement; modifie = true; }
     if (ia.resume && !a.resumeIA) { a.resumeIA = String(ia.resume) + (ia.action ? " → Action recommandée : " + ia.action : ""); modifie = true; }
     if (ia.sentiment && !a.sentiment) { a.sentiment = String(ia.sentiment); modifie = true; }
