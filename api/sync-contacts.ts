@@ -15,7 +15,7 @@ interface Rep {
   body: string;
 }
 
-async function ringo(methode: string, chemin: string, cle: string, corps?: unknown): Promise<Rep> {
+async function ringo(methode: string, chemin: string, cle: string, corps?: unknown, maxCorp?: number): Promise<Rep> {
   try {
     const r = await fetch(API + chemin, {
       method: methode,
@@ -27,7 +27,7 @@ async function ringo(methode: string, chemin: string, cle: string, corps?: unkno
       body: corps ? JSON.stringify(corps) : undefined,
     });
     const t = await r.text();
-    return { status: r.status, body: t.slice(0, 2000) };
+    return { status: r.status, body: t.slice(0, maxCorp || 2000) };
   } catch (e) {
     return { status: 0, body: String(e) };
   }
@@ -82,7 +82,7 @@ export default async function handler(req: any, res: any) {
     // Anti-doublon : si le numéro existe déjà côté Ringover, on ne recrée pas
     let dejaU = false;
     try {
-      const repListeU = await ringo("GET", "/contacts?limit_count=100", cle);
+      const repListeU = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
       const du: any = JSON.parse(repListeU.body);
       const itemsU: any[] = Array.isArray(du) ? du : (du.contact_list || du.list || []);
       for (const it of itemsU) {
@@ -119,7 +119,7 @@ export default async function handler(req: any, res: any) {
     const parNumero = new Map<number, any[]>();
     let total = 0, structure: string[] = [];
     for (let page = 0; page < 5; page++) {
-      const rep = await ringo("GET", "/contacts?limit_count=100&limit_offset=" + (page * 100), cleP);
+      const rep = await ringo("GET", "/contacts?limit_count=100&limit_offset=" + (page * 100), cleP, undefined, 400000);
       if (rep.status < 200 || rep.status >= 300) return res.status(502).json({ erreur: "Liste illisible", status: rep.status, reponse: rep.body.slice(0, 300) });
       let data: any;
       try { data = JSON.parse(rep.body); } catch (e) { return res.status(502).json({ erreur: "JSON invalide", apercu: rep.body.slice(0, 300) }); }
@@ -155,7 +155,7 @@ export default async function handler(req: any, res: any) {
   if (req.method === "GET" && base.searchParams.get("list") === "1") {
     const cleList = process.env.RINGOVER_API_KEY;
     if (!cleList) return res.status(503).json({ erreur: "RINGOVER_API_KEY absente" });
-    const rep = await ringo("GET", "/contacts?limit_count=100", cleList);
+    const rep = await ringo("GET", "/contacts?limit_count=100", cleList, undefined, 400000);
     let contacts: any = null;
     try { contacts = JSON.parse(rep.body); } catch (e) { contacts = rep.body.slice(0, 500); }
     const liste = Array.isArray(contacts) ? contacts : (contacts && typeof contacts === "object" && Array.isArray(contacts.contact_list)) ? contacts.contact_list : (contacts && typeof contacts === "object" && Array.isArray(contacts.list)) ? contacts.list : null;
@@ -247,7 +247,7 @@ export default async function handler(req: any, res: any) {
   // 2bis. Numéros déjà présents côté Ringover (anti-doublon)
   const existants = new Set<number>();
   try {
-    const repListeB = await ringo("GET", "/contacts?limit_count=100", cle);
+    const repListeB = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
     const db: any = JSON.parse(repListeB.body);
     const itemsB: any[] = Array.isArray(db) ? db : (db.contact_list || db.list || []);
     for (const it of itemsB) {
