@@ -291,12 +291,14 @@ export default async function handler(req: any, res: any) {
   // 2bis. Numéros déjà présents côté Ringover (anti-doublon)
   const existants = new Set<number>();
   const cartesParNum = new Map<number, Set<number>[]>(); // num -> les cartes Ringover qui le portent
+  const cartesB: { nums: Set<number>; societe: string; prenom: string; nom: string }[] = [];
   try {
     const repListeB = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
     const db: any = JSON.parse(repListeB.body);
     const itemsB: any[] = Array.isArray(db) ? db : (db.contact_list || db.list || []);
     for (const it of itemsB) {
       const numsCarteB = new Set<number>((it.numbers || it.phone_numbers || []).map((n: any) => (typeof n === "object" ? n.number : n)));
+      cartesB.push({ nums: numsCarteB, societe: propre(it.company), prenom: propre(it.firstname), nom: propre(it.lastname) });
       for (const n of numsCarteB) {
         existants.add(n);
         if (!cartesParNum.has(n)) cartesParNum.set(n, []);
@@ -338,7 +340,12 @@ export default async function handler(req: any, res: any) {
     // (mobile + fixe société ensemble). Le fixe seul sur la carte société ne suffit pas.
     const carteComplete = numsCarte.length > 0 && numsCarte.some((n: number) =>
       (cartesParNum.get(n) || []).some((ens: Set<number>) => numsCarte.every((m: number) => ens.has(m))));
-    if (carteComplete) {
+    // Fiche SOCIÉTÉ (prénom/nom vides) : ne pas skipper parce qu'un EMPLOYÉ porte le fixe.
+    // Elle est conservée seulement s'il existe DÉJÀ une carte société du même nom avec ce numéro.
+    const estSociete = !c.prenom && !c.nom;
+    const societeDeja = estSociete && cartesB.some((cb) =>
+      !cb.prenom && !cb.nom && cb.societe === c.societe && cb.nums.has(numsCarte[0]));
+    if (carteComplete || societeDeja) {
       journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
       continue;
     }
