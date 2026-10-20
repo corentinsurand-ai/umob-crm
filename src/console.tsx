@@ -436,6 +436,7 @@ function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof cons
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-800 truncate">{entreprise.nomCommercial || entreprise.nom}</span>
                 {<EtoilesFlex a={a} adj={ajustements} />}
+              </div>
               <BadgeType a={a} />
               <div className="text-[10px] text-slate-400">{a.date} {a.heure || ""} · {a.directionAppel || "appel"} {a.dureeAppel ? "· " + a.dureeAppel : ""}</div>
               <div className="text-[11px] text-slate-500 line-clamp-2">{a.resumeIA || a.texte}</div>
