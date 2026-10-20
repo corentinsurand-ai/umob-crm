@@ -4681,7 +4681,13 @@ export default function App() {
     // inline → on pousse la fiche « société » vers l'annuaire (upsert par numéro).
     if (patch.tel !== undefined) {
       const e = etat.entreprises.find((x) => x.id === id);
-      if (e) syncRingover("", e.nomCommercial || e.nom, e.ville || "", patch.tel, "");
+      if (e) {
+        // Carte société (seulement utile si aucun contact ne porte le fixe)
+        syncRingover("", "", e.nomCommercial || e.nom, patch.tel, "", undefined, [e.tel]);
+        // Chaque contact de l'entreprise reçoit le nouveau fixe sur SA carte
+        etat.contacts.filter((ct) => ct.entrepriseIds && ct.entrepriseIds.includes(id)).forEach((ct) =>
+          syncRingover(ct.prenom, ct.nom, e.nomCommercial || e.nom, ct.tel, ct.email, patch.tel, [e.tel]));
+      }
     }
   };
 
@@ -4867,7 +4873,7 @@ export default function App() {
       if (!tel) return;
       const e0 = ct.entrepriseIds && ct.entrepriseIds[0];
       const ent0 = e0 ? etat.entreprises.find((x) => x.id === e0) : undefined;
-      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", tel, m.email || ct.email);
+      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", tel, m.email || ct.email, ent0 ? ent0.tel : "", tel !== ct.tel ? [ct.tel] : []);
     });
   };
 
@@ -4876,13 +4882,16 @@ export default function App() {
   //    Fire-and-forget : jamais de blocage de l'UI, échec silencieux (la
   //    sync complète GET ?run=1 rattrape ce qui aurait raté). Un numéro
   //    de moins de 9 chiffres n'est pas poussé. ──
-  const syncRingover = (prenom: string, nom: string, societe: string, tel: string, email: string) => {
-    const d = (tel || "").replace(/\D/g, "");
-    if (!d || d.length < 9) return;
+  const syncRingover = (prenom: string, nom: string, societe: string, tel: string, email: string, telEntreprise?: string, anciens?: string[]) => {
+    // Fusion contact + entreprise : une SEULE carte Ringover portant le mobile
+    // du contact ET le fixe de son entreprise (les deux sonneront sous son nom).
+    const okTel = (t: string) => (t || "").replace(/\D/g, "").length >= 9;
+    const tels = [tel, telEntreprise].filter(okTel);
+    if (!tels.length) return;
     fetch("/api/sync-contacts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contact: { prenom, nom, societe, tel, email } }),
+      body: JSON.stringify({ contact: { prenom, nom, societe, tel: tels[0], tels, email, anciens: (anciens || []).filter(okTel) } }),
     }).catch(() => { /* silencieux : jamais bloquer la sauvegarde CRM */ });
   };
 
@@ -4999,12 +5008,12 @@ export default function App() {
       const ct = donnees as Contact;
       const e0 = ct.entrepriseIds && ct.entrepriseIds[0];
       const ent0 = e0 ? etat.entreprises.find((x) => x.id === e0) : undefined;
-      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", ct.tel, ct.email);
+      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", ct.tel, ct.email, ent0 ? ent0.tel : "");
     }
     if (c.type === "entreprise") {
       const e2 = donnees as Entreprise;
-      syncRingover("", e2.nomCommercial || e2.nom, e2.ville || "", e2.tel, "");
-      (contactsAuto || []).forEach((ct) => { syncRingover(ct.prenom, ct.nom, e2.nomCommercial || e2.nom, ct.tel, ct.email); });
+      syncRingover("", "", e2.nomCommercial || e2.nom, e2.tel, "");
+      (contactsAuto || []).forEach((ct) => { syncRingover(ct.prenom, ct.nom, e2.nomCommercial || e2.nom, ct.tel, ct.email, e2.tel); });
     }
     setCible(null); // la modale se ferme après enregistrement
   };

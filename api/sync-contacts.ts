@@ -60,6 +60,7 @@ interface ContactCRM {
   nom: string;
   societe: string;
   tel: string;
+  tel2: string;
   email: string;
   cle: string;
 }
@@ -77,22 +78,29 @@ export default async function handler(req: any, res: any) {
     const telsBruts: string[] = Array.isArray(c.tels) ? c.tels.map((x: any) => propre(x)) : [propre(c.tel)];
     const tels = [...new Set(telsBruts.map(normTel).filter((x: string) => x && x.length >= 9))];
     if (!tels.length) return res.status(400).json({ erreur: "Numéro invalide", tel: propre(c.tel) });
+    const anciensBruts: string[] = Array.isArray(c.anciens) ? c.anciens.map((x: any) => propre(x)) : [];
+    const anciens = [...new Set(anciensBruts.map(normTel).filter((x: string) => x && x.length >= 9))];
     const prenom = propre(c.prenom);
     const nom = propre(c.nom);
     const societe = propre(c.societe);
     const email = propre(c.email);
     // UPSERT : supprimer les fiches Ringover existantes portant un de ces numéros,
     // puis recréer la carte à jour (le POST Ringover ne fait pas de mise à jour)
-    const numsEntiers = new Set(tels.map(telEntier));
+    const numsEntiers = new Set([...tels, ...anciens].map(telEntier));
     const aSupprimer: number[] = [];
     try {
       const repListeU = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
       const du: any = JSON.parse(repListeU.body);
       const itemsU: any[] = Array.isArray(du) ? du : (du.contact_list || du.list || []);
       for (const it of itemsU) {
-        for (const n of it.numbers || it.phone_numbers || []) {
-          if (numsEntiers.has(typeof n === "object" ? n.number : n)) aSupprimer.push(it.contact_id);
-        }
+        const numsIt = (it.numbers || it.phone_numbers || []).map((n: any) => (typeof n === "object" ? n.number : n));
+        if (!numsIt.some((n: any) => numsEntiers.has(n))) continue;
+        // COLLÈGUE PROTÉGÉ : une fiche NOMMÉE qui possède aussi un numéro
+        // hors de notre ensemble (autre employé partageant le fixe) ne nous
+        // concerne pas -> on la garde. Sinon c'est notre ancienne fiche.
+        const nommee = !!(it.firstname || it.lastname);
+        if (nommee && numsIt.some((n: any) => !numsEntiers.has(n))) continue;
+        aSupprimer.push(it.contact_id);
       }
     } catch (e) { /* liste illisible -> on tente la création */ }
     for (const idS of [...new Set(aSupprimer)]) {
@@ -245,23 +253,29 @@ export default async function handler(req: any, res: any) {
     const tel = normTel(propre(c.tel));
     if (!tel || tel.length < 9 || vus.has(tel)) continue;
     vus.add(tel);
+    const entC = c.entrepriseIds && c.entrepriseIds[0] ? entreprises.find((x) => x.id === c.entrepriseIds[0]) : undefined;
     aPousser.push({
       prenom: propre(c.prenom),
       nom: propre(c.nom),
       societe: c.entrepriseIds && c.entrepriseIds.length ? nomDe(c.entrepriseIds[0]) : propre(c.entreprise || c.societe),
-      tel, email: propre(c.email), cle: tel,
+      tel,
+      tel2: entC ? normTel(propre(entC.tel)) : "",
+      email: propre(c.email), cle: tel,
     });
   }
   // Entreprises avec téléphone fixe -> contact "société"
   for (const e of entreprises) {
     const tel = normTel(propre(e.tel));
     if (!tel || tel.length < 9 || vus.has(tel)) continue;
+    // Le fixe est porté par la carte d'un contact (fusion) -> pas de fiche société séparée
+    const porteur = contacts.find((c) => c.entrepriseIds && c.entrepriseIds.includes(e.id) && normTel(propre(c.tel)).length >= 9);
+    if (porteur) continue;
     vus.add(tel);
     aPousser.push({
       prenom: "",
       nom: "",
       societe: propre(e.nomCommercial || e.nom),
-      tel, email: "", cle: tel,
+      tel, tel2: "", email: "", cle: tel,
     });
   }
 
@@ -288,7 +302,7 @@ export default async function handler(req: any, res: any) {
   // 2quater. Mode rebuild : supprimer d'abord TOUTES les fiches Ringover portant un numéro du CRM
   let supprimesR: any[] = [];
   if (modeRebuild) {
-    const mesNums = new Set(aPousser.map((c) => telEntier(c.tel)));
+    const mesNums = new Set(aPousser.flatMap((c) => [c.tel, c.tel2].filter(Boolean).map(telEntier)));
     for (let pageR = 0; pageR < 5; pageR++) {
       const rep = await ringo("GET", "/contacts?limit_count=100&limit_offset=" + (pageR * 100), cle, undefined, 400000);
       if (rep.status < 200 || rep.status >= 300) break;
@@ -313,7 +327,7 @@ export default async function handler(req: any, res: any) {
   const journal: any[] = [];
   let ok = 0, erreurs = 0;
   for (const c of aPousser.slice(0, 300)) {
-    if (existants.has(telEntier(c.tel))) {
+    if (existants.has(telEntier(c.tel)) || (c.tel2 && existants.has(telEntier(c.tel2)))) {
       journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
       continue;
     }
@@ -324,7 +338,7 @@ export default async function handler(req: any, res: any) {
         lastname: c.nom,
         company: c.societe,
         is_shared: true,
-        numbers: [{ number: telEntier(c.tel), type: "other" }],
+        numbers: [{ number: telEntier(c.tel), type: "other" }].concat(c.tel2 ? [{ number: telEntier(c.tel2), type: "other" }] : []),
       }],
     };
     if (c.email) corps.contacts[0].email = c.email;
