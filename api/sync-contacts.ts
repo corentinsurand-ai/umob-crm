@@ -65,18 +65,22 @@ export default async function handler(req: any, res: any) {
     const c = req.body.contact as any;
     const tel = normTel(propre(c.tel));
     if (!tel || tel.length < 9) return res.status(400).json({ erreur: "Numéro invalide", tel: propre(c.tel) });
-    const corps: any = { phone_numbers: [{ number: tel }] };
     const prenom = propre(c.prenom);
     const nom = propre(c.nom);
-    if (prenom || nom) {
-      corps.firstname = prenom;
-      corps.lastname = nom;
-    } else {
-      corps.lastname = nom || "Inconnu";
-    }
     const societe = propre(c.societe);
-    if (societe) corps.company = societe;
-    if (propre(c.email)) corps.email = propre(c.email);
+    const email = propre(c.email);
+    // Format OFFICIEL validé (source : connecteur Pipedream Ringover create-contact) :
+    // {contacts:[{firstname, lastname, company, is_shared, numbers:[{number, type}]}]}
+    const corps: any = {
+      contacts: [{
+        firstname: prenom || (societe ? societe : ""),
+        lastname: nom || "Inconnu",
+        company: societe,
+        is_shared: true,
+        numbers: [{ number: tel, type: "other" }],
+      }],
+    };
+    if (email) corps.contacts[0].email = email;
     const rep = await ringo("POST", "/contacts", cle, corps);
     console.log("SYNC CONTACT (unitaire)", JSON.stringify({ tel, nom: (prenom + " " + nom).trim(), status: rep.status, reponse: rep.body }));
     if (rep.status >= 200 && rep.status < 300) {
@@ -92,7 +96,8 @@ export default async function handler(req: any, res: any) {
     const rep = await ringo("GET", "/contacts?limit_count=100", cleList);
     let contacts: any = null;
     try { contacts = JSON.parse(rep.body); } catch (e) { contacts = rep.body.slice(0, 500); }
-    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: Array.isArray(contacts) ? contacts.length : "?", apercu: Array.isArray(contacts) ? contacts.slice(0, 10) : contacts });
+    const liste = Array.isArray(contacts) ? contacts : (contacts && typeof contacts === "object" && Array.isArray(contacts.contact_list)) ? contacts.contact_list : (contacts && typeof contacts === "object" && Array.isArray(contacts.list)) ? contacts.list : null;
+    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: liste ? liste.length : "?", apercu: liste ? liste.slice(0, 10) : contacts });
   }
 
   // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
@@ -181,15 +186,17 @@ export default async function handler(req: any, res: any) {
   const journal: any[] = [];
   let ok = 0, erreurs = 0;
   for (const c of aPousser.slice(0, 300)) {
-    const corps: any = { phone_numbers: [{ number: c.tel }] };
-    if (c.prenom || c.nom) {
-      corps.firstname = c.prenom;
-      corps.lastname = c.nom;
-    } else {
-      corps.lastname = c.nom || "Inconnu";
-    }
-    if (c.societe) corps.company = c.societe;
-    if (c.email) corps.email = c.email;
+    // Format OFFICIEL (cf. mode unitaire) : {contacts:[{...}], is_shared}
+    const corps: any = {
+      contacts: [{
+        firstname: c.prenom || (c.societe ? c.societe : ""),
+        lastname: c.nom || "Inconnu",
+        company: c.societe,
+        is_shared: true,
+        numbers: [{ number: c.tel, type: "other" }],
+      }],
+    };
+    if (c.email) corps.contacts[0].email = c.email;
     const rep = await ringo("POST", "/contacts", cle, corps);
     journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: rep.status, reponse: rep.body.slice(0, 400) });
     if (rep.status >= 200 && rep.status < 300) ok++; else erreurs++;
