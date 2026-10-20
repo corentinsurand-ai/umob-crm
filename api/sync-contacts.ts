@@ -334,6 +334,8 @@ export default async function handler(req: any, res: any) {
       if (itemsR.length < 100) break;
     }
     existants.clear();
+    cartesB.length = 0;
+    cartesParNum.clear();
   }
 
   // 3. Pousser vers Ringover (upsert), 2 req/s max
