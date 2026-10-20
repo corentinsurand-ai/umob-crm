@@ -33,6 +33,16 @@ async function ringo(methode: string, chemin: string, cle: string, corps?: unkno
   }
 }
 
+// Conversion pour l'API Ringover : numbers[].number doit être un ENTIER au
+// format international (33684625266), JAMAIS une chaîne ni un 0 initial
+// (erreur 400 « expected integer » validée sur les vraies réponses).
+function telEntier(tel: string): number {
+  const d = (tel || "").replace(/\D/g, "");
+  if (!d) return 0;
+  if (d.startsWith("0")) return parseInt("33" + d.slice(1), 10);
+  return parseInt(d, 10);
+}
+
 // Normalisation de téléphone : chiffres, 33 <-> 0
 function normTel(s: string): string {
   const d = (s || "").replace(/\D/g, "");
@@ -77,7 +87,7 @@ export default async function handler(req: any, res: any) {
         lastname: nom || "Inconnu",
         company: societe,
         is_shared: true,
-        numbers: [{ number: tel, type: "other" }],
+        numbers: [{ number: telEntier(tel), type: "other" }],
       }],
     };
     if (email) corps.contacts[0].email = email;
@@ -193,7 +203,7 @@ export default async function handler(req: any, res: any) {
         lastname: c.nom || "Inconnu",
         company: c.societe,
         is_shared: true,
-        numbers: [{ number: c.tel, type: "other" }],
+        numbers: [{ number: telEntier(c.tel), type: "other" }],
       }],
     };
     if (c.email) corps.contacts[0].email = c.email;
