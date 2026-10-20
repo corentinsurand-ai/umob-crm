@@ -289,7 +289,7 @@ export default async function handler(req: any, res: any) {
 
   // 2bis. Numéros déjà présents côté Ringover (anti-doublon)
   const existants = new Set<number>();
-  const cartesParNum = new Map<number, Set<number>>(); // num -> ensemble des num de SA carte
+  const cartesParNum = new Map<number, Set<number>[]>(); // num -> les cartes Ringover qui le portent
   try {
     const repListeB = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
     const db: any = JSON.parse(repListeB.body);
@@ -298,8 +298,8 @@ export default async function handler(req: any, res: any) {
       const numsCarteB = new Set<number>((it.numbers || it.phone_numbers || []).map((n: any) => (typeof n === "object" ? n.number : n)));
       for (const n of numsCarteB) {
         existants.add(n);
-        if (!cartesParNum.has(n)) cartesParNum.set(n, numsCarteB);
-        else cartesParNum.get(n)!.forEach = numsCarteB.forEach;
+        if (!cartesParNum.has(n)) cartesParNum.set(n, []);
+        cartesParNum.get(n).push(numsCarteB);
       }
     }
   } catch (e) { /* liste illisible */ }
@@ -335,10 +335,8 @@ export default async function handler(req: any, res: any) {
     const numsCarte = [...new Set([c.tel, c.tel2].filter(Boolean).map(telEntier))];
     // Skip seulement si UNE MÊME carte Ringover porte DÉJÀ TOUS les numéros
     // (mobile + fixe société ensemble). Le fixe seul sur la carte société ne suffit pas.
-    const carteComplete = numsCarte.length > 0 && numsCarte.some((n: number) => {
-      const ens = cartesParNum.get(n);
-      return !!ens && numsCarte.every((m: number) => ens.has(m));
-    });
+    const carteComplete = numsCarte.length > 0 && numsCarte.some((n: number) =>
+      (cartesParNum.get(n) || []).some((ens: Set<number>) => numsCarte.every((m: number) => ens.has(m))));
     if (carteComplete) {
       journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
       continue;
