@@ -326,7 +326,9 @@ export default async function handler(req: any, res: any) {
   const journal: any[] = [];
   let ok = 0, erreurs = 0;
   for (const c of aPousser.slice(0, 300)) {
-    if (existants.has(telEntier(c.tel)) || (c.tel2 && existants.has(telEntier(c.tel2)))) {
+    const numsCarte = [...new Set([c.tel, c.tel2].filter(Boolean).map(telEntier))];
+    // Skip seulement si TOUS les numéros de la carte (mobile + fixe société) sont déjà côté Ringover
+    if (numsCarte.length > 0 && numsCarte.every((n: number) => existants.has(n))) {
       journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
       continue;
     }
