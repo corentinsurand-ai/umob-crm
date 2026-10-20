@@ -465,7 +465,7 @@ function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof cons
               {actif.a.scorecard && (
                 <div className="mt-2 rounded-lg bg-white/80 p-2.5">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob — version téléphone (notes cliquables, N/A exclus)</div>
-const SCORECARD_NOUVEAU = `                  <div className="mb-2 flex items-start gap-2 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-[10.5px]">
+                  <div className="mb-2 flex items-start gap-2 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-[10.5px]">
                     <span>🔎 <b>Type d'appel analysé :</b> {TYPE_LABEL[typeAuto(actif.a)]}</span>
                     <span className="ml-auto font-bold text-slate-500">{CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length} critères notés · les autres N/A (exclus)</span>
                   </div>
@@ -488,7 +488,7 @@ const SCORECARD_NOUVEAU = `                  <div className="mb-2 flex items-sta
                     {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length === 0 && (
                       <div className="text-[10.5px] text-slate-400">Aucun critère applicable à ce type d'appel — rien d'autre à noter.</div>
                     )}
-                  </div>`;
+                  </div>
                 </div>
               )}
             </div>
