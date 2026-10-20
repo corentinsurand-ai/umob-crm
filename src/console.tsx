@@ -1,12 +1,18 @@
 import React, { useMemo, useState } from "react";
 
 /* ══════════════════════════════════════════════════════════════════════════
-   CONSOLE MANAGER — vue réservée à Corentin (onglet visible uniquement pour
-   corentin.surand@umob.fr). 100 % ALIMENTÉE PAR LE CRM : entreprises, deals,
-   contacts et activités d'appel (webhook RingOver → analyse Mistral). Aucune
-   donnée fictive : ce qui n'existe pas encore s'affiche vide avec une note
-   « se remplira avec les appels ». Règle anti-invention : un champ que la
-   source ne connaît pas reste vide, jamais déduit.
+   CONSOLE MANAGER — POSTE DE COMMANDEMENT (façon Modjo manager view).
+   Vue réservée à Corentin (onglet visible uniquement pour
+   corentin.surand@umob.fr). Le manager pilote SON ÉQUIPE (dont lui-même,
+   qui passe aussi des appels). 100 % ALIMENTÉE PAR LE CRM : entreprises,
+   deals, contacts et activités d'appel (webhook RingOver → analyse Mistral).
+   RÈGLE ANTI-INVENTION : aucun champ déduit, aucune donnée fictive —
+   Léa/Tom de la maquette ne sont PAS en prod ; les futurs commerciaux
+   apparaîtront automatiquement dès que leurs appels seront attribués
+   (champ commercial sur l'activité, alimenté par les comptes RingOver).
+   Scoring souple version téléphone : type d'appel auto, critères non
+   applicables N/A exclus de la moyenne, notes ajustables par le manager,
+   grille visible par tous.
    ══════════════════════════════════════════════════════════════════════════ */
 
 // Types minimaux (l'état réel vient d'App.tsx — on ne lit que ces champs).
@@ -14,6 +20,7 @@ interface ActiviteC {
   date: string; texte: string; type?: string; echeance?: string; dateISO?: string; heure?: string;
   resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number;
   transcription?: string; urlEnregistrement?: string; directionAppel?: string; dureeAppel?: string;
+  appelId?: string; commercial?: string;
   scorecard?: { [k: string]: { note: number; j: string } };
 }
 interface EntrepriseC {
@@ -49,6 +56,7 @@ const badgeSentiment = (s?: string) => {
     <span className={"rounded-full px-2 py-0.5 text-[10px] font-semibold " + (ok ? "bg-emerald-50 text-emerald-700" : ko ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600")}>{s}</span>
   );
 };
+const negatif = (a: ActiviteC) => (a.sentiment || "").toLowerCase().includes("nega") || (a.sentiment || "").includes("nég");
 
 /* ————— Scorecard Plan de vente U'mob, version téléphone (7 critères du
    référentiel fourni par Corentin : accueil, découverte flotte & coûts,
@@ -140,6 +148,30 @@ const EtoilesFlex = ({ a, adj }: { a: ActiviteC; adj?: Ajustements }) => {
 const BadgeType = ({ a }: { a: ActiviteC }) => (
   <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[9.5px] font-bold text-slate-500">{TYPE_LABEL[typeAuto(a)]}</span>
 );
+
+/* ————— ÉQUIPE ————— Le manager EST dans l'équipe (carte « MOI », avec ses
+   propres appels). RÈGLE ANTI-INVENTION : aucun membre fictif. Pour l'instant
+   tous les appels du CRM sont ceux de Corentin (seule ligne existante) ;
+   les futurs commerciaux apparaîtront automatiquement ici dès que le champ
+   « commercial » sera alimenté sur leurs appels (comptes RingOver). */
+interface Membre { id: string; nom: string; role: string; initiales: string; moi: boolean }
+const MOI: Membre = { id: "corentin", nom: "Corentin Surand", role: "Manager · passe aussi des appels", initiales: "CS", moi: true };
+const commercialDe = (a: ActiviteC) => (a.commercial || "").trim() || "corentin";
+const membresEquipe = (appels: { a: ActiviteC }[]): Membre[] => {
+  const ids = new Set(appels.map(({ a }) => commercialDe(a)).filter((x) => x !== "corentin"));
+  return [MOI, ...[...ids].map((id) => ({ id, nom: id, role: "Commercial · détecté via RingOver", initiales: id.slice(0, 2).toUpperCase(), moi: false }))];
+};
+const prenomDe = (id: string, membres: Membre[]) => {
+  const m = membres.find((x) => x.id === id);
+  return !m ? id : m.moi ? "Moi" : m.nom.split(" ")[0];
+};
+
+/* ————— PLAYLISTS (best practices de l'équipe) ————— artefacts du manager,
+   persistés dans son navigateur. Items = extraits d'appels RÉELS du CRM. */
+interface ItemPlaylist { cle: string; titre: string }
+interface Playlist { id: string; nom: string; items: ItemPlaylist[] }
+const CLE_PL = "umob-console-playlists";
+const lirePlaylists = (): Playlist[] => { try { const p = JSON.parse(localStorage.getItem(CLE_PL) || "[]"); return Array.isArray(p) ? p : []; } catch { return []; } };
 
 /* ————— GRILLE DE SCORING (onglet, visible manager ET collaborateurs) ————— */
 const GRILLE: { type: TypeAppel; titre: string; sous: string; lignes: [string, string][] }[] = [
@@ -259,6 +291,7 @@ const cleDate = (d?: string): number => {
 };
 const aujourdhui = () => { const p = new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Paris" }).split("-").map(Number); return p[0] * 10000 + p[1] * 100 + p[2]; }; // heure de Paris
 const ilYA = (jours: number) => aujourdhui() - jours; // approximatif en jours calendaires compacts (ok pour des tris 7/30 j)
+const dateLongue = () => new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", timeZone: "Europe/Paris" });
 
 /* ————— Détection du mode de livraison ————— RÈGLE ANTI-INVENTION : la valeur
    vient UNIQUEMENT du champ modeLivraison de la fiche ; vide = « à qualifier »,
@@ -288,7 +321,7 @@ const construire = (etat: EtatConsole) => {
   ).sort((x, y) => cleDate(y.a.dateISO) - cleDate(x.a.dateISO) || (y.a.heure || "").localeCompare(x.a.heure || ""));
 
   // Les appels « analysés » (webhook) vs consignés à la main.
-  const analyses = appels.filter((x) => x.a.resumeIA || x.a.sentiment || x.a.scoreIA != null);
+  const analyses = appels.filter((x) => x.a.resumeIA || x.a.sentiment || x.a.a.scoreIA != null);
   const taches = etat.entreprises.flatMap((e) =>
     (e.activites || []).filter((a) => a.type === "tache" && a.echeance).map((a) => ({ entreprise: e, a }))
   );
@@ -335,9 +368,8 @@ const BarreMix = ({ m, total }: { m: any; total: number }) => {
   );
 };
 
-/* ═══════════════════ BRIEF DU MATIN ═══════════════════ */
-function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsole }) {
-  // Devis consolidés depuis les fiches entreprises (pour la synthèse + la carte relances).
+/* ═══════════════════ BRIEF DU MANAGER (façon Modjo) ═══════════════════ */
+function Brief({ d, etat, ajustements, onEcouter }: { d: ReturnType<typeof construire>; etat: EtatConsole; ajustements: Ajustements; onEcouter: () => void }) {
   const AUJ = aujourdhui();
   const cleD = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
   const devis = etat.entreprises.flatMap((e) => (e.devisHistorique || []).map((dv) => ({ e, dv })));
@@ -346,27 +378,97 @@ function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
   const devisAcceptes = devis.filter((x) => stD(x) === "accepte");
   const devisRetard = devisEnvoyes.filter((x) => x.dv.dateRelanceFr && cleD(x.dv.dateRelanceFr) <= AUJ);
   const _7j = d.appels.filter((x) => cleDate(x.a.dateISO) >= ilYA(7));
-  const aEcouter = d.analyses.filter((x) => (x.a.scoreIA ?? 3) <= 2).slice(0, 3);
   const duJour = d.taches.filter((x) => cleDate(x.a.echeance) <= aujourdhui());
-  const negatifs = d.analyses.filter((x) => (x.a.sentiment || "").toLowerCase().includes("nega") || (x.a.sentiment || "").includes("nég")).slice(0, 3);
+  const membres = membresEquipe(d.appels);
+
+  // 🚨 À traiter par le manager : appels scorés faibles ou à sentiment négatif (données réelles uniquement).
+  const aTraiter = d.appels.filter(({ a }) =>
+    (a.scorecard && (scoreFlexible(a, ajustements) ?? 2) <= 1.2) || negatif(a)
+  ).slice(0, 4);
+
+  // 🎓 Actions de coaching DÉDUITES des vrais scores : critères les plus faibles / plus forts par personne.
+  const actionsCoaching = membres.map((m) => {
+    const as = d.appels.filter(({ a }) => commercialDe(a) === m.id);
+    const parCritere = CRITERES.map(([k, l]) => {
+      const notes = as.filter(({ a }) => estApplicable(a, k, ajustements)).map(({ a }) => noteEffective(a, k, ajustements));
+      return { l, moy: notes.length ? notes.reduce((x, y) => x + y, 0) / notes.length : null };
+    }).filter((x) => x.moy !== null).sort((x, y) => (x.moy! - y.moy!));
+    return { m, faibles: parCritere.slice(0, 2), force: parCritere.length ? parCritere[parCritere.length - 1] : null, nbAppels: as.length };
+  });
+
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl bg-gradient-to-r from-teal-600 to-cyan-700 p-5 text-white">
+        <div className="text-[11px] font-bold uppercase tracking-widest opacity-80">Brief du manager · {dateLongue()}</div>
+        <div className="mt-1 text-lg font-black">Bonjour Corentin 👋 — {_7j.length} appel{_7j.length > 1 ? "s" : ""} sur les 7 derniers jours · {membres.length} membre{membres.length > 1 ? "s" : ""} suivi{membres.length > 1 ? "s" : ""} (dont toi)</div>
+        <div className="mt-1 text-[12px] opacity-90">2 minutes : qui a besoin de toi aujourd'hui, quoi écouter, quoi coacher.</div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {membres.map((m) => {
+          const as = d.appels.filter(({ a }) => commercialDe(a) === m.id);
+          const scores = as.map(({ a }) => scoreFlexible(a, ajustements)).filter((x): x is number => x !== null);
+          const moy = scores.length ? Math.round((scores.reduce((x, y) => x + y, 0) / scores.length) * 10) / 10 : null;
+          const nb7j = as.filter(({ a }) => cleDate(a.dateISO) >= ilYA(7)).length;
+          return (
+            <Card key={m.id} className={m.moi ? "border-cyan-300" : ""}>
+              <div className="flex items-center gap-2.5">
+                <span className={"flex h-9 w-9 items-center justify-center rounded-full text-[12px] font-black text-white " + (m.moi ? "bg-gradient-to-br from-teal-500 to-cyan-600" : "bg-slate-300")}>{m.initiales}</span>
+                <div className="min-w-0">
+                  <div className="text-[13px] font-black text-slate-800">{m.nom}{m.moi && <span className="ml-1.5 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[8.5px] font-bold text-cyan-700">MOI</span>}</div>
+                  <div className="text-[10px] text-slate-400">{m.role}</div>
+                </div>
+                <span className="ml-auto">{moy !== null ? <Etoiles score={Math.round((moy / 2) * 5)} /> : null}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-1.5 text-center text-[10px]">
+                <div className="rounded-lg bg-slate-50 py-1.5"><b className="block text-[15px] text-slate-800">{nb7j}</b><span className="text-slate-400">appels 7 j</span></div>
+                <div className="rounded-lg bg-slate-50 py-1.5"><b className="block text-[15px] text-slate-800">{moy ?? "—"}/2</b><span className="text-slate-400">score</span></div>
+                <div className="rounded-lg bg-slate-50 py-1.5"><b className="block text-[15px] text-slate-800">{as.length}</b><span className="text-slate-400">total</span></div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
       <Card>
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">☀️ Brief du matin</div>
-        <div className="text-sm text-slate-700 mt-1 leading-relaxed">
-          {d.appels.length === 0 ? (
-            <>Aucun appel consigné pour l'instant. Dès que des appels passent par RingOver (ou via le bouton « Consigner »), ils apparaissent ici avec leur analyse IA.</>
-          ) : (
-            <>
-              <b>{d.appels.length}</b> appel{d.appels.length > 1 ? "s" : ""} consigné{d.appels.length > 1 ? "s" : ""} au total,
-              dont <b>{_7j.length}</b> sur les 7 derniers jours et <b>{d.analyses.length}</b> analysé{d.analyses.length > 1 ? "s" : ""} par l'IA
-              {negatifs.length > 0 ? `, ${negatifs.length} avec un sentiment négatif à revoir` : ""}.
-              {duJour.length > 0 ? ` ${duJour.length} tâche${duJour.length > 1 ? "s" : ""} arrivée${duJour.length > 1 ? "s" : ""} à échéance aujourd'hui ou en retard.` : ""}
-              {devis.length > 0 ? <> {" "}<span className="bg-cyan-50 px-1 rounded">Côté devis : <b>{devisEnvoyes.length}</b> en cours chez le client, dont <b className="text-rose-600">{devisRetard.length}</b> à RELANCER{devisAcceptes.length > 0 ? ", " + devisAcceptes.length + " accepté" + (devisAcceptes.length > 1 ? "s" : "") + " 🎉" : ""}.</span></> : null}
-            </>
-          )}
-        </div>
+        <div className="text-sm font-bold mb-2">🚨 À traiter par le manager aujourd'hui</div>
+        {aTraiter.length === 0 ? <div className="text-xs text-slate-400">Rien d'urgent signalé — pas d'appel faible ni de sentiment négatif détecté 🎉</div> : (
+          <div className="space-y-1.5">
+            {aTraiter.map(({ entreprise, a }) => (
+              <button key={cleAppel(a)} onClick={onEcouter} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-slate-50">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-50 text-rose-600">▶</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] font-bold text-slate-800">{entreprise.nomCommercial || entreprise.nom} · {prenomDe(commercialDe(a), membres)}</span>
+                  <span className="block truncate text-[11px] text-slate-500">{(a.resumeIA || a.texte || "").slice(0, 90)}</span>
+                </span>
+                <span className="text-right shrink-0">
+                  <EtoilesFlex a={a} adj={ajustements} />
+                  <span className="block text-[9px] font-bold text-slate-400">{negatif(a) ? "sentiment négatif" : TYPE_LABEL[typeAuto(a)]}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </Card>
+
+      <Card>
+        <div className="text-sm font-bold mb-2">🎓 Actions de coaching repérées (déduites des scores réels)</div>
+        {d.appels.length === 0 ? <div className="text-xs text-slate-400">Les actions apparaîtront dès les premiers appels scorés par l'IA.</div> : (
+          <div className="space-y-1.5 text-[12px] text-slate-600">
+            {actionsCoaching.map(({ m, faibles, force, nbAppels }) => (
+              nbAppels === 0 ? null : (
+                <div key={m.id} className="space-y-1">
+                  {faibles.map((f) => (
+                    <div key={f.l} className="rounded-lg bg-amber-50 px-3 py-2"><b>{m.moi ? "Toi (manager)" : m.nom} — {f.l} :</b> moyenne {Math.round(f.moy! * 10) / 10}/2 — à retravailler (réécoute + grille de scoring).</div>
+                  ))}
+                  {force && <div className="rounded-lg bg-emerald-50 px-3 py-2"><b>{m.moi ? "Toi (manager)" : m.nom} — force à répliquer :</b> {force.l} ({Math.round(force.moy! * 10) / 10}/2) — extraits à mettre en playlist pour l'équipe.</div>}
+                </div>
+              )
+            ))}
+          </div>
+        )}
+      </Card>
+
       {devisRetard.length > 0 && (
         <Card className="border-rose-200 bg-rose-50">
           <div className="font-semibold text-rose-700 mb-2 text-sm">🧾 Devis à relancer ({devisRetard.length})</div>
@@ -377,16 +479,7 @@ function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
           ))}
         </Card>
       )}
-      {negatifs.length > 0 && (
-        <Card>
-          <div className="font-semibold text-rose-700 mb-2 text-sm">⚠️ Appels à sentiment négatif</div>
-          {negatifs.map(({ entreprise, a }, i) => (
-            <div key={i} className="rounded-lg bg-rose-50/60 px-3 py-2 mb-1 text-xs">
-              <b>{entreprise.nomCommercial || entreprise.nom}</b> · {a.date} — {a.resumeIA || a.texte}
-            </div>
-          ))}
-        </Card>
-      )}
+
       {duJour.length > 0 && (
         <Card>
           <div className="font-semibold text-slate-800 mb-2 text-sm">✅ À faire aujourd'hui</div>
@@ -397,115 +490,247 @@ function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
           ))}
         </Card>
       )}
-      {aEcouter.length > 0 && (
-        <Card>
-          <div className="font-semibold text-slate-800 mb-2 text-sm">🎧 À réécouter (score IA ≤ 2)</div>
-          {aEcouter.map(({ entreprise, a }, i) => (
-            <div key={i} className="text-xs text-slate-600 py-1 border-t border-slate-100 first:border-0">
-              <b>{entreprise.nomCommercial || entreprise.nom}</b> · {a.date} — {a.resumeIA || a.texte} {a.urlEnregistrement && <a className="text-cyan-700 font-semibold" href={a.urlEnregistrement} target="_blank" rel="noreferrer">▶️ écouter</a>}
-            </div>
-          ))}
-        </Card>
-      )}
     </div>
   );
 }
 
-/* ═══════════════════ CONVERSATIONS ═══════════════════ */
-function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof construire>; ajustements: Ajustements; onAjuste: (a: ActiviteC, cle: string, note: NoteFlexible) => void }) {
+/* ═══════════════════ ÉQUIPE (vue manager, façon Modjo) ═══════════════════ */
+function Equipe({ d, ajustements, onVoir }: { d: ReturnType<typeof construire>; ajustements: Ajustements; onVoir: (commercialId: string) => void }) {
+  const membres = membresEquipe(d.appels);
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl bg-gradient-to-r from-teal-600 to-cyan-700 p-4 text-white">
+        <div className="text-base font-black">👥 Vue équipe — un coup d'œil par commercial</div>
+        <div className="mt-1 text-[12px] opacity-90">Tous les appels du CRM sont pour l'instant les tiens — la carte « MOI · manager » les regroupe. Les futurs commerciaux apparaîtront automatiquement dès que leurs lignes RingOver enregistreront des appels (attribution par compte, zéro création manuelle).</div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {membres.map((m) => {
+          const as = d.appels.filter(({ a }) => commercialDe(a) === m.id);
+          const scores = as.map(({ a }) => scoreFlexible(a, ajustements)).filter((x): x is number => x !== null);
+          const moy = scores.length ? Math.round((scores.reduce((x, y) => x + y, 0) / scores.length) * 10) / 10 : null;
+          const nb7j = as.filter(({ a }) => cleDate(a.dateISO) >= ilYA(7)).length;
+          const parType = (["prospection", "entrant", "premier", "suivi", "renouvellement"] as TypeAppel[]).map((t) => ({ t, n: as.filter(({ a }) => typeAuto(a) === t).length })).filter((x) => x.n > 0);
+          return (
+            <Card key={m.id} className={m.moi ? "border-cyan-300" : ""}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className={"flex h-10 w-10 items-center justify-center rounded-full font-black text-white " + (m.moi ? "bg-gradient-to-br from-teal-500 to-cyan-600" : "bg-slate-300")}>{m.initiales}</span>
+                  <div>
+                    <div className="text-sm font-black text-slate-800">{m.nom}{m.moi && <span className="ml-1.5 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[8.5px] font-bold text-cyan-700">MOI · manager</span>}</div>
+                    <div className="text-[11px] text-slate-400">{m.role}</div>
+                  </div>
+                </div>
+                {moy !== null && <Etoiles score={Math.round((moy / 2) * 5)} />}
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-xl bg-slate-50 py-2"><div className="text-lg font-black text-slate-800">{nb7j}</div><div className="text-[9.5px] font-bold uppercase text-slate-400">appels 7 j</div></div>
+                <div className="rounded-xl bg-slate-50 py-2"><div className="text-lg font-black text-slate-800">{moy ?? "—"}/2</div><div className="text-[9.5px] font-bold uppercase text-slate-400">score applicable</div></div>
+                <div className="rounded-xl bg-slate-50 py-2"><div className="text-lg font-black text-slate-800">{as.length}</div><div className="text-[9.5px] font-bold uppercase text-slate-400">appels total</div></div>
+              </div>
+              <div className="mt-2.5 flex flex-wrap gap-1">
+                {parType.map((x) => (
+                  <span key={x.t} className="rounded-full border border-slate-200 px-2 py-0.5 text-[9.5px] font-bold text-slate-500">{TYPE_LABEL[x.t]} · {x.n}</span>
+                ))}
+                {parType.length === 0 && <span className="text-[10px] text-slate-400">se remplira automatiquement avec les appels</span>}
+              </div>
+              <button onClick={() => onVoir(m.id)} className="mt-3 w-full rounded-xl bg-slate-50 py-1.5 text-[11px] font-bold text-cyan-700 hover:bg-cyan-50">Voir ses conversations →</button>
+            </Card>
+          );
+        })}
+        <Card className="border-dashed">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-dashed border-slate-300 font-black text-slate-300">＋</span>
+            <div>
+              <div className="text-sm font-black text-slate-500">Futurs commerciaux</div>
+              <div className="text-[11px] text-slate-400">Leur carte se créera automatiquement dès le 1er appel passé sur leur ligne RingOver — rien à configurer, aucune donnée fictive.</div>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ CONVERSATIONS (filtre commercial + playlists) ═══════════════════ */
+function Conversations({ d, ajustements, onAjuste, filtre, onFiltre, playlists, onAjouterPlaylist }: {
+  d: ReturnType<typeof construire>; ajustements: Ajustements;
+  onAjuste: (a: ActiviteC, cle: string, note: NoteFlexible) => void;
+  filtre: string; onFiltre: (id: string) => void;
+  playlists: Playlist[]; onAjouterPlaylist: (playlistId: string, cle: string, titre: string) => void;
+}) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<string | null>(null);
+  const membres = membresEquipe(d.appels);
   const filtres = d.appels.filter(({ entreprise, a }) => {
+    if (filtre !== "tous" && commercialDe(a) !== filtre) return false;
     const s = (q || "").toLowerCase();
     return !s || (entreprise.nom + " " + (a.resumeIA || "") + " " + (a.sujets || "") + " " + (a.transcription || "") + " " + a.texte).toLowerCase().includes(s);
   });
   const actif = filtres.find((x) => x.a.appelId === sel || (!x.a.appelId && x.a.texte === sel)) || null;
   const cycleNote = (n: NoteFlexible): NoteFlexible => (n === 0 ? 1 : n === 1 ? 2 : n === 2 ? -1 : 0);
   return (
-    <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
-      <Card className="p-0 overflow-hidden">
-        <div className="p-3 border-b border-slate-100">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher dans les conversations…"
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-cyan-400" />
-        </div>
-        <div className="max-h-[540px] overflow-y-auto">
-          {filtres.length === 0 && <div className="p-4 text-xs text-slate-400">Aucun appel{q ? " pour cette recherche" : " consigné pour l'instant"}.</div>}
-          {filtres.map(({ entreprise, a }, i) => (
-            <button key={i} onClick={() => setSel(a.appelId || a.texte)}
-              className={"w-full text-left px-3 py-2.5 border-t border-slate-100 hover:bg-slate-50 " + ((a.appelId || a.texte) === sel ? "bg-cyan-50" : "")}>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-800 truncate">{entreprise.nomCommercial || entreprise.nom}</span>
-                {<EtoilesFlex a={a} adj={ajustements} />}
-              </div>
-              <BadgeType a={a} />
-              <div className="text-[10px] text-slate-400">{a.date} {a.heure || ""} · {a.directionAppel || "appel"} {a.dureeAppel ? "· " + a.dureeAppel : ""}</div>
-              <div className="text-[11px] text-slate-500 line-clamp-2">{a.resumeIA || a.texte}</div>
-            </button>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Rechercher dans les conversations…"
+          className="w-64 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+        <div className="flex gap-1.5 text-[11px] font-bold">
+          {[["tous", "Tous"], ...membres.map((m) => [m.id, m.moi ? "Moi" : m.nom.split(" ")[0]])].map(([id, l]: any) => (
+            <button key={id} onClick={() => onFiltre(id)}
+              className={"rounded-full px-2.5 py-0.5 " + (filtre === id ? "bg-cyan-700 text-white" : "border border-slate-200 text-slate-500 hover:border-cyan-400")}>{l}</button>
           ))}
         </div>
-      </Card>
-      {actif ? (
-        <Card>
-          <div className="flex items-start justify-between gap-2 flex-wrap">
-            <div>
-              <div className="text-sm font-bold text-slate-800">{actif.entreprise.nomCommercial || actif.entreprise.nom}</div>
-              <div className="text-[11px] text-slate-400">{actif.a.date} {actif.a.heure || ""} · {d.contactDe(actif.entreprise.id) || "contact à qualifier"} · {(actif.entreprise.ville || "ville à qualifier")}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              {badgeSentiment(actif.a.sentiment)}
-              {<EtoilesFlex a={actif.a} adj={ajustements} />}
-              {actif.a.scorecard && <BadgeType a={actif.a} />}
-              {actif.a.urlEnregistrement && <a href={actif.a.urlEnregistrement} target="_blank" rel="noreferrer" className="rounded-full bg-cyan-600 px-3 py-1 text-[11px] font-bold text-white">▶️ Enregistrement</a>}
-            </div>
-          </div>
-          {(actif.a.resumeIA || actif.a.sujets) && (
-            <div className="mt-3 rounded-xl bg-cyan-50/70 p-3">
-              {actif.a.resumeIA && <><div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800">✨ Résumé IA</div><p className="text-xs text-slate-700 mt-0.5">{actif.a.resumeIA}</p></>}
-              {actif.a.sujets && <div className="text-[11px] text-cyan-800 mt-1.5">🧩 Sujets / signaux détectés : {actif.a.sujets}</div>}
-              {actif.a.scorecard && (
-                <div className="mt-2 rounded-lg bg-white/80 p-2.5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob — version téléphone (notes cliquables, N/A exclus)</div>
-                  <div className="mb-2 flex items-start gap-2 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-[10.5px]">
-                    <span>🔎 <b>Type d'appel analysé :</b> {TYPE_LABEL[typeAuto(actif.a)]}</span>
-                    <span className="ml-auto font-bold text-slate-500">{CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length} critères notés · les autres N/A (exclus)</span>
-                  </div>
-                  <div className="space-y-1">
-                    {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).map(([k, l]) => {
-                      const eff = noteEffective(actif.a, k, ajustements);
-                      const ia = actif.a.scorecard?.[k]?.note;
-                      const cAdj = ajustements[cleAppel(actif.a)]?.[k];
-                      const ajuste = cAdj !== undefined && cAdj !== ia;
-                      const jj = actif.a.scorecard?.[k]?.j;
-                      return (
-                        <div key={k} className="flex items-start gap-2 text-[10.5px]">
-                          <button title="Cliquer pour ajuster : 0 → 1 → 2 → N/A (ton jugement prime sur l'IA)" onClick={() => onAjuste(actif.a, k, cycleNote(eff))} className="shrink-0 transition-transform hover:scale-110">
-                            <span className={"rounded px-1.5 py-0.5 font-bold " + (eff === -1 ? "bg-slate-100 text-slate-400" : eff === 2 ? "bg-emerald-100 text-emerald-700" : eff === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{eff === -1 ? "N/A" : eff + "/2"}</span>
-                          </button>
-                          <span className="text-slate-600"><b>{l}</b>{ajuste && <span className="ml-1 text-[9px] font-bold text-amber-600">✎ ajusté</span>}{jj ? <span className="text-slate-400"> — {jj}</span> : null}</span>
-                        </div>
-                      );
-                    })}
-                    {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length === 0 && (
-                      <div className="text-[10.5px] text-slate-400">Aucun critère applicable à ce type d'appel — rien d'autre à noter.</div>
-                    )}
-                  </div>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
+        <Card className="p-0 overflow-hidden">
+          <div className="max-h-[600px] overflow-y-auto">
+            {filtres.length === 0 && <div className="p-4 text-xs text-slate-400">Aucun appel{q ? " pour cette recherche" : " consigné pour l'instant"}.</div>}
+            {filtres.map(({ entreprise, a }, i) => (
+              <button key={i} onClick={() => setSel(a.appelId || a.texte)}
+                className={"w-full text-left px-3 py-2.5 border-t border-slate-100 hover:bg-slate-50 " + ((a.appelId || a.texte) === sel ? "bg-cyan-50" : "")}>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-800 truncate">{entreprise.nomCommercial || entreprise.nom}</span>
+                  {<EtoilesFlex a={a} adj={ajustements} />}
                 </div>
-              )}
-            </div>
-          )}
-          {actif.a.transcription ? (
-            <details className="mt-3" open>
-              <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-slate-400">✍️ Transcription</summary>
-              <div className="mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-100 p-3 text-xs leading-relaxed text-slate-600 whitespace-pre-wrap">{actif.a.transcription}</div>
-            </details>
-          ) : (
-            <div className="mt-3 text-[11px] text-slate-400 italic">Pas de transcription (appel consigné manuellement, ou plan RingOver sans transcription).</div>
-          )}
-          <div className="mt-3 text-[10px] text-slate-400">Note CRM : {actif.a.texte}</div>
+                <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                  <BadgeType a={a} />
+                  <span className="text-[9.5px] font-bold text-slate-400">👤 {prenomDe(commercialDe(a), membres)}</span>
+                </div>
+                <div className="text-[10px] text-slate-400">{a.date} {a.heure || ""} · {a.directionAppel || "appel"} {a.dureeAppel ? "· " + a.dureeAppel : ""}</div>
+                <div className="text-[11px] text-slate-500 line-clamp-2">{a.resumeIA || a.texte}</div>
+              </button>
+            ))}
+          </div>
         </Card>
-      ) : (
-        <Card><div className="text-xs text-slate-400">Sélectionne une conversation à gauche. Recherche plein texte sur les transcriptions et résumés IA incluses.</div></Card>
-      )}
+        {actif ? (
+          <Card>
+            <div className="flex items-start justify-between gap-2 flex-wrap">
+              <div>
+                <div className="text-sm font-bold text-slate-800">{actif.entreprise.nomCommercial || actif.entreprise.nom}</div>
+                <div className="text-[11px] text-slate-400">{actif.a.date} {actif.a.heure || ""} · {d.contactDe(actif.entreprise.id) || "contact à qualifier"} · {(actif.entreprise.ville || "ville à qualifier")} · 👤 {prenomDe(commercialDe(actif.a), membres)}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                {badgeSentiment(actif.a.sentiment)}
+                {<EtoilesFlex a={actif.a} adj={ajustements} />}
+                {actif.a.scorecard && <BadgeType a={actif.a} />}
+                {actif.a.urlEnregistrement && <a href={actif.a.urlEnregistrement} target="_blank" rel="noreferrer" className="rounded-full bg-cyan-600 px-3 py-1 text-[11px] font-bold text-white">▶️ Enregistrement</a>}
+              </div>
+            </div>
+            {(actif.a.resumeIA || actif.a.sujets) && (
+              <div className="mt-3 rounded-xl bg-cyan-50/70 p-3">
+                {actif.a.resumeIA && <><div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800">✨ Résumé IA</div><p className="text-xs text-slate-700 mt-0.5">{actif.a.resumeIA}</p></>}
+                {actif.a.sujets && <div className="text-[11px] text-cyan-800 mt-1.5">🧩 Sujets / signaux détectés : {actif.a.sujets}</div>}
+                {actif.a.scorecard && (
+                  <div className="mt-2 rounded-lg bg-white/80 p-2.5">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob — version téléphone (notes cliquables, N/A exclus)</div>
+                    <div className="mb-2 flex items-start gap-2 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-[10.5px]">
+                      <span>🔎 <b>Type d'appel analysé :</b> {TYPE_LABEL[typeAuto(actif.a)]}</span>
+                      <span className="ml-auto font-bold text-slate-500">{CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length} critères notés · les autres N/A (exclus)</span>
+                    </div>
+                    <div className="space-y-1">
+                      {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).map(([k, l]) => {
+                        const eff = noteEffective(actif.a, k, ajustements);
+                        const ia = actif.a.scorecard?.[k]?.note;
+                        const cAdj = ajustements[cleAppel(actif.a)]?.[k];
+                        const ajuste = cAdj !== undefined && cAdj !== ia;
+                        const jj = actif.a.scorecard?.[k]?.j;
+                        return (
+                          <div key={k} className="flex items-start gap-2 text-[10.5px]">
+                            <button title="Cliquer pour ajuster : 0 → 1 → 2 → N/A (ton jugement prime sur l'IA)" onClick={() => onAjuste(actif.a, k, cycleNote(eff))} className="shrink-0 transition-transform hover:scale-110">
+                              <span className={"rounded px-1.5 py-0.5 font-bold " + (eff === -1 ? "bg-slate-100 text-slate-400" : eff === 2 ? "bg-emerald-100 text-emerald-700" : eff === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{eff === -1 ? "N/A" : eff + "/2"}</span>
+                            </button>
+                            <span className="text-slate-600"><b>{l}</b>{ajuste && <span className="ml-1 text-[9px] font-bold text-amber-600">✎ ajusté</span>}{jj ? <span className="text-slate-400"> — {jj}</span> : null}</span>
+                          </div>
+                        );
+                      })}
+                      {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length === 0 && (
+                        <div className="text-[10.5px] text-slate-400">Aucun critère applicable à ce type d'appel — rien d'autre à noter.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {actif.a.transcription ? (
+              <details className="mt-3" open>
+                <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-wider text-slate-400">✍️ Transcription</summary>
+                <div className="mt-2 max-h-72 overflow-y-auto rounded-xl border border-slate-100 p-3 text-xs leading-relaxed text-slate-600 whitespace-pre-wrap">{actif.a.transcription}</div>
+              </details>
+            ) : (
+              <div className="mt-3 text-[11px] text-slate-400 italic">Pas de transcription (appel consigné manuellement, ou plan RingOver sans transcription).</div>
+            )}
+            <div className="mt-3 flex items-center gap-2 flex-wrap text-[10.5px]">
+              <span className="font-bold text-slate-400">✂️ Ajouter à une playlist :</span>
+              {playlists.length === 0 && <span className="text-slate-400">crée ta 1re playlist dans l'onglet ✂️ Playlists, puis reviens ajouter cet appel.</span>}
+              {playlists.map((p) => {
+                const cle = cleAppel(actif.a);
+                const dedans = p.items.some((it) => it.cle === cle);
+                return (
+                  <button key={p.id} onClick={() => !dedans && onAjouterPlaylist(p.id, cle, (actif.entreprise.nomCommercial || actif.entreprise.nom) + " · " + actif.a.date)}
+                    className={"rounded-full px-2 py-0.5 font-bold " + (dedans ? "border border-emerald-200 bg-emerald-50 text-emerald-700" : "border border-slate-200 text-slate-500 hover:border-cyan-400 hover:text-cyan-700")}>
+                    {dedans ? "✓ " : ""}{p.nom.length > 28 ? p.nom.slice(0, 28) + "…" : p.nom}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2 text-[10px] text-slate-400">Note CRM : {actif.a.texte}</div>
+          </Card>
+        ) : (
+          <Card><div className="text-xs text-slate-400">Sélectionne une conversation à gauche. Recherche plein texte sur les transcriptions et résumés IA incluses.</div></Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════ PLAYLISTS (best practices de l'équipe) ═══════════════════ */
+function Playlists({ d, playlists, ajustements, onCreer, onSupprimer, onRetirer, onOuvrir }: {
+  d: ReturnType<typeof construire>; playlists: Playlist[]; ajustements: Ajustements;
+  onCreer: (nom: string) => void; onSupprimer: (id: string) => void; onRetirer: (id: string, cle: string) => void; onOuvrir: () => void;
+}) {
+  const [nom, setNom] = useState("");
+  return (
+    <div className="space-y-4">
+      <div className="rounded-2xl bg-gradient-to-r from-teal-600 to-cyan-700 p-4 text-white">
+        <div className="text-base font-black">✂️ Playlists — les meilleurs moments de l'équipe</div>
+        <div className="mt-1 text-[12px] opacity-90">Tes extraits d'appels réels à rejouer en coaching (onboarding, objections, forces à répliquer). Ajoute des appels depuis une conversation → « ✂️ Ajouter à une playlist ».</div>
+      </div>
+      <Card>
+        <div className="flex gap-2">
+          <input value={nom} onChange={(e) => setNom(e.target.value)} placeholder="Nom de la nouvelle playlist (ex : Objection « c'est trop cher »)"
+            className="flex-1 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+          <button onClick={() => { if (nom.trim()) { onCreer(nom); setNom(""); } }}
+            className="rounded-xl bg-cyan-700 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-cyan-800">➕ Créer</button>
+        </div>
+      </Card>
+      {playlists.length === 0 && <Card><div className="text-xs text-slate-400">Aucune playlist pour l'instant — crée la première ci-dessus, puis ajoute des extraits depuis l'onglet Conversations.</div></Card>}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {playlists.map((p) => (
+          <Card key={p.id}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="text-sm font-black text-slate-800">{p.nom}</div>
+              <button onClick={() => onSupprimer(p.id)} title="Supprimer la playlist" className="text-[11px] font-bold text-slate-300 hover:text-rose-600">🗑</button>
+            </div>
+            <div className="mt-2 space-y-1.5">
+              {p.items.length === 0 ? <div className="text-[11px] text-slate-400">Vide — ajoute des extraits depuis une conversation (✂️).</div> : p.items.map((it) => {
+                const x = d.appels.find((y) => cleAppel(y.a) === it.cle);
+                return (
+                  <div key={it.cle} className="flex items-center gap-2 rounded-xl bg-slate-50 px-2.5 py-2">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-cyan-700 text-[10px] text-white">▶</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12px] font-bold text-slate-700">{it.titre}</span>
+                      <span className="block text-[10px] text-slate-400">{x ? (x.a.resumeIA || x.a.texte || "").slice(0, 60) + "…" : "appel introuvable dans le CRM"}</span>
+                    </span>
+                    {x && <span className="shrink-0"><EtoilesFlex a={x.a} adj={ajustements} /></span>}
+                    {x?.a.urlEnregistrement && <a href={x.a.urlEnregistrement} target="_blank" rel="noreferrer" className="shrink-0 text-[10px] font-bold text-cyan-600 hover:underline">▶️</a>}
+                    <button onClick={() => onRetirer(p.id, it.cle)} title="Retirer de la playlist" className="shrink-0 text-[11px] font-bold text-slate-300 hover:text-rose-600">✕</button>
+                  </div>
+                );
+              })}
+            </div>
+            <button onClick={onOuvrir} className="mt-2 rounded-full border border-dashed border-slate-300 px-3 py-1 text-[11px] font-bold text-slate-400 hover:border-cyan-400 hover:text-cyan-700">+ Ajouter un appel (onglet Conversations)</button>
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }
@@ -517,7 +742,7 @@ function Deals({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
     const e = d.entrepriseDe(de.entrepriseId);
     const appelsE = (e?.activites || []).filter((a) => a.type === "appel");
     const dernier = appelsE.length ? cleDate(appelsE.map((a) => a.dateISO).sort().reverse()[0]) : 0;
-    const neg = appelsE.some((a) => (a.sentiment || "").toLowerCase().includes("nega") || (a.sentiment || "").includes("nég"));
+    const neg = appelsE.some((a) => negatif(a));
     if (neg) return ["risque", "Sentiment négatif sur un appel récent", "text-rose-600"];
     if (dernier && aujourdhui() - dernier > 1400) return ["attention", "Aucun appel depuis plus de 2 semaines", "text-amber-600"];
     if (!dernier) return ["attention", "Aucun appel consigné sur ce compte", "text-amber-600"];
@@ -623,20 +848,19 @@ function Prospection({ d, etat }: { d: ReturnType<typeof construire>; etat: Etat
   );
 }
 
-/* ═══════════════════ COACHING & INSIGHTS ═══════════════════ */
-function Coaching({ d, ajustements }: { d: ReturnType<typeof construire>; ajustements: Ajustements }) {
+/* ═══════════════════ COACHING (manager : par commercial) ═══════════════════ */
+function Coaching({ d, ajustements, onVoir }: { d: ReturnType<typeof construire>; ajustements: Ajustements; onVoir: (id: string) => void }) {
+  const membres = membresEquipe(d.appels);
   const scores = d.analyses.map((x) => x.a.scoreIA).filter((x) => x != null) as number[];
   const moyenne = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
   return (
     <div className="space-y-4">
+      <div className="rounded-2xl bg-gradient-to-r from-teal-600 to-cyan-700 p-4 text-white">
+        <div className="text-base font-black">🎓 Coaching — l'équipe vue par le manager</div>
+        <div className="mt-1 text-[12px] opacity-90">À coacher en priorité et forces à répliquer, déduits des vrais scores (critères applicables uniquement).</div>
+      </div>
       <Card>
-        <div className="text-sm font-semibold mb-1">🎓 Score IA des appels</div>
-        {scores.length === 0 ? <div className="text-xs text-slate-400">Aucun appel analysé pour l'instant — les scores (1-5 ⭐) arrivent avec les appels passés via RingOver.</div> : (
-          <div className="flex items-center gap-3"><Etoiles score={moyenne} /><span className="text-sm font-bold text-slate-700">{Math.round(moyenne * 10) / 10}/5</span><span className="text-xs text-slate-400">sur {scores.length} appel{scores.length > 1 ? "s" : ""} analysé{scores.length > 1 ? "s" : ""}</span></div>
-        )}
-      </Card>
-      <Card>
-        <div className="text-sm font-semibold mb-1">📋 Scorecard par critère — uniquement les appels où le critère s’applique (N/A exclus)</div>
+        <div className="text-sm font-semibold mb-1">📋 Scorecard de l'ÉQUIPE par critère — uniquement les appels où le critère s'applique (N/A exclus)</div>
         {(() => {
           const avecSc = d.analyses.filter((x) => x.a.scorecard);
           if (!avecSc.length) return <div className="text-xs text-slate-400">Aucun appel encore scoré sur les 7 critères. Chaque appel analysé par le webhook (ou via ✨↻ Régénérer) reçoit sa scorecard 0-2 automatiquement.</div>;
@@ -656,6 +880,46 @@ function Coaching({ d, ajustements }: { d: ReturnType<typeof construire>; ajuste
             </div>
           );
         })()}
+      </Card>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {membres.map((m) => {
+          const as = d.appels.filter(({ a }) => commercialDe(a) === m.id);
+          const appelsScores = as.filter(({ a }) => a.scorecard);
+          const parCritere = CRITERES.map(([k, l]) => {
+            const notes = appelsScores.filter(({ a }) => estApplicable(a, k, ajustements)).map(({ a }) => noteEffective(a, k, ajustements));
+            return { l, moy: notes.length ? notes.reduce((x, y) => x + y, 0) / notes.length : null };
+          }).filter((x) => x.moy !== null).sort((x, y) => (x.moy! - y.moy!));
+          const moyGlobale = parCritere.length ? Math.round((parCritere.reduce((s, x) => s + x.moy!, 0) / parCritere.length) * 10) / 10 : null;
+          return (
+            <Card key={m.id} className={m.moi ? "border-cyan-300" : ""}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={"flex h-8 w-8 items-center justify-center rounded-full text-[11px] font-black text-white " + (m.moi ? "bg-gradient-to-br from-teal-500 to-cyan-600" : "bg-slate-300")}>{m.initiales}</span>
+                  <div className="text-[13px] font-black text-slate-800">{m.nom}{m.moi && <span className="ml-1.5 rounded-full bg-cyan-50 px-1.5 py-0.5 text-[8.5px] font-bold text-cyan-700">MOI</span>}</div>
+                </div>
+                {moyGlobale !== null && <Etoiles score={Math.round((moyGlobale / 2) * 5)} />}
+              </div>
+              <div className="mt-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">À coacher en priorité</div>
+              <div className="mt-1 space-y-1 text-[11px] text-slate-600">
+                {parCritere.slice(0, 2).map((x) => (
+                  <div key={x.l} className="rounded-lg bg-amber-50 px-2.5 py-1.5">{x.l} — {Math.round(x.moy! * 10) / 10}/2 de moyenne</div>
+                ))}
+                {parCritere.length === 0 && <div className="text-slate-400">se remplira dès le 1er appel scoré</div>}
+              </div>
+              <div className="mt-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">Force à répliquer</div>
+              <div className="mt-1 text-[11px] text-slate-600 rounded-lg bg-emerald-50 px-2.5 py-1.5">
+                {parCritere.length ? parCritere[parCritere.length - 1].l + " — " + Math.round(parCritere[parCritere.length - 1].moy! * 10) / 10 + "/2 (→ playlist ✂️)" : "—"}
+              </div>
+              {as.length > 0 && <button onClick={() => onVoir(m.id)} className="mt-2 w-full rounded-xl bg-slate-50 py-1.5 text-[11px] font-bold text-cyan-700 hover:bg-cyan-50">Ses conversations →</button>}
+            </Card>
+          );
+        })}
+      </div>
+      <Card>
+        <div className="text-sm font-semibold mb-2">🎓 Score IA global des appels (1-5, pour mémoire)</div>
+        {scores.length === 0 ? <div className="text-xs text-slate-400">Aucun appel analysé pour l'instant — les scores (1-5 ⭐) arrivent avec les appels passés via RingOver.</div> : (
+          <div className="flex items-center gap-3"><Etoiles score={moyenne} /><span className="text-sm font-bold text-slate-700">{Math.round(moyenne * 10) / 10}/5</span><span className="text-xs text-slate-400">sur {scores.length} appel{scores.length > 1 ? "s" : ""} analysé{scores.length > 1 ? "s" : ""}</span></div>
+        )}
       </Card>
       <Card>
         <div className="text-sm font-semibold mb-2">Référentiel Plan de vente U'mob — version téléphone</div>
@@ -700,12 +964,12 @@ function Insights({ d }: { d: ReturnType<typeof construire> }) {
 
 /* ═══════════════════ DEVIS — consolidation de suivi des devis ═══════════════════ */
 // Vue manager : une ligne par devis archivé dans le CRM, consolidée par statut
-// et par commercial. Priorité absolue aux RELANCES DUES (tâche « Relancer le
-// devis n° … » à échéance passée) — rouge = en retard, orange = sous 3 jours.
+// et par commercial. Priorité absolue aux RELANCES DUES — rouge = en retard,
+// orange = sous 3 jours.
 function DevisVue({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsole }) {
   const [filtre, setFiltre] = useState<"tous" | "retard" | "semaine" | "envoye" | "accepte" | "enregistre">("tous");
   const AUJ = aujourdhui();
-  // « jj/mm/aaaa » ou « jj/mm/aaaa à hh:mm » → clé comparable (robuste aux heures ajoutées en 58bis).
+  // « jj/mm/aaaa » ou « jj/mm/aaaa à hh:mm » → clé comparable.
   const cle = (t?: string) => { const m = (t || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? Number(m[3]) * 10000 + Number(m[2]) * 100 + Number(m[1]) : 0; };
   const eur = (n?: number) => (n || 0).toLocaleString("fr-FR") + " € HT/mois";
   // Tous les devis archivés du CRM, rattachés à leur entreprise porteuse.
@@ -931,10 +1195,12 @@ function StatsDevis({ etat }: { etat: EtatConsole }) {
   );
 }
 
-/* ═══════════════════ CONSOLE (onglets) ═══════════════════ */
+/* ═══════════════════ CONSOLE (onglets du poste de commandement) ═══════════════════ */
 export function ConsoleManager({ etat }: { etat: EtatConsole }) {
   const [tab, setTab] = useState("brief");
   const [ajustements, setAjustements] = useState<Ajustements>(() => lireAjustements());
+  const [playlists, setPlaylists] = useState<Playlist[]>(() => lirePlaylists());
+  const [filtreCommercial, setFiltreCommercial] = useState("tous");
   const ajuster = (a: ActiviteC, cle: string, note: NoteFlexible) => {
     setAjustements((prev) => {
       const c = cleAppel(a);
@@ -943,17 +1209,28 @@ export function ConsoleManager({ etat }: { etat: EtatConsole }) {
       return suivant;
     });
   };
+  const majPlaylists = (f: (ps: Playlist[]) => Playlist[]) => setPlaylists((ps) => {
+    const suivant = f(ps);
+    try { localStorage.setItem(CLE_PL, JSON.stringify(suivant)); } catch { /* stockage indisponible */ }
+    return suivant;
+  });
+  const creerPlaylist = (nom: string) => majPlaylists((ps) => [...ps, { id: "pl" + Date.now(), nom, items: [] }]);
+  const ajouterAPlaylist = (id: string, cle: string, titre: string) => majPlaylists((ps) => ps.map((p) => p.id !== id ? p : (p.items.some((it) => it.cle === cle) ? p : { ...p, items: [...p.items, { cle, titre }] })));
+  const retirerDePlaylist = (id: string, cle: string) => majPlaylists((ps) => ps.map((p) => p.id !== id ? p : { ...p, items: p.items.filter((it) => it.cle !== cle) }));
+  const supprimerPlaylist = (id: string) => majPlaylists((ps) => ps.filter((p) => p.id !== id));
+  const voirCommercial = (id: string) => { setFiltreCommercial(id); setTab("conversations"); };
   const d = useMemo(() => construire(etat), [etat]);
   const onglets = [
-    ["brief", "☀️ Brief"], ["conversations", "💬 Conversations"], ["grille", "📚 Grille de scoring"], ["deals", "🎯 Deals"], ["devis", "🧾 Devis"],
-    ["prospection", "🧭 Prospection"], ["coaching", "🎓 Coaching"], ["insights", "📊 Insights"],
+    ["brief", "☀️ Brief"], ["equipe", "👥 Équipe"], ["conversations", "🎧 Conversations"], ["grille", "📚 Grille de scoring"],
+    ["playlists", "✂️ Playlists"], ["coaching", "🎓 Coaching"], ["deals", "🎯 Deals"], ["devis", "🧾 Devis"],
+    ["prospection", "🧭 Prospection"], ["insights", "💡 Insights"],
   ] as const;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <div className="text-lg font-black text-slate-800">Console manager</div>
-          <div className="text-[11px] text-slate-400">Pilotage des commerciaux · 100 % alimentée par le CRM (appels, fiches, deals) · l'IA écrit, au moindre doute elle laisse vide</div>
+          <div className="text-lg font-black text-slate-800">Poste de commandement</div>
+          <div className="text-[11px] text-slate-400">Console manager · pilote l'équipe (dont toi) · 100 % alimentée par le CRM · l'IA écrit, au moindre doute elle laisse vide</div>
         </div>
       </div>
       <div className="flex gap-1.5 flex-wrap">
@@ -962,14 +1239,16 @@ export function ConsoleManager({ etat }: { etat: EtatConsole }) {
             className={"rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors " + (tab === k ? "bg-cyan-700 text-white" : "bg-white border border-slate-200 text-slate-500 hover:bg-slate-50")}>{l}</button>
         ))}
       </div>
-      {tab === "brief" && <Brief d={d} etat={etat} />}
-      {tab === "conversations" && <Conversations d={d} ajustements={ajustements} onAjuste={ajuster} />}
+      {tab === "brief" && <Brief d={d} etat={etat} ajustements={ajustements} onEcouter={() => setTab("conversations")} />}
+      {tab === "equipe" && <Equipe d={d} ajustements={ajustements} onVoir={voirCommercial} />}
+      {tab === "conversations" && <Conversations d={d} ajustements={ajustements} onAjuste={ajuster} filtre={filtreCommercial} onFiltre={setFiltreCommercial} playlists={playlists} onAjouterPlaylist={ajouterAPlaylist} />}
       {tab === "grille" && <Grille />}
+      {tab === "playlists" && <Playlists d={d} playlists={playlists} ajustements={ajustements} onCreer={creerPlaylist} onSupprimer={supprimerPlaylist} onRetirer={retirerDePlaylist} onOuvrir={() => setTab("conversations")} />}
+      {tab === "coaching" && <Coaching d={d} ajustements={ajustements} onVoir={voirCommercial} />}
       {tab === "deals" && <Deals d={d} etat={etat} />}
       {tab === "devis" && <DevisVue d={d} etat={etat} />}
       {tab === "devis" && <StatsDevis etat={etat} />}
       {tab === "prospection" && <Prospection d={d} etat={etat} />}
-      {tab === "coaching" && <Coaching d={d} ajustements={ajustements} />}
       {tab === "insights" && <Insights d={d} />}
     </div>
   );
