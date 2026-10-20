@@ -83,8 +83,8 @@ export default async function handler(req: any, res: any) {
     // {contacts:[{firstname, lastname, company, is_shared, numbers:[{number, type}]}]}
     const corps: any = {
       contacts: [{
-        firstname: prenom || (societe ? societe : ""),
-        lastname: nom || "Inconnu",
+        firstname: prenom,
+        lastname: nom,
         company: societe,
         is_shared: true,
         numbers: [{ number: telEntier(tel), type: "other" }],
@@ -186,8 +186,8 @@ export default async function handler(req: any, res: any) {
     vus.add(tel);
     aPousser.push({
       prenom: "",
-      nom: propre(e.nomCommercial || e.nom),
-      societe: propre(e.ville || ""),
+      nom: "",
+      societe: propre(e.nomCommercial || e.nom),
       tel, email: "", cle: tel,
     });
   }
@@ -199,8 +199,8 @@ export default async function handler(req: any, res: any) {
     // Format OFFICIEL (cf. mode unitaire) : {contacts:[{...}], is_shared}
     const corps: any = {
       contacts: [{
-        firstname: c.prenom || (c.societe ? c.societe : ""),
-        lastname: c.nom || "Inconnu",
+        firstname: c.prenom,
+        lastname: c.nom,
         company: c.societe,
         is_shared: true,
         numbers: [{ number: telEntier(c.tel), type: "other" }],
