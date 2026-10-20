@@ -299,7 +299,7 @@ export default async function handler(req: any, res: any) {
           if (!enregistrement) enregistrement = pick(appel, ["record", "recording_url", "record_url", "url_recording"]);
           // résumé IA fourni par Ringover (champ summary du détail d'appel) — repli si pas de transcription
           const sumTxt = appel?.summary?.text;
-          if (typeof sumTxt === "string" && sumTxt.trim().length > 20) transcription = sumTxt.trim().slice(0, 12000);
+          if (typeof sumTxt === "string" && sumTxt.trim().length > 20) transcription = sumTxt.trim().slice(0, 60000);
           console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, canal }));
         }
       }
@@ -317,7 +317,7 @@ export default async function handler(req: any, res: any) {
           if (rt.ok) {
             const jt: any = await rt.json().catch(() => null);
             const texte = jt ? extraireTexte(jt) : "";
-            if (texte && texte.length > 20) transcription = texte.slice(0, 12000);
+            if (texte && texte.length > 20) transcription = texte.slice(0, 60000);
           }
         } catch (e) { console.log("Transcription erreur:", String(e).slice(0, 120)); }
       }
@@ -337,7 +337,7 @@ export default async function handler(req: any, res: any) {
             if (re.ok) {
               const je: any = await re.json().catch(() => null);
               const texte = je ? extraireTexte(je) : "";
-              if (texte && texte.length > 20) transcription = texte.slice(0, 12000);
+              if (texte && texte.length > 20) transcription = texte.slice(0, 60000);
             }
           } catch (e) { console.log("Empower erreur:", String(e).slice(0, 120)); }
         }
