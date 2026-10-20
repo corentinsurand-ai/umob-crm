@@ -321,7 +321,7 @@ const construire = (etat: EtatConsole) => {
   ).sort((x, y) => cleDate(y.a.dateISO) - cleDate(x.a.dateISO) || (y.a.heure || "").localeCompare(x.a.heure || ""));
 
   // Les appels « analysés » (webhook) vs consignés à la main.
-  const analyses = appels.filter((x) => x.a.resumeIA || x.a.sentiment || x.a.a.scoreIA != null);
+  const analyses = appels.filter((x) => x.a.resumeIA || x.a.sentiment || x.a.scoreIA != null);
   const taches = etat.entreprises.flatMap((e) =>
     (e.activites || []).filter((a) => a.type === "tache" && a.echeance).map((a) => ({ entreprise: e, a }))
   );
