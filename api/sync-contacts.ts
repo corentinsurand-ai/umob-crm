@@ -1,0 +1,193 @@
+// ============================================================
+// /api/sync-contacts — Synchronise les contacts du CRM vers
+// l'annuaire Ringover, pour que le NOM s'affiche sur les appels
+// entrants et sortants dans l'appli Ringover (mobile + desktop).
+// Stratégie : upsert via POST /v2/contacts (retrieve or create).
+// Calibration : chaque réponse Ringover est journalisée dans les
+// logs Vercel — à la 1re exécution, vérifier les payloads réels
+// et ajuster (même méthode que le webhook appels).
+// ============================================================
+
+const API = "https://public-api.ringover.com/v2";
+
+interface Rep {
+  status: number;
+  body: string;
+}
+
+async function ringo(methode: string, chemin: string, cle: string, corps?: unknown): Promise<Rep> {
+  try {
+    const r = await fetch(API + chemin, {
+      method: methode,
+      headers: {
+        // Auth Ringover = clé brute SANS Bearer (validé par le webhook appels)
+        Authorization: cle,
+        "Content-Type": "application/json",
+      },
+      body: corps ? JSON.stringify(corps) : undefined,
+    });
+    const t = await r.text();
+    return { status: r.status, body: t.slice(0, 2000) };
+  } catch (e) {
+    return { status: 0, body: String(e) };
+  }
+}
+
+// Normalisation de téléphone : chiffres, 33 <-> 0
+function normTel(s: string): string {
+  const d = (s || "").replace(/\D/g, "");
+  if (!d) return "";
+  if (d.startsWith("33") && d.length >= 11) return "0" + d.slice(2);
+  return d;
+}
+
+function propre(s: unknown): string {
+  return typeof s === "string" ? s.trim() : "";
+}
+
+interface ContactCRM {
+  prenom: string;
+  nom: string;
+  societe: string;
+  tel: string;
+  email: string;
+  cle: string;
+}
+
+export default async function handler(req: any, res: any) {
+  const base = new URL(req.url || "/", "http://localhost");
+
+  // --- Mode TEMPS RÉEL : POST avec un seul contact en payload ---
+  // Appelé par le CRM à chaque création/modif d'un contact avec tél.
+  if (req.method === "POST" && req.body && req.body.contact) {
+    const cle = process.env.RINGOVER_API_KEY;
+    if (!cle) return res.status(503).json({ erreur: "RINGOVER_API_KEY absente" });
+    const c = req.body.contact as any;
+    const tel = normTel(propre(c.tel));
+    if (!tel || tel.length < 9) return res.status(400).json({ erreur: "Numéro invalide", tel: propre(c.tel) });
+    const corps: any = { phone_numbers: [{ number: tel }] };
+    const prenom = propre(c.prenom);
+    const nom = propre(c.nom);
+    if (prenom || nom) {
+      corps.firstname = prenom;
+      corps.lastname = nom;
+    } else {
+      corps.lastname = nom || "Inconnu";
+    }
+    const societe = propre(c.societe);
+    if (societe) corps.company = societe;
+    if (propre(c.email)) corps.email = propre(c.email);
+    const rep = await ringo("POST", "/contacts", cle, corps);
+    console.log("SYNC CONTACT (unitaire)", JSON.stringify({ tel, nom: (prenom + " " + nom).trim(), status: rep.status, reponse: rep.body }));
+    if (rep.status >= 200 && rep.status < 300) {
+      return res.status(200).json({ ok: true, status: rep.status, nom: (prenom + " " + nom).trim(), tel });
+    }
+    return res.status(502).json({ ok: false, status: rep.status, reponse: rep.body.slice(0, 500), note: "Format à calibrer — voir logs Vercel" });
+  }
+
+  // --- Diagnostic GET ---
+  if (req.method === "GET") {
+    return res.status(200).json({
+      message: "Sync contacts CRM -> Ringover. POST sans body = sync complète du répertoire ; POST {contact:{prenom,nom,societe,tel,email}} = temps réel unitaire.",
+      RINGOVER_API_KEY: !!process.env.RINGOVER_API_KEY,
+      SUPABASE_URL: !!process.env.SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    });
+  }
+  if (req.method !== "POST") {
+    return res.status(400).json({ erreur: "POST uniquement (GET = diagnostic)" });
+  }
+
+  // --- Mode BATCH : sync complète du répertoire ---
+  const cle = process.env.RINGOVER_API_KEY;
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!cle || !supabaseUrl || !supaKey) {
+    return res.status(503).json({
+      erreur: "Variables manquantes (RINGOVER_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)",
+      RINGOVER_API_KEY: !!cle,
+      SUPABASE_URL: !!supabaseUrl,
+      SUPABASE_SERVICE_ROLE_KEY: !!supaKey,
+    });
+  }
+
+  // 1. Lire l'état du CRM (même table crm_etat que le webhook)
+  const rEtat = await fetch(supabaseUrl + "/rest/v1/crm_etat?select=*", {
+    headers: { apikey: supaKey, Authorization: "Bearer " + supaKey },
+  });
+  if (!rEtat.ok) {
+    return res.status(502).json({ erreur: "Supabase illisible", status: rEtat.status });
+  }
+  const lignes = await rEtat.json();
+  let etat: any = null;
+  for (const l of lignes) {
+    const candidat = l.etat || l.data || l.value || l;
+    if (candidat && Array.isArray(candidat.contacts)) {
+      if (!etat || JSON.stringify(candidat).length > JSON.stringify(etat).length) etat = candidat;
+    }
+  }
+  if (!etat) {
+    return res.status(404).json({ erreur: "crm_etat introuvable / structure inconnue", nbLignes: lignes.length });
+  }
+
+  // 2. Collecter les contacts à pousser (dédoublonnés par numéro)
+  const vus = new Set<string>();
+  const aPousser: ContactCRM[] = [];
+  const entreprises: any[] = etat.entreprises || [];
+  const contacts: any[] = etat.contacts || [];
+  const nomDe = (eid: string) => {
+    const e = entreprises.find((x) => x.id === eid);
+    return e ? propre(e.nomCommercial || e.nom) : "";
+  };
+  for (const c of contacts) {
+    const tel = normTel(propre(c.tel));
+    if (!tel || tel.length < 9 || vus.has(tel)) continue;
+    vus.add(tel);
+    aPousser.push({
+      prenom: propre(c.prenom),
+      nom: propre(c.nom),
+      societe: c.entrepriseIds && c.entrepriseIds.length ? nomDe(c.entrepriseIds[0]) : propre(c.entreprise || c.societe),
+      tel, email: propre(c.email), cle: tel,
+    });
+  }
+  // Entreprises avec téléphone fixe -> contact "société"
+  for (const e of entreprises) {
+    const tel = normTel(propre(e.tel));
+    if (!tel || tel.length < 9 || vus.has(tel)) continue;
+    vus.add(tel);
+    aPousser.push({
+      prenom: "",
+      nom: propre(e.nomCommercial || e.nom),
+      societe: propre(e.ville || ""),
+      tel, email: "", cle: tel,
+    });
+  }
+
+  // 3. Pousser vers Ringover (upsert), 2 req/s max
+  const journal: any[] = [];
+  let ok = 0, erreurs = 0;
+  for (const c of aPousser.slice(0, 300)) {
+    const corps: any = { phone_numbers: [{ number: c.tel }] };
+    if (c.prenom || c.nom) {
+      corps.firstname = c.prenom;
+      corps.lastname = c.nom;
+    } else {
+      corps.lastname = c.nom || "Inconnu";
+    }
+    if (c.societe) corps.company = c.societe;
+    if (c.email) corps.email = c.email;
+    const rep = await ringo("POST", "/contacts", cle, corps);
+    journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: rep.status, reponse: rep.body.slice(0, 400) });
+    if (rep.status >= 200 && rep.status < 300) ok++; else erreurs++;
+    await new Promise((r) => setTimeout(r, 400));
+  }
+
+  console.log("SYNC CONTACTS RINGOVER", JSON.stringify({ envoyes: aPousser.length, ok, erreurs, premierEchec: journal.find((j) => j.status >= 300) || null }));
+  return res.status(200).json({
+    envoyes: aPousser.length,
+    ok,
+    erreurs,
+    journal: journal.slice(0, 20),
+    note: "Vérifier les logs Vercel pour les payloads complets — calibrer le format si erreurs (même méthode que le webhook appels).",
+  });
+}
