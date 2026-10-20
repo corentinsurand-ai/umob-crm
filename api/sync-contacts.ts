@@ -338,7 +338,7 @@ export default async function handler(req: any, res: any) {
         lastname: c.nom,
         company: c.societe,
         is_shared: true,
-        numbers: [{ number: telEntier(c.tel), type: "other" }].concat(c.tel2 ? [{ number: telEntier(c.tel2), type: "other" }] : []),
+        numbers: [...new Set([c.tel, c.tel2].filter(Boolean).map(telEntier))].map((n: number) => ({ number: n, type: "other" })),
       }],
     };
     if (c.email) corps.contacts[0].email = c.email;
