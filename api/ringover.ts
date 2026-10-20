@@ -146,6 +146,26 @@ export default async function handler(req: any, res: any) {
       } else {
         diag.etapes.push({ route: "GET /v2/calls", statut: r0.status, corps: (await r0.text()).slice(0, 400) });
       }
+      // ── RATTRAPAGE : le listing /v2/calls renvoie souvent une liste VIDE
+      // (comportement constaté en prod) → on liste aussi les appels DÉJÀ CONSIGNÉS
+      // DANS LE CRM : leur appelId suffit pour un replay ?call_id=...&replay=1 ──
+      if (SUP && KEY) {
+        try {
+          const rsC = await fetch(SUP + "/rest/v1/crm_etat?id=eq.main&select=data", { headers: { apikey: KEY, Authorization: "Bearer " + KEY } });
+          if (rsC.ok) {
+            const rowsC: any[] = await rsC.json();
+            const etatC: any = (rowsC[0] || {}).data || {};
+            const appelsCRM: any[] = [];
+            for (const e of etatC.entreprises || []) {
+              for (const a of e.activites || []) {
+                if (a.appelId) appelsCRM.push({ entreprise: e.nomCommercial || e.nom, entrepriseId: e.id, appelId: a.appelId, numero: a.numeroAppel || null, sens: a.directionAppel || null, duree: a.dureeAppel || null, date: a.dateISO || null, heure: a.heure || null, transcription: String(a.transcription || "").length, pourReplay: "/api/ringover?call_id=" + a.appelId + "&replay=1" });
+              }
+            }
+            diag.appelsCRM = appelsCRM.slice(0, 15);
+            if (!diag.appelsCRM.length) diag.noteCRM = "aucun appel consigné dans le CRM";
+          }
+        } catch (e: any) { diag.noteCRM = "lecture CRM impossible: " + String(e).slice(0, 120); }
+      }
       // paramètre explicite prioritaire
       if (pid && !(dernier && String(dernier.call_id) === pid)) dernier = { call_id: pid, channel_id: pch || "" };
 
