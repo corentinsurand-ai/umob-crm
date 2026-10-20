@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + MIST },
       body: JSON.stringify({
-        model: "mistral-small-latest", temperature: 0.2, max_tokens: 700,
+        model: "mistral-small-latest", temperature: 0.2, max_tokens: 1600, // 700 tronquait le JSON AVANT la clé scorecard (7 critères + justifications) — elle n'arrivait jamais
         messages: [
           { role: "system", content: PROMPT_REGEN },
           { role: "user", content: transcription.slice(0, 24000) }, // transcription complète (appels longs)
