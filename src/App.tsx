@@ -2077,6 +2077,27 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
       </div>
     );
   }
+  // ── Régénération manuelle du résumé IA d'un appel (bouton « ✨↻ Régénérer ») :
+  // la transcription est envoyée à /api/regenerer-resume (Mistral) et
+  // l'activité est mise à jour en place via onMaj — la sauvegarde
+  // habituelle de l'état persiste le nouveau résumé dans Supabase.
+  const [regenResume, setRegenResume] = useState<{ i: number; enCours: boolean; erreur: string }>({ i: -1, enCours: false, erreur: "" });
+  const regenererResumeIA = async (ev: Activite, i: number) => {
+    if (!ev.transcription || regenResume.enCours) return;
+    setRegenResume({ i, enCours: true, erreur: "" });
+    try {
+      const r = await fetch("/api/regenerer-resume", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transcription: ev.transcription }) });
+      const j: any = await r.json().catch(() => null);
+      if (!r.ok || !j || !j.ok) { setRegenResume({ i, enCours: false, erreur: (j && j.erreur) || "erreur " + r.status }); return; }
+      const patch: any = {};
+      if (j.resumeIA) patch.resumeIA = String(j.resumeIA);
+      if (j.sentiment) patch.sentiment = String(j.sentiment);
+      if (j.sujets) patch.sujets = String(j.sujets);
+      if (typeof j.scoreIA === "number") patch.scoreIA = j.scoreIA;
+      if (Object.keys(patch).length) onMaj?.(ev, patch);
+      setRegenResume({ i: -1, enCours: false, erreur: "" });
+    } catch (e: any) { setRegenResume({ i, enCours: false, erreur: String((e && e.message) || e || "erreur réseau") }); }
+  };
   return (
     <div className="divide-y divide-slate-50">
       {events.map((ev, i) => {
@@ -2123,7 +2144,18 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-700">{"Score appel : " + ev.scoreIA + "/5"}</span>
                     )}
                     <span className="text-slate-400">✨ analyse IA de l'appel Ringover</span>
+                    {!!ev.transcription && onMaj && (
+                      <button onClick={() => regenererResumeIA(ev, i)}
+                        disabled={regenResume.enCours}
+                        title="Relance l'analyse IA sur la transcription (résumé, sentiment, score, sujets)"
+                        className="rounded-full bg-cyan-100 px-2 py-0.5 text-cyan-700 hover:bg-cyan-200 disabled:opacity-50">
+                        {(regenResume.enCours && regenResume.i === i) ? "⏳ Analyse…" : "✨↻ Régénérer"}
+                      </button>
+                    )}
                   </div>
+                  {(regenResume.i === i && !!regenResume.erreur) && (
+                    <div className="mt-1 text-[10.5px] font-semibold text-rose-600">{"⚠️ " + regenResume.erreur}</div>
+                  )}
                   {!!ev.resumeIA && <div className="mt-1 text-[12px] leading-relaxed text-slate-700">{ev.resumeIA}</div>}
                   {!!ev.sujets && <div className="mt-1 text-[11px] text-slate-500">{"Sujets / signaux : " + ev.sujets}</div>}
                   {!!ev.transcription && (
