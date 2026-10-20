@@ -4677,6 +4677,12 @@ export default function App() {
   // immuable. La sauvegarde Supabase suit toute seule via le useEffect.
   const modifierEntreprise = (id: string, patch: Partial<Entreprise>) => {
     setEtat((s) => ({ ...s, entreprises: s.entreprises.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+    // Sync temps réel Ringover : le tél de l'entreprise vient d'être édité
+    // inline → on pousse la fiche « société » vers l'annuaire (upsert par numéro).
+    if (patch.tel !== undefined) {
+      const e = etat.entreprises.find((x) => x.id === id);
+      if (e) syncRingover("", e.nomCommercial || e.nom, e.ville || "", patch.tel, "");
+    }
   };
 
   // ── Module Devis : archivage sur la fiche entreprise ──
@@ -4852,6 +4858,32 @@ export default function App() {
   // entreprises par SyncSheetOuverture. Jamais d'écrasement d'une valeur déjà saisie.
   const majContacts = (mods: { id: string; tel?: string; email?: string; role?: string }[]) => {
     setEtat((s) => ({ ...s, contacts: s.contacts.map((c) => { const m = mods.find((x) => x.id === c.id); return m ? { ...c, ...m } : c; }) }));
+    // Sync temps réel Ringover : un tél/email vient d'être complété (rattrapage
+    // Sheet à l'ouverture d'une fiche) → on pousse la fiche vers l'annuaire.
+    mods.forEach((m) => {
+      const ct = etat.contacts.find((x) => x.id === m.id);
+      if (!ct) return;
+      const tel = m.tel || ct.tel;
+      if (!tel) return;
+      const e0 = ct.entrepriseIds && ct.entrepriseIds[0];
+      const ent0 = e0 ? etat.entreprises.find((x) => x.id === e0) : undefined;
+      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", tel, m.email || ct.email);
+    });
+  };
+
+  // ── Sync TEMPS RÉEL vers l'annuaire Ringover (affichage du nom sur
+  //    les appels) : POST /api/sync-contacts avec le contact unitaire.
+  //    Fire-and-forget : jamais de blocage de l'UI, échec silencieux (la
+  //    sync complète GET ?run=1 rattrape ce qui aurait raté). Un numéro
+  //    de moins de 9 chiffres n'est pas poussé. ──
+  const syncRingover = (prenom: string, nom: string, societe: string, tel: string, email: string) => {
+    const d = (tel || "").replace(/\D/g, "");
+    if (!d || d.length < 9) return;
+    fetch("/api/sync-contacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contact: { prenom, nom, societe, tel, email } }),
+    }).catch(() => { /* silencieux : jamais bloquer la sauvegarde CRM */ });
   };
 
   // Édition directe depuis la page record DEAL (panneau « À propos ») :
@@ -4961,6 +4993,19 @@ export default function App() {
           : s.entreprises;
       return { ...s, entreprises, deals: existe ? s.deals.map((x) => (x.id === d.id ? d : x)) : [...s.deals, { ...d, id: idSuivantLocal("d", 1) }] };
     });
+    // Sync temps réel Ringover : le contact (ou la société + ses contacts cochés)
+    // vient d'être enregistré → upsert unitaire vers l'annuaire (fire-and-forget).
+    if (c.type === "contact") {
+      const ct = donnees as Contact;
+      const e0 = ct.entrepriseIds && ct.entrepriseIds[0];
+      const ent0 = e0 ? etat.entreprises.find((x) => x.id === e0) : undefined;
+      syncRingover(ct.prenom, ct.nom, ent0 ? (ent0.nomCommercial || ent0.nom) : "", ct.tel, ct.email);
+    }
+    if (c.type === "entreprise") {
+      const e2 = donnees as Entreprise;
+      syncRingover("", e2.nomCommercial || e2.nom, e2.ville || "", e2.tel, "");
+      (contactsAuto || []).forEach((ct) => { syncRingover(ct.prenom, ct.nom, e2.nomCommercial || e2.nom, ct.tel, ct.email); });
+    }
     setCible(null); // la modale se ferme après enregistrement
   };
 
