@@ -345,7 +345,7 @@ export default async function handler(req: any, res: any) {
     const estSociete = !c.prenom && !c.nom;
     const societeDeja = estSociete && cartesB.some((cb) =>
       !cb.prenom && !cb.nom && cb.societe === c.societe && cb.nums.has(numsCarte[0]));
-    if (carteComplete || societeDeja) {
+    if (estSociete ? societeDeja : carteComplete) {
       journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
       continue;
     }
