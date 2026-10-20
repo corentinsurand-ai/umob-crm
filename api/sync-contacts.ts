@@ -140,7 +140,7 @@ export default async function handler(req: any, res: any) {
     const supprimes: any[] = [], erreursP: any[] = [];
     for (const [num, items] of parNumero) {
       if (items.length <= 1) continue;
-      const tries = [...items].sort((a: any, b: any) => (b.contact_id || 0) - (a.contact_id || 0));
+      const tries = [...items].sort((a: any, b: any) => (b.creation_date || "").localeCompare(a.creation_date || "") || (b.contact_id || 0) - (a.contact_id || 0));
       for (const vieux of tries.slice(1)) {
         const rep = await ringo("DELETE", "/contacts/" + vieux.contact_id, cleP);
         if (rep.status >= 200 && rep.status < 300) supprimes.push({ id: vieux.contact_id, nom: ((vieux.firstname || "") + " " + (vieux.lastname || "")).trim(), num });
@@ -165,6 +165,8 @@ export default async function handler(req: any, res: any) {
   // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
   const lancerSync = req.method === "GET" && base.searchParams.get("run") === "1";
   if (lancerSync) req.method = "POST-BATCH";
+  const modeRebuild = req.method === "GET" && base.searchParams.get("rebuild") === "1";
+  if (modeRebuild) req.method = "POST-BATCH";
 
   // --- Diagnostic GET ---
   if (req.method === "GET") {
@@ -244,6 +246,15 @@ export default async function handler(req: any, res: any) {
     });
   }
 
+  // 2ter-prep. Nettoyage : "NOM (SOCIETE)" -> nom = NOM, entreprise = SOCIETE si absente
+  for (const c of aPousser) {
+    const m = c.nom.match(/^(.*?)\s*\((.+)\)\s*$/);
+    if (m) {
+      c.nom = m[1].trim();
+      if (!c.societe) c.societe = m[2].trim();
+    }
+  }
+
   // 2bis. Numéros déjà présents côté Ringover (anti-doublon)
   const existants = new Set<number>();
   try {
@@ -254,6 +265,30 @@ export default async function handler(req: any, res: any) {
       for (const n of it.numbers || it.phone_numbers || []) existants.add(typeof n === "object" ? n.number : n);
     }
   } catch (e) { /* liste illisible */ }
+
+  // 2quater. Mode rebuild : supprimer d'abord TOUTES les fiches Ringover portant un numéro du CRM
+  let supprimesR: any[] = [];
+  if (modeRebuild) {
+    const mesNums = new Set(aPousser.map((c) => telEntier(c.tel)));
+    for (let pageR = 0; pageR < 5; pageR++) {
+      const rep = await ringo("GET", "/contacts?limit_count=100&limit_offset=" + (pageR * 100), cle, undefined, 400000);
+      if (rep.status < 200 || rep.status >= 300) break;
+      let dataR: any;
+      try { dataR = JSON.parse(rep.body); } catch (e) { break; }
+      const itemsR: any[] = Array.isArray(dataR) ? dataR : (dataR.contact_list || dataR.list || []);
+      if (!itemsR.length) break;
+      for (const it of itemsR) {
+        const numsR = (it.numbers || []).map((n: any) => (typeof n === "object" ? n.number : n));
+        if (numsR.some((n: any) => mesNums.has(n))) {
+          const repD = await ringo("DELETE", "/contacts/" + it.contact_id, cle);
+          supprimesR.push({ id: it.contact_id, nom: ((it.firstname || "") + " " + (it.lastname || "")).trim(), ok: repD.status >= 200 && repD.status < 300, status: repD.status });
+          await new Promise((r2) => setTimeout(r2, 250));
+        }
+      }
+      if (itemsR.length < 100) break;
+    }
+    existants.clear();
+  }
 
   // 3. Pousser vers Ringover (upsert), 2 req/s max
   const journal: any[] = [];
@@ -283,6 +318,8 @@ export default async function handler(req: any, res: any) {
   console.log("SYNC CONTACTS RINGOVER", JSON.stringify({ envoyes: aPousser.length, ok, erreurs, premierEchec: journal.find((j) => j.status >= 300) || null }));
   return res.status(200).json({
     envoyes: aPousser.length,
+    supprimesAvant: supprimesR.length,
+    supprimesDetail: supprimesR.slice(0, 40),
     ok,
     erreurs,
     journal: journal.slice(0, 20),
