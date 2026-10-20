@@ -198,6 +198,7 @@ export default async function handler(req: any, res: any) {
   // --- Diagnostic GET ---
   if (req.method === "GET") {
     return res.status(200).json({
+      version: "95470c0",
       message: "Sync contacts CRM -> Ringover. POST sans body = sync complète du répertoire ; POST {contact:{prenom,nom,societe,tel,email}} = temps réel unitaire.",
       RINGOVER_API_KEY: !!process.env.RINGOVER_API_KEY,
       SUPABASE_URL: !!process.env.SUPABASE_URL,
@@ -360,6 +361,7 @@ export default async function handler(req: any, res: any) {
 
   console.log("SYNC CONTACTS RINGOVER", JSON.stringify({ envoyes: aPousser.length, ok, erreurs, premierEchec: journal.find((j) => j.status >= 300) || null }));
   return res.status(200).json({
+    version: "95470c0",
     envoyes: aPousser.length,
     supprimesAvant: supprimesR.length,
     supprimesDetail: supprimesR.slice(0, 40),
