@@ -109,10 +109,11 @@ export default async function handler(req: any, res: any) {
     }
     // Format OFFICIEL validé (source : connecteur Pipedream Ringover create-contact) :
     // {contacts:[{firstname, lastname, company, is_shared, numbers:[{number, type}]}]}
+    const nomAffiche = nom ? (societe ? nom + " (" + societe + ")" : nom) : "";
     const corps: any = {
       contacts: [{
         firstname: prenom,
-        lastname: nom,
+        lastname: nomAffiche,
         company: societe,
         is_shared: true,
         numbers: tels.map((x: string) => ({ number: telEntier(x), type: "other" })),
@@ -198,7 +199,7 @@ export default async function handler(req: any, res: any) {
   // --- Diagnostic GET ---
   if (req.method === "GET") {
     return res.status(200).json({
-      version: "95470c0",
+      version: "b-suffixe",
       message: "Sync contacts CRM -> Ringover. POST sans body = sync complète du répertoire ; POST {contact:{prenom,nom,societe,tel,email}} = temps réel unitaire.",
       RINGOVER_API_KEY: !!process.env.RINGOVER_API_KEY,
       SUPABASE_URL: !!process.env.SUPABASE_URL,
@@ -279,12 +280,16 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 2ter-prep. Nettoyage : "NOM (SOCIETE)" -> nom = NOM, entreprise = SOCIETE si absente
+  // 2ter-prep. Nettoyage du nom CRM puis suffixe " (SOCIETE)" : le nom affiché
+  // par Ringover identifie l'appartenance à l'entreprise (ex. "CIOVEL (CIAO PIZZA...)").
   for (const c of aPousser) {
     const m = c.nom.match(/^(.*?)\s*\((.+)\)\s*$/);
     if (m) {
       c.nom = m[1].trim();
       if (!c.societe) c.societe = m[2].trim();
+    }
+    if (c.nom && c.prenom && c.societe && !c.nom.endsWith("(" + c.societe + ")")) {
+      c.nom = c.nom + " (" + c.societe + ")";
     }
   }
 
@@ -338,8 +343,9 @@ export default async function handler(req: any, res: any) {
     const numsCarte = [...new Set([c.tel, c.tel2].filter(Boolean).map(telEntier))];
     // Skip seulement si UNE MÊME carte Ringover porte DÉJÀ TOUS les numéros
     // (mobile + fixe société ensemble). Le fixe seul sur la carte société ne suffit pas.
-    const carteComplete = numsCarte.length > 0 && numsCarte.some((n: number) =>
-      (cartesParNum.get(n) || []).some((ens: Set<number>) => numsCarte.every((m: number) => ens.has(m))));
+    const carteComplete = numsCarte.length > 0 && cartesB.some((cb) =>
+      (cb.prenom || cb.nom) && cb.nom === c.nom && cb.prenom === c.prenom &&
+      numsCarte.every((m: number) => cb.nums.has(m)));
     // Fiche SOCIÉTÉ (prénom/nom vides) : ne pas skipper parce qu'un EMPLOYÉ porte le fixe.
     // Elle est conservée seulement s'il existe DÉJÀ une carte société du même nom avec ce numéro.
     const estSociete = !c.prenom && !c.nom;
@@ -368,7 +374,7 @@ export default async function handler(req: any, res: any) {
 
   console.log("SYNC CONTACTS RINGOVER", JSON.stringify({ envoyes: aPousser.length, ok, erreurs, premierEchec: journal.find((j) => j.status >= 300) || null }));
   return res.status(200).json({
-    version: "95470c0",
+    version: "b-suffixe",
     envoyes: aPousser.length,
     supprimesAvant: supprimesR.length,
     supprimesDetail: supprimesR.slice(0, 40),
