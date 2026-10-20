@@ -30,6 +30,7 @@ const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", 
 
 const PROMPT_SYSTEME =
   "Tu analyses la transcription d'un appel téléphonique reçu par la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown, avec exactement ces clés : " +
+  "PERSPECTIVE : tu fais partie de l'équipe commerciale d'U'mob — TU ES U'MOB. Rédige le résumé du point de vue du commercial U'mob : l'interlocuteur externe est « le client » ou « le prospect » ; parle de « notre offre », « nos scooters », « notre pack Confort Plus » — JAMAIS de la société U'mob à la 3e personne (« la société U'mob propose… » interdit). Écris U'mob EXACTEMENT ainsi, avec l'apostrophe — jamais « UMob », « Umob », « U mob » ni « U-Mob ». " +
   "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase), delaiJours (entier 1 à 14 : nombre de jours avant l'action recommandée ; si l'interlocuteur ou le salarié dit un délai précis dans l'appel ('je rappelle demain', 'la semaine prochaine'), calcule-le en jours ; sinon réponds 2), " +
   "extraction (objet avec : nomEntreprise, ville, secteur, franchiseur, activite, modeLivraison, prenom, nom, role, email, besoin — chaque valeur est une chaîne). " +
   "Pour extraction : " +

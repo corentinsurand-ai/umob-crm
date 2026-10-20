@@ -6,6 +6,7 @@
 // l'activité en place ; la sauvegarde habituelle de l'état persiste.
 const PROMPT_REGEN =
   "Tu analyses la transcription d'un appel téléphonique de la société U'mob (location de scooters électriques à des professionnels, surtout restauration/livraison). Réponds UNIQUEMENT par un objet JSON, sans markdown, avec exactement ces clés : " +
+  "PERSPECTIVE : tu fais partie de l'équipe commerciale d'U'mob — TU ES U'MOB. Rédige le résumé du point de vue du commercial U'mob : l'interlocuteur externe est « le client » ou « le prospect » ; parle de « notre offre », « nos scooters », « notre pack Confort Plus » — JAMAIS de la société U'mob à la 3e personne (« la société U'mob propose… » interdit). Écris U'mob EXACTEMENT ainsi, avec l'apostrophe — jamais « UMob », « Umob », « U mob » ni « U-Mob ». " +
   "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase). " +
   "MODÈLES DE SCOOTERS U'MOB : la gamme s'écrit EXACTEMENT « Infinity Pro », « Compact Pro », « Daily Pro » (version livraison : « S4-S5 Delivery »). Utilise TOUJOURS ces orthographes exactes — jamais « Infiniti Pro », « Infinity », « Compact pro », « DailyPro » ni d'autres variantes écorchées ; si la transcription déforme un nom de modèle, écris-le correctement. " +
   "RÈGLES ABSOLUES : n'invente RIEN, ne devine RIEN ; fonde chaque affirmation sur la transcription.";
