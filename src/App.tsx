@@ -360,6 +360,17 @@ interface Activite { date: string; texte: string; type?: TypeActivite; echeance?
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
+// ── Scorecard Plan de vente U'mob, version téléphone (7 critères du référentiel
+// fourni par Corentin). Notée 0/1/2 par l'IA sur chaque appel analysé. ──
+const CRITERES_SCORECARD: [string, string][] = [
+  ["accueil", "1. Accueil & cadre de l'appel"],
+  ["decouverte", "2. Découverte flotte & coûts"],
+  ["decisionnaire", "3. Décisionnaire & timing identifiés"],
+  ["comparatif", "4. Comparatif systématique (thermique / concurrent / ancienne génération)"],
+  ["prix", "5. Jamais le prix avant les 4 validations (offre / maintenance / produit / 48 mois)"],
+  ["objections", "6. Objections sans confrontation"],
+  ["prochaineEtape", "7. Prochaine étape datée (qualifier + booker le RDV terrain)"],
+];
 const META_ACT: Record<TypeActivite, { icone: string; libelle: string; couleur: string }> = {
   note: { icone: "📝", libelle: "Note", couleur: "#f59e0b" },
   email: { icone: "✉️", libelle: "E-mail envoyé", couleur: "#0ea5e9" },
@@ -2159,6 +2170,23 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
                   )}
                   {!!ev.resumeIA && <div className="mt-1 text-[12px] leading-relaxed text-slate-700">{ev.resumeIA}</div>}
                   {!!ev.sujets && <div className="mt-1 text-[11px] text-slate-500">{"Sujets / signaux : " + ev.sujets}</div>}
+                  {!!ev.scorecard && (
+                    <div className="mt-1.5 rounded-lg bg-white/80 px-2 py-1.5">
+                      <div className="text-[9.5px] font-bold uppercase tracking-wider text-cyan-800 mb-1">📋 Scorecard Plan de vente U'mob (0 à 2 par critère)</div>
+                      <div className="space-y-0.5">
+                        {CRITERES_SCORECARD.map(([k, l]) => {
+                          const c = ev.scorecard?.[k];
+                          const n = typeof c?.note === "number" ? c.note : 0;
+                          return (
+                            <div key={k} className="flex items-start gap-1.5 text-[10.5px]">
+                              <span className={"shrink-0 rounded px-1 py-0.5 font-bold " + (n === 2 ? "bg-emerald-100 text-emerald-700" : n === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{n}/2</span>
+                              <span className="text-slate-600">{l}{c && c.j ? <span className="text-slate-400"> — {c.j}</span> : null}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {!!ev.transcription && (
                     <details className="mt-1">
                       <summary className="cursor-pointer text-[11px] font-semibold text-cyan-600">📄 Transcription de l'appel</summary>
