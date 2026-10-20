@@ -199,7 +199,7 @@ export default async function handler(req: any, res: any) {
   // --- Diagnostic GET ---
   if (req.method === "GET") {
     return res.status(200).json({
-      version: "b-suffixe",
+      version: "b-upsert",
       message: "Sync contacts CRM -> Ringover. POST sans body = sync complète du répertoire ; POST {contact:{prenom,nom,societe,tel,email}} = temps réel unitaire.",
       RINGOVER_API_KEY: !!process.env.RINGOVER_API_KEY,
       SUPABASE_URL: !!process.env.SUPABASE_URL,
@@ -303,7 +303,7 @@ export default async function handler(req: any, res: any) {
     const itemsB: any[] = Array.isArray(db) ? db : (db.contact_list || db.list || []);
     for (const it of itemsB) {
       const numsCarteB = new Set<number>((it.numbers || it.phone_numbers || []).map((n: any) => (typeof n === "object" ? n.number : n)));
-      cartesB.push({ nums: numsCarteB, societe: propre(it.company), prenom: propre(it.firstname), nom: propre(it.lastname) });
+      cartesB.push({ id: it.contact_id, nums: numsCarteB, societe: propre(it.company), prenom: propre(it.firstname), nom: propre(it.lastname) });
       for (const n of numsCarteB) {
         existants.add(n);
         if (!cartesParNum.has(n)) cartesParNum.set(n, []);
@@ -366,6 +366,16 @@ export default async function handler(req: any, res: any) {
       }],
     };
     if (c.email) corps.contacts[0].email = c.email;
+    // UPSERT : supprimer d'abord les anciennes cartes portant ces numéros
+    // (sinon POST recrée à côté -> doublons). Même règle que le temps réel :
+    // une fiche NOMMÉE qui possède aussi un numéro hors de cette carte est protégée.
+    for (const cb of cartesB) {
+      if (!numsCarte.some((m: number) => cb.nums.has(m))) continue;
+      const nommee = !!(cb.prenom || cb.nom);
+      if (nommee && [...cb.nums].some((n: number) => !numsCarte.includes(n))) continue;
+      await ringo("DELETE", "/contacts/" + cb.id, cle);
+      await new Promise((r4) => setTimeout(r4, 250));
+    }
     const rep = await ringo("POST", "/contacts", cle, corps);
     journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: rep.status, reponse: rep.body.slice(0, 400) });
     if (rep.status >= 200 && rep.status < 300) ok++; else erreurs++;
@@ -374,7 +384,7 @@ export default async function handler(req: any, res: any) {
 
   console.log("SYNC CONTACTS RINGOVER", JSON.stringify({ envoyes: aPousser.length, ok, erreurs, premierEchec: journal.find((j) => j.status >= 300) || null }));
   return res.status(200).json({
-    version: "b-suffixe",
+    version: "b-upsert",
     envoyes: aPousser.length,
     supprimesAvant: supprimesR.length,
     supprimesDetail: supprimesR.slice(0, 40),
