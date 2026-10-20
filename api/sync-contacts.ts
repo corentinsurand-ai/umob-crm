@@ -267,9 +267,8 @@ export default async function handler(req: any, res: any) {
   for (const e of entreprises) {
     const tel = normTel(propre(e.tel));
     if (!tel || tel.length < 9 || vus.has(tel)) continue;
-    // Le fixe est porté par la carte d'un contact (fusion) -> pas de fiche société séparée
-    const porteur = contacts.find((c) => c.entrepriseIds && c.entrepriseIds.includes(e.id) && normTel(propre(c.tel)).length >= 9);
-    if (porteur) continue;
+    // Fiche société TOUJOURS créée (elle porte le fixe) : l'appli Ringover
+    // y rattache les contacts qui portent le même nom `company` (sous-contacts).
     vus.add(tel);
     aPousser.push({
       prenom: "",
