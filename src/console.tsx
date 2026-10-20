@@ -436,7 +436,7 @@ function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof cons
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-800 truncate">{entreprise.nomCommercial || entreprise.nom}</span>
                 {<EtoilesFlex a={a} adj={ajustements} />}
-              </div>
+              <BadgeType a={a} />
               <div className="text-[10px] text-slate-400">{a.date} {a.heure || ""} · {a.directionAppel || "appel"} {a.dureeAppel ? "· " + a.dureeAppel : ""}</div>
               <div className="text-[11px] text-slate-500 line-clamp-2">{a.resumeIA || a.texte}</div>
             </button>
@@ -464,24 +464,29 @@ function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof cons
               {actif.a.scorecard && (
                 <div className="mt-2 rounded-lg bg-white/80 p-2.5">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob — version téléphone (notes cliquables, N/A exclus)</div>
-const SCORECARD_NOUVEAU = `                  <div className="space-y-1">
-                    <div className="mb-1 flex items-center gap-2 flex-wrap"><BadgeType a={actif.a} />{(() => { const sf = scoreFlexible(actif.a, ajustements); return <span className="text-[10px] font-bold text-slate-500">{sf !== null ? sf + "/2 sur critères applicables" : "aucun critère applicable"}</span>; })()}</div>
-                    {CRITERES.map(([k, l]) => {
-                      const applicable = estApplicable(actif.a, k, ajustements);
-                      const eff = applicable ? noteEffective(actif.a, k, ajustements) : -1;
+const SCORECARD_NOUVEAU = `                  <div className="mb-2 flex items-start gap-2 rounded-lg bg-cyan-50 px-2.5 py-1.5 text-[10.5px]">
+                    <span>🔎 <b>Type d'appel analysé :</b> {TYPE_LABEL[typeAuto(actif.a)]}</span>
+                    <span className="ml-auto font-bold text-slate-500">{CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length} critères notés · les autres N/A (exclus)</span>
+                  </div>
+                  <div className="space-y-1">
+                    {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).map(([k, l]) => {
+                      const eff = noteEffective(actif.a, k, ajustements);
                       const ia = actif.a.scorecard?.[k]?.note;
                       const cAdj = ajustements[cleAppel(actif.a)]?.[k];
                       const ajuste = cAdj !== undefined && cAdj !== ia;
-                      const j = actif.a.scorecard?.[k]?.j;
+                      const jj = actif.a.scorecard?.[k]?.j;
                       return (
-                        <div key={k} className={"flex items-start gap-2 text-[10.5px] " + (applicable ? "" : "opacity-45")}>
+                        <div key={k} className="flex items-start gap-2 text-[10.5px]">
                           <button title="Cliquer pour ajuster : 0 → 1 → 2 → N/A (ton jugement prime sur l'IA)" onClick={() => onAjuste(actif.a, k, cycleNote(eff))} className="shrink-0 transition-transform hover:scale-110">
                             <span className={"rounded px-1.5 py-0.5 font-bold " + (eff === -1 ? "bg-slate-100 text-slate-400" : eff === 2 ? "bg-emerald-100 text-emerald-700" : eff === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{eff === -1 ? "N/A" : eff + "/2"}</span>
                           </button>
-                          <span className="text-slate-600"><b>{l}</b>{ajuste && <span className="ml-1 text-[9px] font-bold text-amber-600">✎ ajusté</span>}{applicable && j ? <span className="text-slate-400"> — {j}</span> : null}{!applicable && <span className="text-slate-400"> — non applicable à ce type d'appel</span>}</span>
+                          <span className="text-slate-600"><b>{l}</b>{ajuste && <span className="ml-1 text-[9px] font-bold text-amber-600">✎ ajusté</span>}{jj ? <span className="text-slate-400"> — {jj}</span> : null}</span>
                         </div>
                       );
                     })}
+                    {CRITERES.filter(([k]) => estApplicable(actif.a, k, ajustements)).length === 0 && (
+                      <div className="text-[10.5px] text-slate-400">Aucun critère applicable à ce type d'appel — rien d'autre à noter.</div>
+                    )}
                   </div>`;
                 </div>
               )}
