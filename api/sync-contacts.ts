@@ -159,7 +159,19 @@ export default async function handler(req: any, res: any) {
     let contacts: any = null;
     try { contacts = JSON.parse(rep.body); } catch (e) { contacts = rep.body.slice(0, 500); }
     const liste = Array.isArray(contacts) ? contacts : (contacts && typeof contacts === "object" && Array.isArray(contacts.contact_list)) ? contacts.contact_list : (contacts && typeof contacts === "object" && Array.isArray(contacts.list)) ? contacts.list : null;
-    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: liste ? ((contacts && typeof contacts === "object" && typeof contacts.total_contact_count === "number") ? contacts.total_contact_count : liste.length) : "?", apercu: liste ? liste.slice(0, 10) : contacts });
+    let resume: any = null;
+    if (liste) {
+      const parNum: any = {};
+      for (const it of liste) {
+        for (const n of it.numbers || []) {
+          const num = (typeof n === "object" ? n.number : n);
+          if (!parNum[num]) parNum[num] = [];
+          parNum[num].push({ id: it.contact_id, prenom: it.firstname, nom: it.lastname, societe: it.company });
+        }
+      }
+      resume = parNum;
+    }
+    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: liste ? liste.length : "?", contact_list_count: (contacts && contacts.contact_list_count) || "?", resumeParNumero: resume, apercu: liste ? liste.slice(0, 10) : contacts });
   }
 
   // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
