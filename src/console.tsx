@@ -65,6 +65,191 @@ const CRITERES: [string, string][] = [
   ["prochaineEtape", "7. Prochaine étape datée (qualifier + booker le RDV terrain)"],
 ];
 
+/* ————— SCORING SOUPLE VERSION TÉLÉPHONE —————
+   Chaque appel a un TYPE (prospection à froid / demande entrante / 1er contact /
+   suivi / renouvellement) détecté automatiquement depuis le sens de l'appel et
+   le résumé IA. Un critère NON APPLICABLE au type d'appel passe N/A (note -1) :
+   il est EXCLU de la moyenne — jamais compté 0 (un suivi de 1 min n'est pas
+   noté sur la découverte). Le manager peut ajuster chaque note d'un clic
+   (0 → 1 → 2 → N/A) : son jugement prime sur l'IA. */
+type TypeAppel = "prospection" | "entrant" | "premier" | "suivi" | "renouvellement";
+type NoteFlexible = 0 | 1 | 2 | -1; // -1 = N/A
+
+const TYPE_LABEL: Record<TypeAppel, string> = {
+  prospection: "🧭 Prospection à froid",
+  entrant: "📥 Demande entrante",
+  premier: "📞 1er contact",
+  suivi: "🔁 Suivi",
+  renouvellement: "🔄 Renouvellement",
+};
+
+const typeAuto = (a: ActiviteC): TypeAppel => {
+  const t = ((a.resumeIA || "") + " " + (a.sujets || "") + " " + (a.texte || "")).toLowerCase();
+  const sens = (a.directionAppel || "").toLowerCase();
+  if (/renouvel|fin de contrat/.test(t)) return "renouvellement";
+  if (/suivi|rappel|confirmons|comme convenu|vérifie|verifie/.test(t)) return "suivi";
+  if (sens.includes("entrant") || /demande de|nous appelle|il nous contacte|suite à|suite au|vu votre|recommandation/.test(t)) return "entrant";
+  if (/premier contact|prise de contact|nous nous présentons|prospection/.test(t)) return "prospection";
+  return "premier";
+};
+
+/* Applicabilité des critères selon le type d'appel. */
+const APPLICABILITE: Record<TypeAppel, Record<string, boolean>> = {
+  prospection: { accueil: true, decouverte: true, decisionnaire: true, comparatif: true, prix: true, objections: true, prochaineEtape: true },
+  entrant: { accueil: true, decouverte: true, decisionnaire: true, comparatif: true, prix: true, objections: true, prochaineEtape: true },
+  premier: { accueil: true, decouverte: true, decisionnaire: true, comparatif: true, prix: true, objections: true, prochaineEtape: true },
+  suivi: { accueil: true, decouverte: false, decisionnaire: false, comparatif: false, prix: true, objections: true, prochaineEtape: true },
+  renouvellement: { accueil: true, decouverte: true, decisionnaire: true, comparatif: false, prix: true, objections: true, prochaineEtape: true },
+};
+
+/* Le prix : N/A s'il n'est pas abordé dans l'appel (souplesse téléphone). */
+const prixAborde = (a: ActiviteC) => /prix|€|euros|loyer|par mois|combien/i.test((a.sujets || "") + " " + (a.transcription || ""));
+
+/* Ajustements du manager, persistés dans le navigateur (clé par appel). */
+const CLE_ADJ = "umob-console-ajustements";
+type Ajustements = Record<string, Record<string, NoteFlexible>>; // { cléAppel: { critère: note } }
+const cleAppel = (a: ActiviteC) => a.appelId || a.texte || (a.dateISO || "") + (a.heure || "");
+const lireAjustements = (): Ajustements => { try { return JSON.parse(localStorage.getItem(CLE_ADJ) || "{}"); } catch { return {}; } };
+
+const noteEffective = (a: ActiviteC, cle: string, adj?: Ajustements): NoteFlexible => {
+  const aj = adj?.[cleAppel(a)]?.[cle];
+  if (aj !== undefined) return aj;
+  return ((a.scorecard?.[cle]?.note ?? 0) as NoteFlexible);
+};
+const estApplicable = (a: ActiviteC, cle: string, adj?: Ajustements): boolean => {
+  if (noteEffective(a, cle, adj) === -1) return false; // N/A posé par le manager
+  if (!APPLICABILITE[typeAuto(a)][cle]) return false; // N/A par type d'appel
+  if (cle === "prix" && !prixAborde(a)) return false; // prix non abordé → N/A
+  return true;
+};
+/* Score d'un appel : moyenne /2 sur les seuls critères applicables. */
+const scoreFlexible = (a: ActiviteC, adj?: Ajustements): number | null => {
+  const notes = CRITERES.filter(([k]) => estApplicable(a, k, adj)).map(([k]) => noteEffective(a, k, adj));
+  if (!notes.length) return null;
+  return Math.round((notes.reduce((x, y) => x + y, 0) / notes.length) * 10) / 10;
+};
+const etoilesFlexibles = (a: ActiviteC, adj?: Ajustements) => {
+  if (!a.scorecard) return a.scoreIA ?? null;
+  const sc = scoreFlexible(a, adj);
+  return sc === null ? (a.scoreIA ?? null) : Math.max(0, Math.min(5, Math.round((sc / 2) * 5)));
+};
+const EtoilesFlex = ({ a, adj }: { a: ActiviteC; adj?: Ajustements }) => {
+  const n = etoilesFlexibles(a, adj);
+  return n == null ? null : <Etoiles score={n} />;
+};
+const BadgeType = ({ a }: { a: ActiviteC }) => (
+  <span className="rounded-full border border-slate-200 px-2 py-0.5 text-[9.5px] font-bold text-slate-500">{TYPE_LABEL[typeAuto(a)]}</span>
+);
+
+/* ————— GRILLE DE SCORING (onglet, visible manager ET collaborateurs) ————— */
+const GRILLE: { type: TypeAppel; titre: string; sous: string; lignes: [string, string][] }[] = [
+  {
+    type: "prospection", titre: "🧭 Prospection à froid", sous: "Sortant vers un suspect qui ne connaît pas U'mob — objectif : qualifier + booker le RDV terrain.",
+    lignes: [
+      ["1. Accueil & cadre", "Bris de glace, présentation U'mob et du motif clairement dès l'ouverture."],
+      ["2. Découverte flotte & coûts", "Tentative de découverte même brève : nb scooters, essence €/mois, pannes. Si le client coupe, l'effort compte."],
+      ["3. Décisionnaire & timing", "Avoir le bon interlocuteur OU identifier qui décide."],
+      ["4. Comparatif systématique", "N/A possible : si la flotte n'a pas pu être identifiée au téléphone, ce critère ne peut pas être honoré — pas de punition."],
+      ["5. Jamais le prix avant les 4 validations", "Règle d'or. N/A si le prix n'est pas abordé dans l'appel."],
+      ["6. Objections sans confrontation", "« Pas intéressé / on a déjà » traités par questions, jamais frontalement."],
+      ["7. Prochaine étape datée", "⭐ LA mesure de réussite : RDV ou rappel daté (« mardi 10 h ») = 2 · vague = 1 · rien = 0."],
+    ],
+  },
+  {
+    type: "entrant", titre: "📥 Demande entrante", sous: "Le client appelle (site, démo, recommandation) — il a déjà le besoin.",
+    lignes: [
+      ["1. Accueil & cadre", "On ne « présente » pas U'mob à froid : réponse rapide, on ne fait pas répéter, on remercie du contact."],
+      ["2. Découverte flotte & coûts", "⭐ Reformuler le besoin AVANT de répondre : « vous livrez sur quel périmètre, combien par jour ? »"],
+      ["3. Décisionnaire & timing", "Souvent acquis (c'est le décideur qui appelle) — noté 2 facilement, c'est normal."],
+      ["4. Comparatif systématique", "Adapté à SA situation réelle : son thermique, son loueur actuel."],
+      ["5. Prix — règle spéciale entrants", "Le client demande souvent le prix d'emblée. Fourchette APRÈS cadrage = 2 · fourchette immédiate sans découverte = 1 · prix précis + remise sans validation = 0."],
+      ["6. Objections sans confrontation", "Reformulation sans confrontation."],
+      ["7. Prochaine étape datée", "RDV terrain ou relevé de flotte daté."],
+    ],
+  },
+  {
+    type: "suivi", titre: "🔁 Suivi", sous: "Rappel convenu, vérification devis… souvent court.",
+    lignes: [
+      ["1. Accueil & cadre", "Rappel fait comme promis = bon accueil."],
+      ["2. Découverte flotte & coûts", "N/A — un suivi de 1 min n'est pas noté sur la découverte."],
+      ["3. Décisionnaire & timing", "N/A."],
+      ["4. Comparatif systématique", "N/A."],
+      ["5. Jamais le prix avant les 4 validations", "Noté seulement si le prix est abordé dans l'appel — N/A sinon."],
+      ["6. Objections sans confrontation", "Traitement calme des blocages éventuels."],
+      ["7. Prochaine étape datée", "⭐ Dater ferme le prochain pas."],
+    ],
+  },
+  {
+    type: "renouvellement", titre: "🔄 Renouvellement", sous: "Client équipé, fin de contrat.",
+    lignes: [
+      ["1. Accueil & cadre", "Ton de proximité adapté à un client existant."],
+      ["2. Découverte flotte & coûts", "Orientée satisfaction : « ça tourne bien ? des pannes ? »"],
+      ["3. Décisionnaire & timing", "Souvent déjà connu — facile 2."],
+      ["4. Comparatif systématique", "N/A — pas besoin de convaincre un client équipé."],
+      ["5. Jamais le prix avant les 4 validations", "Règle d'or. N/A si le prix n'est pas abordé."],
+      ["6. Objections sans confrontation", "Sans confrontation."],
+      ["7. Prochaine étape datée", "Devis de renouvellement daté."],
+    ],
+  },
+  {
+    type: "premier", titre: "📞 1er contact (hors prospection à froid)", sous: "Premier échange convenu ou chaleureux avec un prospect identifié.",
+    lignes: [
+      ["1. Accueil & cadre", "Cadre posé, motif annoncé."],
+      ["2. Découverte flotte & coûts", "Flotte, usage, coûts actuels interrogés."],
+      ["3. Décisionnaire & timing", "Qui décide, pour quand."],
+      ["4. Comparatif systématique", "Thermique / concurrent / ancienne génération selon le cas."],
+      ["5. Jamais le prix avant les 4 validations", "Règle d'or. N/A si le prix n'est pas abordé."],
+      ["6. Objections sans confrontation", "Reformulation, anti-vente si besoin."],
+      ["7. Prochaine étape datée", "⭐ Qualifier + booker le RDV terrain."],
+    ],
+  },
+];
+
+function Grille() {
+  const [ouvert, setOuvert] = useState<TypeAppel | null>("entrant");
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="text-sm font-bold text-slate-800 mb-1">📚 Grille de scoring — les critères selon le type d'appel</div>
+        <div className="text-xs text-slate-600 leading-relaxed">
+          Chaque appel est noté sur les critères <b>applicables à son type uniquement</b> (0 / 1 / 2, ou N/A). Les critères non applicables ne comptent JAMAIS dans la moyenne — au téléphone, un suivi de 1 min ne se juge pas comme une découverte de 20 min. Le manager peut ajuster toute note d'un clic : son jugement prime sur l'IA.
+        </div>
+      </Card>
+      {GRILLE.map((g) => (
+        <Card key={g.type}>
+          <button onClick={() => setOuvert(ouvert === g.type ? null : g.type)} className="flex w-full items-center gap-2 text-left">
+            <span className="text-sm font-bold text-slate-800">{g.titre}</span>
+            <span className="ml-auto text-slate-400">{ouvert === g.type ? "▾" : "▸"}</span>
+          </button>
+          {ouvert === g.type && (
+            <>
+              <div className="mt-1 text-[11px] text-slate-500">{g.sous}</div>
+              <div className="mt-2 space-y-1">
+                {g.lignes.map(([c, dd], i) => (
+                  <div key={i} className="flex items-start gap-2 rounded-lg bg-slate-50 px-3 py-1.5 text-[11px]">
+                    <span className={"shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-bold " + (dd.startsWith("N/A") ? "bg-slate-200 text-slate-500" : "bg-cyan-50 text-cyan-700")}>{dd.startsWith("N/A") ? "N/A" : "noté"}</span>
+                    <span className="text-slate-700"><b>{c}</b>{dd.startsWith("N/A") ? "" : <span className="text-slate-500"> — {dd}</span>}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Card>
+      ))}
+      <Card>
+        <div className="text-sm font-bold mb-1">⚖️ Règles transversales (tous types)</div>
+        <div className="space-y-1 text-[11px] text-slate-600">
+          <div className="rounded-lg bg-slate-50 px-3 py-1.5">Prix non abordé dans l'appel → critère 5 = N/A, jamais 0.</div>
+          <div className="rounded-lg bg-slate-50 px-3 py-1.5">Score global = moyenne des seuls critères applicables.</div>
+          <div className="rounded-lg bg-slate-50 px-3 py-1.5">Type d'appel détecté automatiquement (sens de l'appel + analyse IA), ajustable par le manager.</div>
+          <div className="rounded-lg bg-slate-50 px-3 py-1.5">Chaque note est cliquable dans une conversation : 0 → 1 → 2 → N/A. Badge « ✎ ajusté » quand le manager contredit l'IA.</div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+
 /* ————— Outils dates (dateISO = jj/mm/aaaa) ————— */
 const cleDate = (d?: string): number => {
   if (!d) return 0;
@@ -227,7 +412,7 @@ function Brief({ d, etat }: { d: ReturnType<typeof construire>; etat: EtatConsol
 }
 
 /* ═══════════════════ CONVERSATIONS ═══════════════════ */
-function Conversations({ d }: { d: ReturnType<typeof construire> }) {
+function Conversations({ d, ajustements, onAjuste }: { d: ReturnType<typeof construire>; ajustements: Ajustements; onAjuste: (a: ActiviteC, cle: string, note: NoteFlexible) => void }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const filtres = d.appels.filter(({ entreprise, a }) => {
@@ -235,6 +420,7 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
     return !s || (entreprise.nom + " " + (a.resumeIA || "") + " " + (a.sujets || "") + " " + (a.transcription || "") + " " + a.texte).toLowerCase().includes(s);
   });
   const actif = filtres.find((x) => x.a.appelId === sel || (!x.a.appelId && x.a.texte === sel)) || null;
+  const cycleNote = (n: NoteFlexible): NoteFlexible => (n === 0 ? 1 : n === 1 ? 2 : n === 2 ? -1 : 0);
   return (
     <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
       <Card className="p-0 overflow-hidden">
@@ -249,7 +435,7 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
               className={"w-full text-left px-3 py-2.5 border-t border-slate-100 hover:bg-slate-50 " + ((a.appelId || a.texte) === sel ? "bg-cyan-50" : "")}>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-800 truncate">{entreprise.nomCommercial || entreprise.nom}</span>
-                {a.scoreIA != null && <Etoiles score={a.scoreIA} />}
+                {<EtoilesFlex a={a} adj={ajustements} />}
               </div>
               <div className="text-[10px] text-slate-400">{a.date} {a.heure || ""} · {a.directionAppel || "appel"} {a.dureeAppel ? "· " + a.dureeAppel : ""}</div>
               <div className="text-[11px] text-slate-500 line-clamp-2">{a.resumeIA || a.texte}</div>
@@ -266,7 +452,8 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
             </div>
             <div className="flex items-center gap-2">
               {badgeSentiment(actif.a.sentiment)}
-              {actif.a.scoreIA != null && <Etoiles score={actif.a.scoreIA} />}
+              {<EtoilesFlex a={actif.a} adj={ajustements} />}
+              {actif.a.scorecard && <BadgeType a={actif.a} />}
               {actif.a.urlEnregistrement && <a href={actif.a.urlEnregistrement} target="_blank" rel="noreferrer" className="rounded-full bg-cyan-600 px-3 py-1 text-[11px] font-bold text-white">▶️ Enregistrement</a>}
             </div>
           </div>
@@ -276,19 +463,26 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
               {actif.a.sujets && <div className="text-[11px] text-cyan-800 mt-1.5">🧩 Sujets / signaux détectés : {actif.a.sujets}</div>}
               {actif.a.scorecard && (
                 <div className="mt-2 rounded-lg bg-white/80 p-2.5">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob (0 à 2 par critère)</div>
-                  <div className="space-y-1">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob — version téléphone (notes cliquables, N/A exclus)</div>
+const SCORECARD_NOUVEAU = `                  <div className="space-y-1">
+                    <div className="mb-1 flex items-center gap-2 flex-wrap"><BadgeType a={actif.a} />{(() => { const sf = scoreFlexible(actif.a, ajustements); return <span className="text-[10px] font-bold text-slate-500">{sf !== null ? sf + "/2 sur critères applicables" : "aucun critère applicable"}</span>; })()}</div>
                     {CRITERES.map(([k, l]) => {
-                      const c = actif.a.scorecard?.[k];
-                      const n = typeof c?.note === "number" ? c.note : 0;
+                      const applicable = estApplicable(actif.a, k, ajustements);
+                      const eff = applicable ? noteEffective(actif.a, k, ajustements) : -1;
+                      const ia = actif.a.scorecard?.[k]?.note;
+                      const cAdj = ajustements[cleAppel(actif.a)]?.[k];
+                      const ajuste = cAdj !== undefined && cAdj !== ia;
+                      const j = actif.a.scorecard?.[k]?.j;
                       return (
-                        <div key={k} className="flex items-start gap-2 text-[10.5px]">
-                          <span className={"shrink-0 rounded px-1.5 py-0.5 font-bold " + (n === 2 ? "bg-emerald-100 text-emerald-700" : n === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{n}/2</span>
-                          <span className="text-slate-600"><b>{l}</b>{c && c.j ? <span className="text-slate-400"> — {c.j}</span> : null}</span>
+                        <div key={k} className={"flex items-start gap-2 text-[10.5px] " + (applicable ? "" : "opacity-45")}>
+                          <button title="Cliquer pour ajuster : 0 → 1 → 2 → N/A (ton jugement prime sur l'IA)" onClick={() => onAjuste(actif.a, k, cycleNote(eff))} className="shrink-0 transition-transform hover:scale-110">
+                            <span className={"rounded px-1.5 py-0.5 font-bold " + (eff === -1 ? "bg-slate-100 text-slate-400" : eff === 2 ? "bg-emerald-100 text-emerald-700" : eff === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{eff === -1 ? "N/A" : eff + "/2"}</span>
+                          </button>
+                          <span className="text-slate-600"><b>{l}</b>{ajuste && <span className="ml-1 text-[9px] font-bold text-amber-600">✎ ajusté</span>}{applicable && j ? <span className="text-slate-400"> — {j}</span> : null}{!applicable && <span className="text-slate-400"> — non applicable à ce type d'appel</span>}</span>
                         </div>
                       );
                     })}
-                  </div>
+                  </div>`;
                 </div>
               )}
             </div>
@@ -424,7 +618,7 @@ function Prospection({ d, etat }: { d: ReturnType<typeof construire>; etat: Etat
 }
 
 /* ═══════════════════ COACHING & INSIGHTS ═══════════════════ */
-function Coaching({ d }: { d: ReturnType<typeof construire> }) {
+function Coaching({ d, ajustements }: { d: ReturnType<typeof construire>; ajustements: Ajustements }) {
   const scores = d.analyses.map((x) => x.a.scoreIA).filter((x) => x != null) as number[];
   const moyenne = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
   return (
@@ -436,14 +630,14 @@ function Coaching({ d }: { d: ReturnType<typeof construire> }) {
         )}
       </Card>
       <Card>
-        <div className="text-sm font-semibold mb-1">📋 Scorecard par critère — Plan de vente version téléphone</div>
+        <div className="text-sm font-semibold mb-1">📋 Scorecard par critère — uniquement les appels où le critère s’applique (N/A exclus)</div>
         {(() => {
           const avecSc = d.analyses.filter((x) => x.a.scorecard);
           if (!avecSc.length) return <div className="text-xs text-slate-400">Aucun appel encore scoré sur les 7 critères. Chaque appel analysé par le webhook (ou via ✨↻ Régénérer) reçoit sa scorecard 0-2 automatiquement.</div>;
           return (
             <div className="space-y-1.5">
               {CRITERES.map(([k, l]) => {
-                const notes = avecSc.map((x) => x.a.scorecard?.[k]?.note).filter((n: any): n is number => typeof n === "number");
+                const notes = avecSc.filter((x) => estApplicable(x.a, k, ajustements)).map((x) => noteEffective(x.a, k, ajustements)).filter((n) => n !== -1);
                 const moy = notes.length ? notes.reduce((a: number, b: number) => a + b, 0) / notes.length : 0;
                 const pct = Math.round((moy / 2) * 100);
                 return (
@@ -734,9 +928,18 @@ function StatsDevis({ etat }: { etat: EtatConsole }) {
 /* ═══════════════════ CONSOLE (onglets) ═══════════════════ */
 export function ConsoleManager({ etat }: { etat: EtatConsole }) {
   const [tab, setTab] = useState("brief");
+  const [ajustements, setAjustements] = useState<Ajustements>(() => lireAjustements());
+  const ajuster = (a: ActiviteC, cle: string, note: NoteFlexible) => {
+    setAjustements((prev) => {
+      const c = cleAppel(a);
+      const suivant: Ajustements = { ...prev, [c]: { ...(prev[c] || {}), [cle]: note } };
+      try { localStorage.setItem(CLE_ADJ, JSON.stringify(suivant)); } catch { /* stockage indisponible : ajustement non persisté */ }
+      return suivant;
+    });
+  };
   const d = useMemo(() => construire(etat), [etat]);
   const onglets = [
-    ["brief", "☀️ Brief"], ["conversations", "💬 Conversations"], ["deals", "🎯 Deals"], ["devis", "🧾 Devis"],
+    ["brief", "☀️ Brief"], ["conversations", "💬 Conversations"], ["grille", "📚 Grille de scoring"], ["deals", "🎯 Deals"], ["devis", "🧾 Devis"],
     ["prospection", "🧭 Prospection"], ["coaching", "🎓 Coaching"], ["insights", "📊 Insights"],
   ] as const;
   return (
@@ -754,12 +957,13 @@ export function ConsoleManager({ etat }: { etat: EtatConsole }) {
         ))}
       </div>
       {tab === "brief" && <Brief d={d} etat={etat} />}
-      {tab === "conversations" && <Conversations d={d} />}
+      {tab === "conversations" && <Conversations d={d} ajustements={ajustements} onAjuste={ajuster} />}
+      {tab === "grille" && <Grille />}
       {tab === "deals" && <Deals d={d} etat={etat} />}
       {tab === "devis" && <DevisVue d={d} etat={etat} />}
       {tab === "devis" && <StatsDevis etat={etat} />}
       {tab === "prospection" && <Prospection d={d} etat={etat} />}
-      {tab === "coaching" && <Coaching d={d} />}
+      {tab === "coaching" && <Coaching d={d} ajustements={ajustements} />}
       {tab === "insights" && <Insights d={d} />}
     </div>
   );
