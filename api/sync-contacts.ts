@@ -73,25 +73,32 @@ export default async function handler(req: any, res: any) {
     const cle = process.env.RINGOVER_API_KEY;
     if (!cle) return res.status(503).json({ erreur: "RINGOVER_API_KEY absente" });
     const c = req.body.contact as any;
-    const tel = normTel(propre(c.tel));
-    if (!tel || tel.length < 9) return res.status(400).json({ erreur: "Numéro invalide", tel: propre(c.tel) });
+    // Multi-numéros : accepte tel (chaîne) ou tels (tableau)
+    const telsBruts: string[] = Array.isArray(c.tels) ? c.tels.map((x: any) => propre(x)) : [propre(c.tel)];
+    const tels = [...new Set(telsBruts.map(normTel).filter((x: string) => x && x.length >= 9))];
+    if (!tels.length) return res.status(400).json({ erreur: "Numéro invalide", tel: propre(c.tel) });
     const prenom = propre(c.prenom);
     const nom = propre(c.nom);
     const societe = propre(c.societe);
     const email = propre(c.email);
-    // Anti-doublon : si le numéro existe déjà côté Ringover, on ne recrée pas
-    let dejaU = false;
+    // UPSERT : supprimer les fiches Ringover existantes portant un de ces numéros,
+    // puis recréer la carte à jour (le POST Ringover ne fait pas de mise à jour)
+    const numsEntiers = new Set(tels.map(telEntier));
+    const aSupprimer: number[] = [];
     try {
       const repListeU = await ringo("GET", "/contacts?limit_count=100", cle, undefined, 400000);
       const du: any = JSON.parse(repListeU.body);
       const itemsU: any[] = Array.isArray(du) ? du : (du.contact_list || du.list || []);
       for (const it of itemsU) {
         for (const n of it.numbers || it.phone_numbers || []) {
-          if ((typeof n === "object" ? n.number : n) === telEntier(tel)) dejaU = true;
+          if (numsEntiers.has(typeof n === "object" ? n.number : n)) aSupprimer.push(it.contact_id);
         }
       }
     } catch (e) { /* liste illisible -> on tente la création */ }
-    if (dejaU) return res.status(200).json({ ok: true, dejaPresent: true, tel });
+    for (const idS of [...new Set(aSupprimer)]) {
+      await ringo("DELETE", "/contacts/" + idS, cle);
+      await new Promise((r3) => setTimeout(r3, 250));
+    }
     // Format OFFICIEL validé (source : connecteur Pipedream Ringover create-contact) :
     // {contacts:[{firstname, lastname, company, is_shared, numbers:[{number, type}]}]}
     const corps: any = {
@@ -100,14 +107,14 @@ export default async function handler(req: any, res: any) {
         lastname: nom,
         company: societe,
         is_shared: true,
-        numbers: [{ number: telEntier(tel), type: "other" }],
+        numbers: tels.map((x: string) => ({ number: telEntier(x), type: "other" })),
       }],
     };
     if (email) corps.contacts[0].email = email;
     const rep = await ringo("POST", "/contacts", cle, corps);
-    console.log("SYNC CONTACT (unitaire)", JSON.stringify({ tel, nom: (prenom + " " + nom).trim(), status: rep.status, reponse: rep.body }));
+    console.log("SYNC CONTACT (unitaire)", JSON.stringify({ tels, nom: (prenom + " " + nom).trim(), status: rep.status, reponse: rep.body }));
     if (rep.status >= 200 && rep.status < 300) {
-      return res.status(200).json({ ok: true, status: rep.status, nom: (prenom + " " + nom).trim(), tel });
+      return res.status(200).json({ ok: true, status: rep.status, nom: (prenom + " " + nom).trim(), supprimes: aSupprimer.length, tels });
     }
     return res.status(502).json({ ok: false, status: rep.status, reponse: rep.body.slice(0, 500), note: "Format à calibrer — voir logs Vercel" });
   }
