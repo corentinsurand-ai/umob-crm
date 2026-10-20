@@ -79,6 +79,19 @@ export default async function handler(req: any, res: any) {
     const nom = propre(c.nom);
     const societe = propre(c.societe);
     const email = propre(c.email);
+    // Anti-doublon : si le numéro existe déjà côté Ringover, on ne recrée pas
+    let dejaU = false;
+    try {
+      const repListeU = await ringo("GET", "/contacts?limit_count=100", cle);
+      const du: any = JSON.parse(repListeU.body);
+      const itemsU: any[] = Array.isArray(du) ? du : (du.contact_list || du.list || []);
+      for (const it of itemsU) {
+        for (const n of it.numbers || it.phone_numbers || []) {
+          if ((typeof n === "object" ? n.number : n) === telEntier(tel)) dejaU = true;
+        }
+      }
+    } catch (e) { /* liste illisible -> on tente la création */ }
+    if (dejaU) return res.status(200).json({ ok: true, dejaPresent: true, tel });
     // Format OFFICIEL validé (source : connecteur Pipedream Ringover create-contact) :
     // {contacts:[{firstname, lastname, company, is_shared, numbers:[{number, type}]}]}
     const corps: any = {
@@ -99,6 +112,45 @@ export default async function handler(req: any, res: any) {
     return res.status(502).json({ ok: false, status: rep.status, reponse: rep.body.slice(0, 500), note: "Format à calibrer — voir logs Vercel" });
   }
 
+  // --- Mode GET ?purge=1 : SUPPRIMER les doublons (garder la fiche la plus récente par numéro) ---
+  if (req.method === "GET" && base.searchParams.get("purge") === "1") {
+    const cleP = process.env.RINGOVER_API_KEY;
+    if (!cleP) return res.status(503).json({ erreur: "RINGOVER_API_KEY absente" });
+    const parNumero = new Map<number, any[]>();
+    let total = 0, structure: string[] = [];
+    for (let page = 0; page < 5; page++) {
+      const rep = await ringo("GET", "/contacts?limit_count=100&limit_offset=" + (page * 100), cleP);
+      if (rep.status < 200 || rep.status >= 300) return res.status(502).json({ erreur: "Liste illisible", status: rep.status, reponse: rep.body.slice(0, 300) });
+      let data: any;
+      try { data = JSON.parse(rep.body); } catch (e) { return res.status(502).json({ erreur: "JSON invalide", apercu: rep.body.slice(0, 300) }); }
+      const items: any[] = Array.isArray(data) ? data : (data.contact_list || data.list || []);
+      if (!items.length) break;
+      if (!structure.length && items[0]) structure = Object.keys(items[0]);
+      for (const it of items) {
+        const nums: number[] = (it.numbers || it.phone_numbers || []).map((n: any) => (typeof n === "object" ? n.number : n)).filter((n: any) => !!n);
+        if (!nums.length) nums.push(-1 * (it.contact_id || 0));
+        for (const n of nums) {
+          if (!parNumero.has(n)) parNumero.set(n, []);
+          parNumero.get(n).push(it);
+        }
+      }
+      total += items.length;
+      if (items.length < 100) break;
+    }
+    const supprimes: any[] = [], erreursP: any[] = [];
+    for (const [num, items] of parNumero) {
+      if (items.length <= 1) continue;
+      const tries = [...items].sort((a: any, b: any) => (b.contact_id || 0) - (a.contact_id || 0));
+      for (const vieux of tries.slice(1)) {
+        const rep = await ringo("DELETE", "/contacts/" + vieux.contact_id, cleP);
+        if (rep.status >= 200 && rep.status < 300) supprimes.push({ id: vieux.contact_id, nom: ((vieux.firstname || "") + " " + (vieux.lastname || "")).trim(), num });
+        else erreursP.push({ id: vieux.contact_id, status: rep.status, reponse: rep.body.slice(0, 200) });
+        await new Promise((rs) => setTimeout(rs, 250));
+      }
+    }
+    return res.status(200).json({ total, groupes: parNumero.size, nbSupprimes: supprimes.length, supprimes, erreursP, structure });
+  }
+
   // --- Mode GET ?list=1 : LISTER les contacts côté Ringover (vérification) ---
   if (req.method === "GET" && base.searchParams.get("list") === "1") {
     const cleList = process.env.RINGOVER_API_KEY;
@@ -107,7 +159,7 @@ export default async function handler(req: any, res: any) {
     let contacts: any = null;
     try { contacts = JSON.parse(rep.body); } catch (e) { contacts = rep.body.slice(0, 500); }
     const liste = Array.isArray(contacts) ? contacts : (contacts && typeof contacts === "object" && Array.isArray(contacts.contact_list)) ? contacts.contact_list : (contacts && typeof contacts === "object" && Array.isArray(contacts.list)) ? contacts.list : null;
-    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: liste ? liste.length : "?", apercu: liste ? liste.slice(0, 10) : contacts });
+    return res.status(rep.status >= 200 && rep.status < 300 ? 200 : 502).json({ status: rep.status, nb: liste ? ((contacts && typeof contacts === "object" && typeof contacts.total_contact_count === "number") ? contacts.total_contact_count : liste.length) : "?", apercu: liste ? liste.slice(0, 10) : contacts });
   }
 
   // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
@@ -192,10 +244,25 @@ export default async function handler(req: any, res: any) {
     });
   }
 
+  // 2bis. Numéros déjà présents côté Ringover (anti-doublon)
+  const existants = new Set<number>();
+  try {
+    const repListeB = await ringo("GET", "/contacts?limit_count=100", cle);
+    const db: any = JSON.parse(repListeB.body);
+    const itemsB: any[] = Array.isArray(db) ? db : (db.contact_list || db.list || []);
+    for (const it of itemsB) {
+      for (const n of it.numbers || it.phone_numbers || []) existants.add(typeof n === "object" ? n.number : n);
+    }
+  } catch (e) { /* liste illisible */ }
+
   // 3. Pousser vers Ringover (upsert), 2 req/s max
   const journal: any[] = [];
   let ok = 0, erreurs = 0;
   for (const c of aPousser.slice(0, 300)) {
+    if (existants.has(telEntier(c.tel))) {
+      journal.push({ cle: c.cle, nom: (c.prenom + " " + c.nom).trim(), status: "deja", reponse: "d\u00e9j\u00e0 pr\u00e9sent, conserv\u00e9" });
+      continue;
+    }
     // Format OFFICIEL (cf. mode unitaire) : {contacts:[{...}], is_shared}
     const corps: any = {
       contacts: [{
