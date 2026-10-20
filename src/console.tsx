@@ -14,6 +14,7 @@ interface ActiviteC {
   date: string; texte: string; type?: string; echeance?: string; dateISO?: string; heure?: string;
   resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number;
   transcription?: string; urlEnregistrement?: string; directionAppel?: string; dureeAppel?: string;
+  scorecard?: { [k: string]: { note: number; j: string } };
 }
 interface EntrepriseC {
   id: string; nom: string; nomCommercial?: string; secteur: string; ville: string; statut: string;
@@ -48,6 +49,21 @@ const badgeSentiment = (s?: string) => {
     <span className={"rounded-full px-2 py-0.5 text-[10px] font-semibold " + (ok ? "bg-emerald-50 text-emerald-700" : ko ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-600")}>{s}</span>
   );
 };
+
+/* ————— Scorecard Plan de vente U'mob, version téléphone (7 critères du
+   référentiel fourni par Corentin : accueil, découverte flotte & coûts,
+   décisionnaire, comparatif, jamais le prix avant les 4 validations,
+   objections sans confrontation, prochaine étape datée). Notée 0/1/2 par
+   l'IA sur chaque appel — jamais déduite localement. ————— */
+const CRITERES: [string, string][] = [
+  ["accueil", "1. Accueil & cadre de l'appel"],
+  ["decouverte", "2. Découverte flotte & coûts"],
+  ["decisionnaire", "3. Décisionnaire & timing identifiés"],
+  ["comparatif", "4. Comparatif systématique (thermique / concurrent / ancienne génération)"],
+  ["prix", "5. Jamais le prix avant les 4 validations (offre / maintenance / produit / 48 mois)"],
+  ["objections", "6. Objections sans confrontation"],
+  ["prochaineEtape", "7. Prochaine étape datée (qualifier + booker le RDV terrain)"],
+];
 
 /* ————— Outils dates (dateISO = jj/mm/aaaa) ————— */
 const cleDate = (d?: string): number => {
@@ -258,6 +274,23 @@ function Conversations({ d }: { d: ReturnType<typeof construire> }) {
             <div className="mt-3 rounded-xl bg-cyan-50/70 p-3">
               {actif.a.resumeIA && <><div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800">✨ Résumé IA</div><p className="text-xs text-slate-700 mt-0.5">{actif.a.resumeIA}</p></>}
               {actif.a.sujets && <div className="text-[11px] text-cyan-800 mt-1.5">🧩 Sujets / signaux détectés : {actif.a.sujets}</div>}
+              {actif.a.scorecard && (
+                <div className="mt-2 rounded-lg bg-white/80 p-2.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-800 mb-1.5">📋 Scorecard Plan de vente U'mob (0 à 2 par critère)</div>
+                  <div className="space-y-1">
+                    {CRITERES.map(([k, l]) => {
+                      const c = actif.a.scorecard?.[k];
+                      const n = typeof c?.note === "number" ? c.note : 0;
+                      return (
+                        <div key={k} className="flex items-start gap-2 text-[10.5px]">
+                          <span className={"shrink-0 rounded px-1.5 py-0.5 font-bold " + (n === 2 ? "bg-emerald-100 text-emerald-700" : n === 1 ? "bg-amber-100 text-amber-700" : "bg-rose-100 text-rose-700")}>{n}/2</span>
+                          <span className="text-slate-600"><b>{l}</b>{c && c.j ? <span className="text-slate-400"> — {c.j}</span> : null}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {actif.a.transcription ? (
@@ -401,6 +434,28 @@ function Coaching({ d }: { d: ReturnType<typeof construire> }) {
         {scores.length === 0 ? <div className="text-xs text-slate-400">Aucun appel analysé pour l'instant — les scores (1-5 ⭐) arrivent avec les appels passés via RingOver.</div> : (
           <div className="flex items-center gap-3"><Etoiles score={moyenne} /><span className="text-sm font-bold text-slate-700">{Math.round(moyenne * 10) / 10}/5</span><span className="text-xs text-slate-400">sur {scores.length} appel{scores.length > 1 ? "s" : ""} analysé{scores.length > 1 ? "s" : ""}</span></div>
         )}
+      </Card>
+      <Card>
+        <div className="text-sm font-semibold mb-1">📋 Scorecard par critère — Plan de vente version téléphone</div>
+        {(() => {
+          const avecSc = d.analyses.filter((x) => x.a.scorecard);
+          if (!avecSc.length) return <div className="text-xs text-slate-400">Aucun appel encore scoré sur les 7 critères. Chaque appel analysé par le webhook (ou via ✨↻ Régénérer) reçoit sa scorecard 0-2 automatiquement.</div>;
+          return (
+            <div className="space-y-1.5">
+              {CRITERES.map(([k, l]) => {
+                const notes = avecSc.map((x) => x.a.scorecard?.[k]?.note).filter((n: any): n is number => typeof n === "number");
+                const moy = notes.length ? notes.reduce((a: number, b: number) => a + b, 0) / notes.length : 0;
+                const pct = Math.round((moy / 2) * 100);
+                return (
+                  <div key={k}>
+                    <div className="flex justify-between text-[11px] mb-0.5"><span className="font-medium text-slate-700">{l}</span><span className="text-slate-400">{Math.round(moy * 10) / 10}/2 · {notes.length} appel{notes.length > 1 ? "s" : ""}</span></div>
+                    <div className="h-2 rounded bg-slate-100"><div className={"h-2 rounded " + (pct >= 75 ? "bg-emerald-500" : pct >= 40 ? "bg-amber-400" : "bg-rose-400")} style={{ width: pct + "%" }} /></div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
       </Card>
       <Card>
         <div className="text-sm font-semibold mb-2">Référentiel Plan de vente U'mob — version téléphone</div>

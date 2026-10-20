@@ -33,6 +33,7 @@ const PROMPT_SYSTEME =
   "PERSPECTIVE : tu fais partie de l'équipe commerciale d'U'mob — TU ES U'MOB. Rédige le résumé du point de vue du commercial U'mob : l'interlocuteur externe est « le client » ou « le prospect » ; parle de « notre offre », « nos scooters », « notre pack Confort Plus » — JAMAIS de la société U'mob à la 3e personne (« la société U'mob propose… » interdit). Écris U'mob EXACTEMENT ainsi, avec l'apostrophe — jamais « UMob », « Umob », « U mob » ni « U-Mob ». " +
   "resume (résumé factuel en 2-3 phrases en français), sentiment ('positif', 'neutre' ou 'négatif'), sujets (sujets, objections et signaux d'achat séparés par des virgules), score (entier de 1 à 5, qualité commerciale de l'appel), action (prochaine action recommandée en une phrase), delaiJours (entier 1 à 14 : nombre de jours avant l'action recommandée ; si l'interlocuteur ou le salarié dit un délai précis dans l'appel ('je rappelle demain', 'la semaine prochaine'), calcule-le en jours ; sinon réponds 2), " +
   "extraction (objet avec : nomEntreprise, ville, secteur, franchiseur, activite, modeLivraison, prenom, nom, role, email, besoin — chaque valeur est une chaîne). " +
+  "scorecard (objet avec 7 critères du Plan de vente U'mob version téléphone, chacun { note: entier 0, 1 ou 2 (0 = absent, 1 = partiel, 2 = maîtrisé), j: une phrase factuelle justifiant la note) : accueil (accueil & cadre de l'appel), decouverte (découverte flotte & coûts : nombre de scooters, usage, coût essence mensuel, pannes), decisionnaire (décisionnaire & timing identifiés), comparatif (comparatif systématique : thermique, concurrent ou ancienne génération U'mob), prix (règle d'or : le prix n'est JAMAIS donné avant les 4 validations offre/maintenance/produit/48 mois — note 2 si la règle est respectée, 0 si le prix est annoncé trop tôt), objections (objections traitées sans confrontation, « c'est trop cher » → demander pourquoi), prochaineEtape (prochaine étape datée — l'objectif de l'appel sédentaire : qualifier + booker le RDV terrain)). Critère non observable dans cet appel → note 0 et j = 'non observé'. " +
   "Pour extraction : " +
   "franchiseur : uniquement si l'interlocuteur le dit explicitement, choisi parmi [" + OPTIONS_FRANCHISEUR.join(", ") + "] ; réponds 'Indépendant' seulement s'il le dit explicitement. " +
   "activite : choisi parmi [" + OPTIONS_ACTIVITE.join(", ") + "]. " +
@@ -511,6 +512,7 @@ export default async function handler(req: any, res: any) {
     if (ia.sentiment) { a.sentiment = String(ia.sentiment); modifie = true; }
     if (ia.sujets) { a.sujets = String(ia.sujets); modifie = true; }
     if (typeof ia.score === "number") { a.scoreIA = Math.min(5, Math.max(1, Math.round(ia.score))); modifie = true; }
+    if (ia.scorecard && typeof ia.scorecard === "object") { a.scorecard = ia.scorecard; modifie = true; }
     if (duration && !a.dureeAppel) { a.dureeAppel = Math.max(1, Math.round(duration / 60)) + " min"; modifie = true; }
     const tacheCreeeFusion = creerTacheSuivante(deja.entreprise, a);
     const enrichi = appliquerExtraction(deja.entreprise, a) || gererContactExtrait(deja.entreprise, a) || modifie || tacheCreeeFusion;
@@ -565,6 +567,7 @@ export default async function handler(req: any, res: any) {
   if (contactId) act.contactId = contactId;
   if (ia.resume) act.resumeIA = String(ia.resume) + (ia.action ? " → Action recommandée : " + ia.action : "");
   if (ia.sentiment) act.sentiment = String(ia.sentiment);
+  if (ia.scorecard && typeof ia.scorecard === "object") act.scorecard = ia.scorecard;
   if (ia.sujets) act.sujets = String(ia.sujets);
   if (typeof ia.score === "number" && ia.score >= 1) act.scoreIA = Math.min(5, Math.max(1, Math.round(ia.score)));
   if (transcription) act.transcription = transcription;

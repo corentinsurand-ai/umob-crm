@@ -356,7 +356,7 @@ type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape" |
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; fait?: boolean; clotureLe?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; fait?: boolean; clotureLe?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string; scorecard?: { [k: string]: { note: number; j: string } } }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -2094,6 +2094,7 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
       if (j.sentiment) patch.sentiment = String(j.sentiment);
       if (j.sujets) patch.sujets = String(j.sujets);
       if (typeof j.scoreIA === "number") patch.scoreIA = j.scoreIA;
+      if (j.scorecard) patch.scorecard = j.scorecard;
       if (Object.keys(patch).length) onMaj?.(ev, patch);
       setRegenResume({ i: -1, enCours: false, erreur: "" });
     } catch (e: any) { setRegenResume({ i, enCours: false, erreur: String((e && e.message) || e || "erreur réseau") }); }
