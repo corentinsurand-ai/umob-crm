@@ -278,6 +278,7 @@ export default async function handler(req: any, res: any) {
   let receiver = String(d.receiver_number ?? d.to ?? d.callee ?? d.to_number ?? d.destination_number ?? "");
   let duration = Number(d.duration ?? d.call_duration ?? 0) || 0;
   let transcription = "";
+  let repliSummary = ""; // résumé IA Ringover : utilisé UNIQUEMENT si aucune vraie transcription n'est trouvée
   let enregistrement = String(d.record_url ?? d.recording_url ?? "");
   let canal = String(d.channel_id ?? "");
 
@@ -299,7 +300,7 @@ export default async function handler(req: any, res: any) {
           if (!enregistrement) enregistrement = pick(appel, ["record", "recording_url", "record_url", "url_recording"]);
           // résumé IA fourni par Ringover (champ summary du détail d'appel) — repli si pas de transcription
           const sumTxt = appel?.summary?.text;
-          if (typeof sumTxt === "string" && sumTxt.trim().length > 20) transcription = sumTxt.trim().slice(0, 60000);
+          if (typeof sumTxt === "string" && sumTxt.trim().length > 20) repliSummary = sumTxt.trim().slice(0, 60000);
           console.log("Extraction appel:", JSON.stringify({ caller, receiver, duration, canal }));
         }
       }
@@ -355,6 +356,9 @@ export default async function handler(req: any, res: any) {
           }
         } catch (e) { console.log("Recording erreur:", String(e).slice(0, 120)); }
       }
+      // ── Repli : si aucune vraie transcription n'a été trouvée, on utilise le
+      // résumé IA Ringover. La vraie transcription reste TOUJOURS prioritaire ──
+      if (!transcription && repliSummary) { transcription = repliSummary; console.log("Transcription absente : repli sur le résumé IA Ringover (" + repliSummary.length + " car.)"); }
     } catch (e) { console.log("Ringover API erreur:", e); }
   }
 
