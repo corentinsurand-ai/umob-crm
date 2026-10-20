@@ -85,6 +85,10 @@ export default async function handler(req: any, res: any) {
     return res.status(502).json({ ok: false, status: rep.status, reponse: rep.body.slice(0, 500), note: "Format à calibrer — voir logs Vercel" });
   }
 
+  // --- Déclencheur GET ?run=1 : sync complète depuis le navigateur ---
+  const lancerSync = req.method === "GET" && base.searchParams.get("run") === "1";
+  if (lancerSync) req.method = "POST-BATCH";
+
   // --- Diagnostic GET ---
   if (req.method === "GET") {
     return res.status(200).json({
@@ -94,7 +98,7 @@ export default async function handler(req: any, res: any) {
       SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
     });
   }
-  if (req.method !== "POST") {
+  if (req.method !== "POST" && req.method !== "POST-BATCH") {
     return res.status(400).json({ erreur: "POST uniquement (GET = diagnostic)" });
   }
 
