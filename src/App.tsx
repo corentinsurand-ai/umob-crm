@@ -4475,7 +4475,26 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
 
 /* ============================== APP ============================== */
 
-type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis" | "console";
+type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis" | "console" | "arrivees";
+
+// ── Demandes entrantes (quarantaine) : e-mails de prospects poussés vers
+// /api/inbound-email par l'automatisation (Make surveille la boîte OVH).
+// Elles vivent dans une TABLE SÉPARÉE crm_arrivees : les e-mails arrivent
+// même pendant que quelqu'un modifie le CRM — aucune écriture concurrente
+// sur crm_etat, la fusion se fait à la VALIDATION HUMAINE (règle forte :
+// rien n'entre dans la base sans décision explicite, jamais d'invention). ──
+interface Arrivee {
+  id: string; recuLe: string;
+  deNom: string; deEmail: string; sujet: string; message: string;
+  nomEntreprise: string; ville: string; secteur: string;
+  prenom: string; nom: string; tel: string; besoin: string;
+}
+const chargerArrivees = async (): Promise<Arrivee[]> => {
+  const { data, error } = await supabase.from("crm_arrivees").select("id,data,recu_le").order("recu_le", { ascending: false }).limit(200);
+  if (error || !Array.isArray(data)) return [];
+  return data.map((l: any) => ({ ...(l.data as any), id: l.id, recuLe: String(l.recu_le || "").replace("T", " ").slice(0, 16) }));
+};
+const supprimerArrivee = async (id: string): Promise<void> => { await supabase.from("crm_arrivees").delete().eq("id", id); };
 // Clé localStorage de la dernière page visitée (vue + fiche ouverte) : un
 // refresh (F5 / Ctrl+F5) doit REVENIR sur la page où l'on était, pas sur l'accueil.
 const CLE_NAV = "umob-crm-nav";
@@ -4493,7 +4512,9 @@ export default function App() {
   const [erreurChargement, setErreurChargement] = useState<string | null>(null);
   const [sync, setSync] = useState<"ok" | "ecriture" | "erreur">("ok"); // état de synchronisation
   const charge = useRef(false);                              // vrai dès que l'état initial est arrivé
-  const [vue, setVue] = useState<VueCRM>("dashboard"); // liste affichée
+  const [vue, setVue] = useState<VueCRM>("dashboard");
+  // Quarantaine des demandes entrantes (table dédiée crm_arrivees).
+  const [arrivees, setArrivees] = useState<Arrivee[]>([]); // liste affichée
   const [recherche, setRecherche] = useState("");     // recherche globale du header
   const [cible, setCible] = useState<Cible | null>(null); // modale ouverte (null = fermée)
   const [fiche, setFiche] = useState<FicheRef | null>(null); // page record ouverte (null = liste)
@@ -4578,6 +4599,10 @@ export default function App() {
   // Chargement initial : l'état complet vient de Supabase. Première ouverture
   // (aucune ligne en base) → écran d'initialisation — on ne pré-remplit
   // JAMAIS les données sans décision explicite.
+  // Quarantaine des demandes entrantes : chargée au démarrage, silencieuse
+  // en cas d'erreur (table absente ou réseau : aucun blocage du CRM).
+  useEffect(() => { chargerArrivees().then(setArrivees).catch(() => {}); }, []);
+
   useEffect(() => {
     chargerEtat()
       .then((d) => {
@@ -5074,7 +5099,7 @@ export default function App() {
   };
 
   // Icônes de la navigation (barre latérale + version mobile).
-  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾", console: "🎧" };
+  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾", console: "🎧", arrivees: "📥" };
 
   // Les vues principales, dans l'ordre de la barre latérale.
   const onglets = [
@@ -5084,11 +5109,57 @@ export default function App() {
     ["deals", "Deals"],
     ["pipeline", "Pipeline"],
     ["agenda", "Agenda"],
+    ["arrivees", "Entrantes"],
     ["devis", "Devis"],
     ...(estManager ? [["console", "Console"],] : []),
   ] as const;
 
   // Le bouton « + » du header crée l'objet cohérent avec la vue affichée.
+  // ── Validation d'une demande entrante (quarantaine → base). La fiche
+  // Suspect n'est créée QUE par décision humaine, avec UNIQUEMENT ce que
+  // l'e-mail dit (jamais d'invention). Numéro déjà en base → l'e-mail est
+  // consigné sur la fiche EXISTANTE (on rattache, on ne duplique jamais). ──
+  const validerArrivee = (a: Arrivee) => {
+    const telN = normTel(a.tel);
+    const act: Activite = { date: dateParis(), dateISO: dateParis(), heure: heureParis(), type: "email",
+      texte: "📧 Demande entrante — " + (a.sujet || "(sans sujet)") + "\nDe : " + (a.deNom || "") + " <" + (a.deEmail || "") + ">" + (a.message ? "\n\n" + a.message.slice(0, 1500) : "") };
+    const existante = telN.length >= 6 ? etat.entreprises.find((e) => { const en = normTel(e.tel); return en && (en === telN || en.includes(telN) || telN.includes(en)); }) : null;
+    if (existante) {
+      setEtat((e) => ({ ...e, entreprises: e.entreprises.map((x) => x.id === existante.id ? { ...x, activites: [act, ...x.activites] } : x) }));
+      supprimerArrivee(a.id).then(() => chargerArrivees().then(setArrivees).catch(() => {})).catch(() => {});
+      setVue("entreprises");
+      setFiche({ type: "entreprise", id: existante.id });
+      return;
+    }
+    const id = "e" + Date.now();
+    const nv: Entreprise = { id, nom: a.nomEntreprise || a.deNom || "Demande entrante", nomCommercial: "", secteur: a.secteur || "", ville: a.ville || "", site: "",
+      tel: formaterTelFr(a.tel), franchiseur: "", modeLivraison: "", activite: "", statut: "Suspect",
+      notes: (a.besoin ? "Besoin exprimé (e-mail entrant) : " + a.besoin + "\n" : "") + "📧 Demande entrante de " + (a.deNom || a.deEmail || "expéditeur inconnu") + " le " + a.recuLe + " — à qualifier.",
+      activites: [act], pack: "", dateDebut: "", dateFin: "", nbVehicules: "", contratLocam: "", immatriculations: "",
+      modeles: [], contrats: [], risque: "", origine: "Demande entrante" };
+    // Contact détecté : anti-doublons — même email ou même téléphone = même
+    // personne → on RATTACHE la nouvelle entreprise au contact EXISTANT.
+    const personne = (a.deEmail || a.prenom || a.nom) ? etat.contacts.find((c) =>
+      (a.deEmail && c.email && c.email.toLowerCase() === a.deEmail.toLowerCase()) ||
+      (telN.length >= 6 && normTel(c.tel) === telN)) : null;
+    if (personne) {
+      setEtat((e) => ({ ...e, entreprises: [...e.entreprises, nv],
+        contacts: e.contacts.map((c) => c.id === personne.id ? { ...c, entrepriseIds: [...new Set([...c.entrepriseIds, id])] } : c) }));
+    } else if (a.prenom || a.nom || a.deEmail) {
+      const nc: Contact = { id: "c" + Date.now(), prenom: a.prenom || "", nom: a.nom || "", role: "", email: a.deEmail || "", tel: formaterTelFr(a.tel), entrepriseIds: [id] };
+      setEtat((e) => ({ ...e, entreprises: [...e.entreprises, nv], contacts: [...e.contacts, nc] }));
+    } else {
+      setEtat((e) => ({ ...e, entreprises: [...e.entreprises, nv] }));
+    }
+    supprimerArrivee(a.id).then(() => chargerArrivees().then(setArrivees).catch(() => {})).catch(() => {});
+    setVue("entreprises");
+    setFiche({ type: "entreprise", id });
+  };
+  const ignorerArrivee = (a: Arrivee) => {
+    supprimerArrivee(a.id).then(() => chargerArrivees().then(setArrivees).catch(() => {})).catch(() => {});
+  };
+  const actualiserArrivees = () => { chargerArrivees().then(setArrivees).catch(() => {}); };
+
   const boutonAjout: Record<string, Cible> = {
     dashboard: { type: "deal", id: null, preset: "" },
     entreprises: { type: "entreprise", id: null },
@@ -5117,6 +5188,9 @@ export default function App() {
           <button key={cle} onClick={() => { if (cle === "devis") setAssistantDirect(false); setFiche(null); setVue(cle as typeof vue); }}
             className={"mb-0.5 flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12.5px] font-bold transition-colors " + (vue === cle ? "bg-slate-100 text-cyan-700" : "text-slate-500 hover:bg-slate-50")}>
             <span className="text-[14px]">{ICONES_NAV[cle]}</span> {label}
+            {cle === "arrivees" && arrivees.length > 0 && (
+              <span className="ml-auto rounded-full bg-red-500 px-1.5 py-0.5 text-[9.5px] font-black text-white">{arrivees.length}</span>
+            )}
           </button>
         ))}
         {/* Synchronisation + déconnexion, ancrées en bas (mt-auto pousse tout
@@ -5152,7 +5226,7 @@ export default function App() {
                 <VoletRecherche q={recherche} etat={etat} onOuvre={(c) => { ouvrir(c); setRecherche(""); }} />
               )}
             </div>
-            {vue !== "devis" && vue !== "console" && (
+            {vue !== "devis" && vue !== "console" && vue !== "arrivees" && (
             <button onClick={() => setCible(boutonAjout[vue])}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
@@ -5206,6 +5280,7 @@ export default function App() {
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} onMajActivite={majActivite} />}
+            {vue === "arrivees" && <VueArrivees arrivees={arrivees} etat={etat} onValider={validerArrivee} onIgnorer={ignorerArrivee} onActualiser={actualiserArrivees} />}
             {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel, entId: x.id }))}
               tousDevis={etat.entreprises.flatMap((x) => (x.devisHistorique ?? []).map((dv) => ({ id: dv.id, num: dv.resume?.numOffre || "—", societe: x.nomCommercial || x.nom, entId: x.id, dateFr: dv.dateFr, statut: dv.statut, dateEnvoiFr: dv.dateEnvoiFr, dateRelanceFr: dv.dateRelanceFr, dateAcceptationFr: dv.dateAcceptationFr, loyer: dv.resume?.loyerMensuelHT || 0, nbChassis: dv.resume?.nbChassis || 0, commercial: dv.resume?.commercial || "" })))}
@@ -5250,4 +5325,80 @@ export default function App() {
   );
 }
 
-
+/* ===================== 📥 Demandes entrantes (quarantaine) ===================== */
+// Les e-mails de prospects (boîte OVH surveillée par Make → /api/inbound-email)
+// atterrissent ICI d'abord : rien n'entre dans la base sans validation humaine.
+// Chaque carte montre UNIQUEMENT ce que l'e-mail dit, les recouvrements avec
+// l'existant (numéro/contact déjà en base), puis : ✅ créer la fiche Suspect
+// (ou consigner sur la fiche existante) / 🗑 ignorer.
+function VueArrivees({ arrivees, etat, onValider, onIgnorer, onActualiser }: {
+  arrivees: Arrivee[]; etat: Etat;
+  onValider: (a: Arrivee) => void; onIgnorer: (a: Arrivee) => void; onActualiser: () => void;
+}) {
+  const puce = (t: string) => (
+    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-bold text-slate-600">{t}</span>
+  );
+  if (!arrivees.length) return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
+      <div className="text-4xl">📭</div>
+      <div className="mt-3 text-[15px] font-black text-slate-700">Aucune demande en attente</div>
+      <div className="mt-1.5 text-[12px] text-slate-400">Les nouveaux e-mails de prospects arriveront ici automatiquement.</div>
+      <button onClick={onActualiser} className="mt-4 rounded-xl px-4 py-2 text-[12px] font-black text-white"
+        style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>🔄 Actualiser</button>
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-[16px] font-black text-slate-800">📥 Demandes entrantes</div>
+          <div className="text-[11.5px] text-slate-400">{arrivees.length} en attente — rien n'entre dans la base sans ta décision.</div>
+        </div>
+        <button onClick={onActualiser} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-bold text-slate-500 hover:bg-slate-50">🔄 Actualiser</button>
+      </div>
+      {arrivees.map((a) => {
+        const telN = normTel(a.tel);
+        const existante = telN.length >= 6 ? etat.entreprises.find((e) => { const en = normTel(e.tel); return en && (en === telN || en.includes(telN) || telN.includes(en)); }) : null;
+        const contactConnu = (a.deEmail || a.prenom || a.nom) ? etat.contacts.find((c) =>
+          (a.deEmail && c.email && c.email.toLowerCase() === a.deEmail.toLowerCase()) ||
+          (telN.length >= 6 && normTel(c.tel) === telN)) : null;
+        return (
+          <div key={a.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <div className="text-[13.5px] font-black text-slate-800">{a.sujet || "(sans sujet)"}</div>
+              <div className="text-[10.5px] font-bold text-slate-400">{a.recuLe}</div>
+            </div>
+            <div className="mt-0.5 text-[11.5px] text-slate-500">✉️ {a.deNom || "Expéditeur inconnu"}{a.deEmail ? " · " + a.deEmail : ""}</div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {a.nomEntreprise && puce("🏢 " + a.nomEntreprise)}
+              {a.ville && puce("📍 " + a.ville)}
+              {a.secteur && puce("🏷 " + a.secteur)}
+              {a.tel && puce("📞 " + formaterTelFr(a.tel))}
+              {(a.prenom || a.nom) && puce("👤 " + [a.prenom, a.nom].filter(Boolean).join(" "))}
+            </div>
+            {a.besoin && <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[12px] text-slate-600">💡 {a.besoin}</div>}
+            {a.message && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[11.5px] font-bold text-cyan-700">✉️ Voir le message complet</summary>
+                <pre className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xl bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-slate-600">{a.message}</pre>
+              </details>
+            )}
+            {(existante || contactConnu) && (
+              <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] font-bold text-amber-700">
+                {existante && <div>⚠️ Numéro déjà en base — l'e-mail sera consigné sur la fiche « {existante.nomCommercial || existante.nom} » (pas de doublon créé).</div>}
+                {contactConnu && <div>🔗 Contact déjà connu : {contactConnu.prenom} {contactConnu.nom} sera rattaché, pas recréé.</div>}
+              </div>
+            )}
+            <div className="mt-3 flex flex-wrap justify-end gap-2">
+              <button onClick={() => onIgnorer(a)} className="rounded-xl px-3 py-1.5 text-[12px] font-bold text-slate-400 hover:bg-slate-100">🗑 Ignorer</button>
+              <button onClick={() => onValider(a)} className="rounded-xl px-4 py-1.5 text-[12px] font-black text-white"
+                style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
+                ✅ {existante ? "Consigner sur la fiche existante" : "Créer la fiche Suspect"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
