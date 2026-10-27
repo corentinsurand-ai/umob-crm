@@ -4488,6 +4488,10 @@ interface Arrivee {
   deNom: string; deEmail: string; sujet: string; message: string;
   nomEntreprise: string; ville: string; secteur: string;
   prenom: string; nom: string; tel: string; besoin: string;
+  // Classification IA (route /api/inbound-email) : catégorie détectée
+  // (demande, sav, candidature…) + raison courte — transparence pour
+  // la validation humaine. Absentes pour les vieilles entrées.
+  classe?: string; raisonIA?: string;
 }
 const chargerArrivees = async (): Promise<Arrivee[]> => {
   const { data, error } = await supabase.from("crm_arrivees").select("id,data,recu_le").order("recu_le", { ascending: false }).limit(200);
@@ -5377,6 +5381,9 @@ function VueArrivees({ arrivees, etat, onValider, onIgnorer, onActualiser }: {
               {(a.prenom || a.nom) && puce("👤 " + [a.prenom, a.nom].filter(Boolean).join(" "))}
             </div>
             {a.besoin && <div className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-[12px] text-slate-600">💡 {a.besoin}</div>}
+            {(a.classe || a.raisonIA) && (
+              <div className="mt-2 text-[10.5px] font-bold text-slate-400">🤖 Détecté : {a.classe || "à vérifier"}{a.raisonIA ? " — " + a.raisonIA : ""}</div>
+            )}
             {a.message && (
               <details className="mt-2">
                 <summary className="cursor-pointer text-[11.5px] font-bold text-cyan-700">✉️ Voir le message complet</summary>
