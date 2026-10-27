@@ -50,6 +50,18 @@ const analyseIA = async (deNom: string, deEmail: string, sujet: string, message:
 
 export default async function handler(req: any, res: any) {
   if (req.method === "GET") {
+    // Mode vérification du secret : ?check=XXX compare au secret ACTIF du
+    // déploiement (utile pour déboguer un 401 : la valeur d'une variable
+    // Vercel ne s'applique qu'après un Redeploy). On ne révèle jamais le
+    // secret — seulement si le test correspond, et sa longueur.
+    const u0 = new URL(req.url || "/", "http://localhost");
+    const essai = u0.searchParams.get("check");
+    if (essai !== null) {
+      return res.status(200).json({ ok: true, service: "inbound-email",
+        secretOk: SECRET === essai,
+        longueurAttendue: SECRET ? SECRET.length : 0, longueurRecue: essai.length,
+        note: "Si secretOk=false : la valeur testée n'est pas celle du déploiement actif — vérifie la variable Vercel ET fais un Redeploy." });
+    }
     return res.status(200).json({ ok: true, service: "inbound-email", variables: {
       SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, MISTRAL_API_KEY: !!MIST, INBOUND_EMAIL_SECRET: !!SECRET } });
   }
