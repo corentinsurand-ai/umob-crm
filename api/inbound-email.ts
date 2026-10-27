@@ -48,6 +48,8 @@ const analyseIA = async (deNom: string, deEmail: string, sujet: string, message:
   return JSON.parse(m2[0]);
 };
 
+const deEmailB = (p: any) => String(p.from || p.sender || "").replace(/^.*<|>.*$/g, "").trim().toLowerCase();
+
 export default async function handler(req: any, res: any) {
   if (req.method === "GET") {
     // Mode vérification du secret : ?check=XXX compare au secret ACTIF du
@@ -74,8 +76,26 @@ export default async function handler(req: any, res: any) {
   }
   if (!SUP || !KEY) return res.status(500).json({ ok: false, erreur: "config serveur incomplète" });
 
-  const p: any = (typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body) || {};
-  const messageId = String(p.messageId ?? p.uid ?? p.id ?? Date.now());
+  // Payload accepté en JSON OU en formulaire (application/x-www-form-urlencoded,
+  // le format que Make construit sans jamais casser sur les guillemets/retours
+  // à la ligne du contenu d'e-mail).
+  let p: any = {};
+  const brut: any = req.body;
+  if (typeof brut === "string" && brut.trim()) {
+    const t = brut.trim();
+    if (t.startsWith("{")) {
+      try { p = JSON.parse(t); } catch { p = Object.fromEntries(new URLSearchParams(t)); }
+    } else {
+      p = Object.fromEntries(new URLSearchParams(t));
+    }
+  } else if (brut && typeof brut === "object") {
+    p = brut;
+  }
+  // Dédoublonnage robuste : si Make ne fournit pas d'ID de message, on en
+  // fabrique un déterministe à partir de l'expéditeur + sujet + date (le
+  // même e-mail re-poussé donnera le même ID, pas un timestamp aléatoire).
+  const messageId = String(p.messageId || p.uid || p.id || ""
+    || (("mk-" + deEmailB(p) + "|" + String(p.subject || "") + "|" + String(p.date || "")).replace(/[^a-zA-Z0-9@.\-|]/g, "").slice(0, 180)));
   const deEmail = String(p.from || p.sender || "").replace(/^.*<|>.*$/g, "").trim().toLowerCase();
   const deNom = String(p.fromName || p.senderName || (p.from || "").replace(/<.*>/, "").replace(/"/g, "").trim() || "").slice(0, 120);
   const sujet = String(p.subject || p.sujet || "").slice(0, 300);
