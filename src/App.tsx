@@ -356,7 +356,7 @@ type TypeActivite = "note" | "email" | "appel" | "tache" | "reunion" | "etape" |
 // compatibilité des anciennes activités.
 // `contactId`/`dealId` (optionnels) : liens de l'activité vers un contact et/ou
 // un deal de SON entreprise. Les activités ne vivent QUE sur les entreprises.
-interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; contactId?: string; dealId?: string; fait?: boolean; clotureLe?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string; scorecard?: { [k: string]: { note: number; j: string } } }
+interface Activite { date: string; texte: string; type?: TypeActivite; echeance?: string; dateISO?: string; heure?: string; heureEche?: string; contactId?: string; dealId?: string; fait?: boolean; clotureLe?: string; /* Champs enrichis par le webhook Ringover (api/ringover.ts) : analyse IA de l appel — jamais d invention, vides si la source est muette. */ appelId?: string; numeroAppel?: string; directionAppel?: string; dureeAppel?: string; resumeIA?: string; sentiment?: string; sujets?: string; scoreIA?: number; transcription?: string; urlEnregistrement?: string; scorecard?: { [k: string]: { note: number; j: string } } }
 
 // Source de vérité unique pour l'affichage de chaque type dans la timeline :
 // icône, libellé et couleur (utilisés par la timeline ET le composer, donc cohérents partout).
@@ -2201,7 +2201,7 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
               <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                 <span className="font-bold">{(ev.dateISO || ev.date) + ((ev.heure || (/^\d{1,2}:\d{2}$/.test(ev.date || "") ? ev.date : "")) ? " · " + (ev.heure || (/^\d{1,2}:\d{2}$/.test(ev.date || "") ? ev.date : "")) : "")}</span>
                 {/* Badge d'échéance pour les tâches et réunions planifiées. */}
-                {ev.echeance && <Badge texte={`échéance ${ev.echeance}`} couleur={meta.couleur} />}
+                {ev.echeance && <Badge texte={`échéance ${ev.echeance}${ev.heureEche ? " · " + ev.heureEche : ""}`} couleur={meta.couleur} />}
                 {/* Lien vers le contact rattaché à l'activité (ouvre la modale). */}
                 {ct && (
                   <button onClick={() => onOuvre({ type: "contact", id: ct.id })}
@@ -2243,7 +2243,7 @@ const TYPES_COMPOSER: { type: "note" | "email" | "appel" | "tache" | "reunion"; 
 //  - typeSel : type en cours de saisie (null = aucun formulaire ouvert)
 //  - texte / echeance : champs du formulaire, réinitialisés à chaque fermeture
 function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
-  onAjouter: (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => void;
+  onAjouter: (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }, heureEche?: string) => void;
   onOuvrirDevis?: () => void; // ouvre le module Devis avec le compte de la fiche pré-rempli
   // Listes optionnelles de rattachement (contacts & deals de l'entreprise
   // affichée) : quand elles sont fournies, deux petits menus permettent de
@@ -2254,6 +2254,11 @@ function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
   const [typeSel, setTypeSel] = useState<(typeof TYPES_COMPOSER)[number]["type"] | null>(null);
   const [texte, setTexte] = useState("");
   const [echeance, setEcheance] = useState("");
+  // Échéance de la tâche/réunion : date choisie dans un mini-calendrier 📅 +
+  // heure (optionnelle) via le sélecteur natif du navigateur — plus de saisie
+  // libre « ex. 15/10 » sujette aux fautes de frappe.
+  const [calOuvert, setCalOuvert] = useState(false);
+  const [heureEche, setHeureEche] = useState("");
   // Liens optionnels de l'activité vers un contact / un deal de l'entreprise.
   const [contactId, setContactId] = useState("");
   const [dealId, setDealId] = useState("");
@@ -2264,12 +2269,12 @@ function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
   const [dateRea, setDateRea] = useState(aujourdhui);
 
   // Fermeture = remise à zéro complète du formulaire.
-  const fermer = () => { setTypeSel(null); setTexte(""); setEcheance(""); setContactId(""); setDealId(""); setDateRea(aujourdhui); };
+  const fermer = () => { setTypeSel(null); setTexte(""); setEcheance(""); setHeureEche(""); setCalOuvert(false); setContactId(""); setDealId(""); setDateRea(aujourdhui); };
   // Validation : texte obligatoire, échéance transmise seulement si non vide.
   const ajouter = () => {
     const t = texte.trim();
     if (!t || !typeSel) return;
-    onAjouter(typeSel, t, echeance.trim() || undefined, dateRea.trim() || undefined, { contactId: contactId || undefined, dealId: dealId || undefined });
+    onAjouter(typeSel, t, echeance.trim() || undefined, dateRea.trim() || undefined, { contactId: contactId || undefined, dealId: dealId || undefined }, heureEche.trim() || undefined);
     fermer();
   };
 
@@ -2278,7 +2283,7 @@ function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
       {/* Rangée de boutons : re-cliquer le type actif le désélectionne (toggle). */}
       <div className="flex flex-wrap gap-1.5">
         {TYPES_COMPOSER.map((b) => (
-          <button key={b.type} onClick={() => { if (typeSel === b.type) fermer(); else { setTypeSel(b.type); setTexte(""); setEcheance(""); } }}
+          <button key={b.type} onClick={() => { if (typeSel === b.type) fermer(); else { setTypeSel(b.type); setTexte(""); setEcheance(""); setHeureEche(""); setCalOuvert(false); } }}
             className="flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[12px] font-bold transition-colors"
             style={typeSel === b.type
               ? { borderColor: META_ACT[b.type].couleur, background: `${META_ACT[b.type].couleur}14`, color: META_ACT[b.type].couleur }
@@ -2320,9 +2325,22 @@ function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
             placeholder="Date de réalisation (ex. 14/10/2026)"
             className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
           {(typeSel === "tache" || typeSel === "reunion") && (
-            <input value={echeance} onChange={(ev) => setEcheance(ev.target.value)}
-              placeholder={typeSel === "tache" ? "Échéance (ex. 15/10)" : "Date de la réunion (ex. 18/10)"}
-              className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <div>
+                <button onClick={() => setCalOuvert((v) => !v)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-left text-[12.5px] outline-none focus:border-cyan-500"
+                  style={{ fontWeight: echeance ? 700 : 400, color: echeance ? "#1e293b" : "#94a3b8" }}>
+                  📅 {echeance || (typeSel === "tache" ? "Choisir la date…" : "Date de la réunion…")}
+                </button>
+                {calOuvert && (
+                  <MiniCalendrier valeur={echeance}
+                    onChoisit={(v) => { setEcheance(v); setCalOuvert(false); }} />
+                )}
+              </div>
+              <input type="time" value={heureEche} onChange={(ev) => setHeureEche(ev.target.value)}
+                title="Heure de l'échéance (optionnelle)"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500" />
+            </div>
           )}
           {/* Rattachements optionnels : un contact et/ou un deal de l'entreprise. */}
           {((contacts && contacts.length > 0) || (deals && deals.length > 0)) && (
@@ -2576,11 +2594,11 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   const prochaine = deals.find((d) => d.action && !d.fait && d.etape !== "Gagné" && d.etape !== "Perdu");
 
   // Le composer remonte son activité au parent avec la date du jour + liens.
-  const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }) => {
+  const ajouterActivite = (type: "note" | "email" | "appel" | "tache" | "reunion", texte: string, echeance?: string, dateRea?: string, lien?: { contactId?: string; dealId?: string }, heureEche?: string) => {
     // dateISO = date de réalisation réelle (transmise par le composer) ; on garde
     // aussi le libellé court cohérent (« auj. » si réalisé aujourd'hui, sinon jj/mm).
     const estAuj = dateRea === dateParis();
-    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, dateISO: dateRea || dateParis(), heure: heureParis(), contactId: lien?.contactId, dealId: lien?.dealId });
+    onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, heureEche, dateISO: dateRea || dateParis(), heure: heureParis(), contactId: lien?.contactId, dealId: lien?.dealId });
   };
 
   return (
@@ -2827,7 +2845,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                   <ModaleTache key={t.id || (t.texte + (t.echeance || ""))}
                     kind={t.type === "reunion" ? "reunion" : "tache"} titre={t.texte}
                     contexte={e.nomCommercial || e.nom}
-                    dateFr={t.echeance || dateParis()} heure={t.heure} fait={!!t.fait}
+                    dateFr={t.echeance || dateParis()} heure={t.heureEche || t.heure} fait={!!t.fait}
                     lien={{ type: "entreprise", id: e.id }}
                     onOuvre={onOuvre} onFermer={() => setTachePanel(null)}
                     onModifier={(ti, d, h) => { onMajActivite?.(t, { texte: ti, echeance: d, heure: h }); setTachePanel(null); }}
