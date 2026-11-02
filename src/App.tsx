@@ -2637,6 +2637,43 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
       setTimeout(() => URL.revokeObjectURL(url), 4000);
     } catch { window.alert("Impossible de reconstituer ce PDF."); }
   };
+  // ── « ➕ Consigner » (MÊME formulaire que l'Agenda, sur la fiche) : ce qui
+  //    a été fait (type + compte-rendu + date de réalisation rattrapable via
+  //    mini-calendrier + liens contact/deal), puis l'action suivante
+  //    (tâche/réunion + échéance) qui atterrit dans l'agenda. L'entreprise
+  //    est celle de la fiche — pas de recherche nécessaire. ──
+  const [consignerOuvert, setConsignerOuvert] = useState(false);
+  const [cType, setCType] = useState<"note" | "email" | "appel" | "tache" | "reunion">("appel");
+  const [cTexte, setCTexte] = useState("");
+  const [cDate, setCDate] = useState(dateParis());
+  const [cCalFait, setCCalFait] = useState(false);
+  const [cCt, setCCt] = useState("");
+  const [cDl, setCDl] = useState("");
+  const [cAvecSuivante, setCAvecSuivante] = useState(true);
+  const [cTypeSuivante, setCTypeSuivante] = useState<"tache" | "reunion">("tache");
+  const [cTexteSuivante, setCTexteSuivante] = useState("");
+  const [cEcheanceSuivante, setCEcheanceSuivante] = useState("");
+  const [cCalSuiv, setCCalSuiv] = useState(false);
+  const CH_CONS = "w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500";
+  const fermerConsigner = () => {
+    setConsignerOuvert(false);
+    setCType("appel"); setCTexte(""); setCDate(dateParis()); setCCalFait(false);
+    setCCt(""); setCDl(""); setCAvecSuivante(true); setCTypeSuivante("tache");
+    setCTexteSuivante(""); setCEcheanceSuivante(""); setCCalSuiv(false);
+  };
+  const validerConsigner = () => {
+    if (!cTexte.trim()) return;
+    const estAuj = cDate === dateParis();
+    const base = { date: estAuj ? "auj." : (cDate.slice(0, 5) || "auj."), dateISO: cDate || dateParis(), heure: heureParis(), contactId: cCt || undefined, dealId: cDl || undefined };
+    // 1. L'activité réalisée (compte-rendu horodaté sur cette entreprise).
+    onActivite(e.id, { ...base, texte: cTexte.trim(), type: cType });
+    // 2. L'action suivante : tâche/réunion datée → visible dans l'agenda
+    //    dès l'enregistrement (mêmes liens contact/deal).
+    if (cAvecSuivante && cTexteSuivante.trim() && cEcheanceSuivante.trim()) {
+      onActivite(e.id, { ...base, texte: cTexteSuivante.trim(), type: cTypeSuivante, echeance: cEcheanceSuivante.trim() });
+    }
+    fermerConsigner();
+  };
 
   return (
     <div className="space-y-4">
@@ -2902,7 +2939,12 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           {/* Colonne centrale : Activités (composer + timeline), comme le
               bandeau central de la fiche HubSpot. */}
           <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 text-[13px] font-black text-slate-700">Activités</div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-[13px] font-black text-slate-700">Activités</div>
+              <button onClick={() => setConsignerOuvert(true)} title="Consigner ce qui a été fait + planifier l'action suivante (même formulaire que l'Agenda)"
+                className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
+                style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>➕ Consigner</button>
+            </div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} onOuvrirDevis={onOuvrirDevis} />
             <div className="mt-3">
               <Chronologie events={events} onOuvre={onOuvre} contacts={contacts} deals={deals} onSupprimer={onSupprimerActivite} onMaj={onMajActivite} onOuvrirTache={setTachePanel} />
@@ -2929,6 +2971,122 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                     }} />
                 );
               })()}
+            </AnimatePresence>
+            {/* ── Overlay « Consigner une activité » (même formulaire que
+                l'Agenda) : entreprise = celle de la fiche, pré-attachée. ── */}
+            <AnimatePresence>
+              {consignerOuvert && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  {...fermerAuClicFond(fermerConsigner)}
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+                  <motion.div onClick={(ev) => ev.stopPropagation()}
+                    initial={{ scale: 0.95, y: 12 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 12, opacity: 0 }}
+                    className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl">
+                    <div className="mb-1 text-[15px] font-black text-slate-800">➕ Consigner une activité</div>
+                    <div className="mb-4 text-[11.5px] text-slate-400">Ce qui a été fait, relié à un contact / deal — puis l'action suivante, planifiée dans l'agenda.</div>
+                    {/* Entreprise : celle de la fiche, pré-attachée (chip non modifiable). */}
+                    <div className="mb-1 text-[10px] font-black uppercase tracking-wider text-slate-400">Entreprise</div>
+                    <div className="flex items-center justify-between rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-2">
+                      <span className="truncate text-[12.5px] font-bold text-cyan-800">🏢 {e.nomCommercial || e.nom}{e.ville ? <span className="font-medium text-cyan-500"> — {e.ville}</span> : ""}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <select value={cCt} onChange={(ev) => setCCt(ev.target.value)}
+                        className={CH_CONS + " bg-white"}>
+                        <option value="">👤 Contact lié (optionnel)</option>
+                        {contacts.map((c) => <option key={c.id} value={c.id}>{c.prenom} {c.nom}</option>)}
+                      </select>
+                      <div className="flex items-center gap-1">
+                        <select value={cDl} onChange={(ev) => setCDl(ev.target.value)}
+                          className={"min-w-0 flex-1 " + CH_CONS + " bg-white"}>
+                          <option value="">🎯 Deal lié (optionnel)</option>
+                          {deals.map((d) => <option key={d.id} value={d.id}>{d.nom}</option>)}
+                        </select>
+                        <button onClick={() => onOuvre({ type: "deal", id: null, preset: e.id })}
+                          title="Créer un nouveau deal pour cette entreprise"
+                          className="shrink-0 rounded-xl border border-cyan-200 bg-cyan-50 px-2.5 py-[7px] font-black text-cyan-600 hover:bg-cyan-100">+</button>
+                      </div>
+                    </div>
+                    {/* Section 1 : ce qui a été fait. */}
+                    <div className="mt-4 mb-1.5 flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">Ce qui a été fait</div>
+                      <Dictee valeur={cTexte} onTexte={setCTexte} />
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {TYPES_COMPOSER.map((b) => (
+                        <button key={b.type} onClick={() => setCType(b.type)}
+                          className="rounded-xl border px-2.5 py-1 text-[11.5px] font-bold transition-colors"
+                          style={cType === b.type
+                            ? { borderColor: META_ACT[b.type].couleur, background: META_ACT[b.type].couleur + "14", color: META_ACT[b.type].couleur }
+                            : { borderColor: "#e2e8f0", background: "#ffffff", color: "#475569" }}>
+                          {b.icone} {b.libelle}
+                        </button>
+                      ))}
+                    </div>
+                    <textarea rows={2} value={cTexte} onChange={(ev) => setCTexte(ev.target.value)}
+                      placeholder="Compte-rendu de ce qui a été fait…"
+                      className={"mt-2 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2 text-[12.5px] outline-none focus:border-cyan-500"} />
+                    <div className="mt-2">
+                      <button onClick={() => setCCalFait((v) => !v)}
+                        className={CH_CONS + " bg-white text-left font-bold text-slate-800"}>
+                        📅 Réalisé le {cDate}
+                      </button>
+                      {cCalFait && (
+                        <MiniCalendrier valeur={cDate}
+                          onChoisit={(v) => { setCDate(v); setCCalFait(false); }} />
+                      )}
+                    </div>
+                    {/* Section 2 : l'action suivante, planifiée dans l'agenda. */}
+                    <div className="mt-4 flex items-center justify-between">
+                      <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">Action suivante → agenda</div>
+                      <button onClick={() => setCAvecSuivante(!cAvecSuivante)}
+                        className={"rounded-full px-2.5 py-1 text-[10.5px] font-black transition-colors " + (cAvecSuivante ? "bg-cyan-100 text-cyan-700" : "bg-slate-100 text-slate-400")}>
+                        {cAvecSuivante ? "✓ Planifiée" : "＋ Planifier"}
+                      </button>
+                    </div>
+                    {cAvecSuivante && (
+                      <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                        <div className="mb-1.5 flex items-center justify-between gap-2">
+                          <div className="text-[10.5px] font-black uppercase tracking-wider" style={{ color: META_ACT[cTypeSuivante].couleur }}>
+                            {META_ACT[cTypeSuivante].icone} {cTypeSuivante === "tache" ? "Tâche à faire" : "Réunion planifiée"}
+                          </div>
+                          <Dictee valeur={cTexteSuivante} onTexte={setCTexteSuivante} />
+                        </div>
+                        <div className="mb-2 flex gap-1.5">
+                          {(["tache", "reunion"] as const).map((t) => (
+                            <button key={t} onClick={() => setCTypeSuivante(t)}
+                              className="rounded-lg border px-2.5 py-1 text-[11px] font-bold capitalize transition-colors"
+                              style={cTypeSuivante === t
+                                ? { borderColor: META_ACT[t].couleur, background: META_ACT[t].couleur + "14", color: META_ACT[t].couleur }
+                                : { borderColor: "#e2e8f0", background: "#ffffff", color: "#94a3b8" }}>
+                              {META_ACT[t].icone} {t === "tache" ? "Tâche" : "Réunion"}
+                            </button>
+                          ))}
+                        </div>
+                        <input value={cTexteSuivante} onChange={(ev) => setCTexteSuivante(ev.target.value)}
+                          placeholder="Que doit-on faire ensuite ?"
+                          className={CH_CONS} />
+                        <div className="mt-2">
+                          <button onClick={() => setCCalSuiv((v) => !v)}
+                            className={CH_CONS + " bg-white text-left " + (cEcheanceSuivante ? "font-bold text-slate-800" : "text-slate-400")}>
+                            📅 {cEcheanceSuivante || "Choisir la date…"}
+                          </button>
+                          {cCalSuiv && (
+                            <MiniCalendrier valeur={cEcheanceSuivante}
+                              onChoisit={(v) => { setCEcheanceSuivante(v); setCCalSuiv(false); }} />
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div className="mt-5 flex gap-2">
+                      <button onClick={fermerConsigner}
+                        className="flex-1 rounded-xl border border-slate-200 py-2.5 text-[13px] font-bold text-slate-400 hover:bg-slate-50">Annuler</button>
+                      <button onClick={validerConsigner} disabled={!cTexte.trim()}
+                        className="flex-1 rounded-xl py-2.5 text-[13px] font-black text-white disabled:opacity-40"
+                        style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>Enregistrer</button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )}
             </AnimatePresence>
           </div>
 
