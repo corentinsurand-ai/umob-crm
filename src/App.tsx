@@ -1445,8 +1445,6 @@ function Modale({
                   l'équipe commerciale qui le fait évoluer — jamais auto. */}
               <div><label className={label}>Statut</label>
                 <ChampSelect valeur={ent.statut} options={[...STATUTS]} onChange={(v) => setEnt({ ...ent, statut: v as Statut })} /></div>
-              <div><label className={label}>Secteur</label>
-                <input className={champ} value={ent.secteur} onChange={(e) => setEnt({ ...ent, secteur: e.target.value })} placeholder="ex. Restauration" /></div>
               <div><label className={label}>Ville</label>
                 <input className={champ} value={ent.ville} onChange={(e) => setEnt({ ...ent, ville: e.target.value })} /></div>
               <div><label className={label}>Site web</label>
@@ -2683,7 +2681,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
       <EnteteFiche
         initiales={e.nom.slice(0, 2).toUpperCase()}
         nom={e.nom}
-        sous={[e.secteur, e.ville, e.tel, e.site].filter(Boolean).join("  ·  ")}
+        sous={[e.ville, e.tel, e.site].filter(Boolean).join("  ·  ")}
         boutons={
           <>
             <button onClick={() => onOuvre({ type: "entreprise", id: e.id })}
@@ -2730,7 +2728,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
               <PropSelect label="Statut" valeur={e.statut} options={[...STATUTS]} onChange={(v) => onModifie({ statut: v as Statut })} />
               {/* Origine de la relation : comment cette entreprise est entrée dans le CRM. */}
               <PropSelect label="Origine" valeur={e.origine ?? ""} options={OPTIONS_ORIGINE} onChange={(v) => onModifie({ origine: v })} />
-              <PropTexte label="Secteur" valeur={e.secteur} onChange={(v) => onModifie({ secteur: v })} />
               <PropTexte label="SIREN" valeur={e.siren ?? ""} onChange={(v) => onModifie({ siren: v })} />
               <PropTexte label="Adresse postale" valeur={e.adresse ?? ""} onChange={(v) => onModifie({ adresse: v })} />
               <PropTexte label="Code postal" valeur={e.cp ?? ""} onChange={(v) => onModifie({ cp: v })} />
@@ -3185,7 +3182,6 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 e.statut ? e.nom + " a le statut « " + e.statut + " »." : "",
                 e.ville ? e.nom + " est situé à " + e.ville + "." : "",
                 e.tel ? "Le téléphone de " + e.nom + " est le " + e.tel + "." : "",
-                e.secteur ? "Secteur : " + e.secteur + "." : "",
                 e.activite ? "Activité : " + e.activite + "." : "",
                 e.franchiseur ? "Franchiseur : " + e.franchiseur + "." : "",
                 e.modeLivraison ? "Mode de livraison : " + e.modeLivraison + "." : "",
@@ -3311,7 +3307,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12px] font-bold text-slate-700">{en.nom}</span>
-                  <span className="block truncate text-[10px] text-slate-400">{en.secteur} · {en.ville}</span>
+                  <span className="block truncate text-[10px] text-slate-400">{en.ville}</span>
                 </span>
               </button>
             )) : (
@@ -3449,7 +3445,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12px] font-bold text-slate-700">{entreprise.nom}</span>
-                    <span className="block truncate text-[10px] text-slate-400">{entreprise.secteur} · {entreprise.ville}</span>
+                    <span className="block truncate text-[10px] text-slate-400">{entreprise.ville}</span>
                   </span>
                 </button>
               ) : <div className="text-[11.5px] text-slate-400">Aucune entreprise rattachée.</div>}
@@ -4416,7 +4412,6 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
                     </span>
                     <span>
                       <span className="block text-[12.5px] font-bold text-slate-800">{e.nom}</span>
-                      <span className="block text-[10.5px] text-slate-400">{e.secteur}</span>
                     </span>
                   </span>
                 </td>
