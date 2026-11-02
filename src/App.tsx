@@ -67,7 +67,14 @@ interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: 
   // commercial + résumé figé (loyers, packs…). Persisté avec le reste de
   // l'état dans Supabase (jsonb) — rien à migrer côté base. ──
   devisHistorique?: DevisArchive[];
+  // ── Devis PDF importés depuis l'ordinateur (faits avec l'ancienne matrice
+  // Excel) : le fichier est stocké en base64 dans l'état (jsonb Supabase,
+  // comme tout le reste) et reste téléchargeable à l'identique. ──
+  devisImportes?: DevisImporte[];
 }
+// Un devis PDF importé (matrice Excel) : contenu base64 + métadonnées
+// d'affichage. Plafond 2 Mo par fichier (l'état entier est persisté en jsonb).
+interface DevisImporte { id: string; nom: string; taille: number; contentType: string; contenuBase64: string; dateFr: string; commentaire: string; }
 // Les activités ne vivent QUE sur les entreprises : un contact n'a plus sa
 // propre liste d'activités (elles sont portées par ses entreprises, avec un
 // lien `contactId` pour les retrouver).
@@ -597,6 +604,8 @@ function normaliser(s: Etat): Etat {
     tel: formaterTelFr(x.tel),
     // Devis archivés : même logique de migration douce que les activités.
     devisHistorique: (x.devisHistorique || []).slice(),
+    // Devis PDF importés (matrice Excel) : migration douce identique.
+    devisImportes: (x.devisImportes || []).slice(),
   }));
   // Migration contacts : l'ancien champ unique `entrepriseId` devient un
   // TABLEAU `entrepriseIds` (un contact peut appartenir à plusieurs
@@ -2600,6 +2609,34 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
     const estAuj = dateRea === dateParis();
     onActivite(e.id, { date: dateRea ? (estAuj ? "auj." : dateRea.slice(0, 5)) : "auj.", texte, type, echeance, heureEche, dateISO: dateRea || dateParis(), heure: heureParis(), contactId: lien?.contactId, dealId: lien?.dealId });
   };
+  // ── Devis PDF importés (ancienne matrice Excel) : lecture du fichier en
+  //    base64 (FileReader), plafond 2 Mo, ajout à la fiche via onModifie et
+  //    journalisation d'une note dans la timeline pour garder la trace. ──
+  const [pdfErreur, setPdfErreur] = useState<string>("");
+  const deposerPdfDevis = (fichier: File) => {
+    setPdfErreur("");
+    if (fichier.size > 2 * 1024 * 1024) { setPdfErreur("PDF trop lourd (" + (fichier.size / 1048576).toFixed(1) + " Mo) — maximum 2 Mo par devis."); return; }
+    const lecteur = new FileReader();
+    lecteur.onload = () => {
+      const brut = String(lecteur.result || "");
+      const base64 = brut.includes(",") ? brut.slice(brut.indexOf(",") + 1) : brut;
+      const entree: DevisImporte = { id: "pdf" + Date.now(), nom: fichier.name, taille: fichier.size, contentType: fichier.type || "application/pdf", contenuBase64: base64, dateFr: dateHeureParis(), commentaire: "" };
+      onModifie({ devisImportes: [...(e.devisImportes ?? []), entree] });
+      ajouterActivite("note", "📎 Devis PDF « " + fichier.name + " » ajouté sur la fiche (fait avec la matrice Excel)");
+    };
+    lecteur.onerror = () => setPdfErreur("Impossible de lire ce fichier.");
+    lecteur.readAsDataURL(fichier);
+  };
+  // Reconstitue le PDF depuis le base64 et le télécharge à l'identique.
+  const telechargerPdfImporte = (dp: DevisImporte) => {
+    try {
+      const bin = atob(dp.contenuBase64); const octets = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) octets[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([octets], { type: dp.contentType || "application/pdf" }));
+      const a = document.createElement("a"); a.href = url; a.download = dp.nom || "devis.pdf"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch { window.alert("Impossible de reconstituer ce PDF."); }
+  };
 
   return (
     <div className="space-y-4">
@@ -2685,13 +2722,19 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 tableau), sans ouvrir de mail ; « Mail + PDF » télécharge
                 le devis en PDF (mis en page, sans données internes) et
                 ouvre un e-mail court à compléter. */}
-            {(e.devisHistorique?.length ?? 0) > 0 && (
-              <div className="mt-3">
+            {/* Section Devis TOUJOURS VISIBLE (même vide) : devis du module +
+                PDF importés depuis l'ancienne matrice Excel. */}
+            <div className="mt-3">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-[13px] font-black text-slate-700">🧾 Devis</div>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{e.devisHistorique!.length}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">{(e.devisHistorique?.length ?? 0) + (e.devisImportes?.length ?? 0)}</span>
                 </div>
                 <div className="space-y-2">
+                  {(e.devisHistorique?.length ?? 0) === 0 && (e.devisImportes?.length ?? 0) === 0 && (
+                    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-3 py-2 text-[11px] text-slate-400">
+                      Aucun devis pour l'instant. Crée-en un dans le module 🧾 Devis, ou dépose ci-dessous un PDF fait avec ton ancienne matrice Excel.
+                    </div>
+                  )}
                   {e.devisHistorique!.map((dv) => {
                     const mailCt = (contacts.find((c) => (c.email || "").trim())?.email || "").trim();
                     return (
@@ -2823,9 +2866,37 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                       </div>
                     );
                   })}
+                  {/* ── Devis PDF importés (ancienne matrice Excel) : dépôt,
+                      téléchargement à l'identique, suppression. ── */}
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 p-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-[11.5px] font-black text-slate-600">📎 Devis PDF importés (matrice Excel)</div>
+                      <label className="cursor-pointer rounded-xl border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-bold text-slate-600 hover:bg-slate-100">
+                        📥 Déposer un PDF
+                        <input type="file" accept="application/pdf,.pdf" className="hidden" onChange={(ev) => { const f = ev.target.files && ev.target.files[0]; ev.target.value = ""; if (f) deposerPdfDevis(f); }} />
+                      </label>
+                    </div>
+                    {(e.devisImportes?.length ?? 0) === 0 ? (
+                      <div className="mt-1.5 text-[10.5px] text-slate-400">Aucun PDF importé. Dépose ici un devis fait avec ton Excel pour l'avoir toujours sous la main sur cette fiche (max 2 Mo).</div>
+                    ) : (
+                      <div className="mt-1.5 space-y-1.5">
+                        {(e.devisImportes ?? []).map((dp) => (
+                          <div key={dp.id} className="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5">
+                            <span className="text-[13px]">📄</span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-[11.5px] font-bold text-slate-700">{dp.nom}</span>
+                              <span className="block text-[10px] text-slate-400">{dp.dateFr} · {(dp.taille / 1024).toFixed(0)} Ko{dp.commentaire ? " · " + dp.commentaire : ""}</span>
+                            </span>
+                            <button onClick={() => telechargerPdfImporte(dp)} title="Télécharger ce devis PDF" className="rounded-xl px-2 py-0.5 text-[10.5px] font-bold hover:opacity-80" style={{ background: "#b0c300", color: "#3d4200" }}>⬇ PDF</button>
+                            <button onClick={() => { if (window.confirm("Supprimer le PDF « " + dp.nom + " » de la fiche ?")) onModifie({ devisImportes: (e.devisImportes ?? []).filter((x2) => x2.id !== dp.id) }); }} title="Supprimer ce PDF" className="rounded-xl border border-slate-200 px-2 py-0.5 text-[10.5px] font-bold text-slate-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50">🗑️</button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {pdfErreur && <div className="mt-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1 text-[10.5px] font-bold text-red-600">⚠️ {pdfErreur}</div>}
+                  </div>
                 </div>
               </div>
-            )}
           </div>
 
           {/* Colonne centrale : Activités (composer + timeline), comme le
