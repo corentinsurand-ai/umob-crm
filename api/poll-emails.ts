@@ -286,9 +286,16 @@ export default async function handler(req: any, res: any) {
     if (u.searchParams.get("imap") === "1") {
       const rAll = await api.command("UID SEARCH ALL");
       const derniers = uidsDeRecherche(rAll).slice(-8);
+      const details: any[] = [];
+      for (const uid of derniers) {
+        const rF = await api.command("UID FETCH " + uid + " (BODY.PEEK[HEADER.FIELDS (DATE SUBJECT TO FROM)])");
+        const d = /Date: ([^\r\n]+)/i.exec(rF); const sj = /Subject: ([^\r\n]+)/i.exec(rF);
+        const to = /To: ([^\r\n]+)/i.exec(rF); const fr = /From: ([^\r\n]+)/i.exec(rF);
+        details.push({ uid, date: d && d[1].trim(), sujet: sj && sj[1].trim(), to: to && to[1].trim(), from: fr && fr[1].trim() });
+      }
       try { await api.command("LOGOUT"); } catch (e) {}
       api.detruire();
-      return res.status(200).json({ ok: true, debugImap: true, uidvalidity: uvNow, uidnext, messages, uidMaxStocke: uvStock, resetUid, derniersUids: derniers, dureeMs: Date.now() - t0 });
+      return res.status(200).json({ ok: true, debugImap: true, user: USER, host: HOST, uidvalidity: uvNow, uidnext, messages, uidMaxStocke: uvStock, resetUid, derniers: details, dureeMs: Date.now() - t0 });
     }
     let uids: number[] = [];
     if (uidMax > 0) {
