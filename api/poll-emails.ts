@@ -31,7 +31,8 @@ const DEPUIS: string = process.env.POLL_DEPUIS || "1-Nov-2026";
 const MAX: number = parseInt(process.env.POLL_MAX || "8", 10);
 const SECRET: string = process.env.INBOUND_EMAIL_SECRET || "";
 const SUP: string = process.env.SUPABASE_URL || "";
-const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+c
+onst KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const DELAI_MS = 12000;
 
 // ── Client IMAP minimal (portage éprouvé de agent-sav-v2/lib/imap.js) ──────
@@ -75,7 +76,8 @@ function connexionImap(): Promise<any> {
         command: (cmd: string) => {
           if (enCours) return Promise.reject(new Error("IMAP : commande deja en cours"));
           compteur++; const tag = "A" + compteur;
-          return new Promise((res2: any, rej2: any) => {
+          return new Promise((res2: any, rej2: any) =
+> {
             enCours = { tag, res: res2, minuteur: setTimeout(() => {
               const a = enCours; enCours = null;
               try { so.destroy(); } catch (e) {}
@@ -124,7 +126,8 @@ function utf8DeOctets(s: string): string {
   const bytes = new Uint8Array(octets); let res = ""; let j = 0;
   while (j < bytes.length) {
     const b = bytes[j];
-    if (b < 0x80) { res += String.fromCharCode(b); j += 1; }
+    if (b < 0x80) { res += String.fromCharCode(b); j += 
+1; }
     else if (b < 0xe0) { res += String.fromCharCode(((b & 0x1f) << 6) | (bytes[j + 1] & 0x3f)); j += 2; }
     else if (b < 0xf0) { res += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[j + 1] & 0x3f) << 6) | (bytes[j + 2] & 0x3f)); j += 3; }
     else {
@@ -161,7 +164,8 @@ function decoderMot(s: string): string {
   });
 }
 function detaguer(html: string): string {
-  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ")
+  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").
+replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/g, "'")
     .replace(/\s+/g, " ").trim();
@@ -196,7 +200,8 @@ function parseMessage(brut: string): any {
   }
   function couperPartie(p: string): [string, string] {
     const finTete = p.indexOf("\r\n\r\n");
-    const cut = finTete !== -1 ? [finTete, 4] : [p.indexOf("\n\n"), 2];
+    const cut = finTete !== -1 ? [finTete, 4] : [p.indexOf("\n\n
+"), 2];
     if (cut[0] === -1) return ["", p];
     return [p.slice(0, cut[0]).replace(/\r?\n[ \t]+/g, " "), p.slice(cut[0] + cut[1])];
   }
@@ -238,7 +243,8 @@ function parseMessage(brut: string): any {
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────
-export default async function handler(req: any, res: any) {
+export default async function ha
+ndler(req: any, res: any) {
   const t0 = Date.now();
   const u = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && u.searchParams.get("config") === "1") {
@@ -260,7 +266,7 @@ export default async function handler(req: any, res: any) {
 
   // 2. IMAP + 3. recherche (reprise par UID, ou SINCE au premier run).
   let api: any = null;
-  const etats: any = { scannes: 0, pouses: 0, quarantaines: 0, ignores: 0, dejaEnBase: 0, erreurs: [] as string[] };
+  const etats: any = { scannes: 0, pouses: 0, quarantaines: 0, ignores: 0, dejaEnBase: 0, autres: 0, erreurs: [] as string[] };
   let uidTraite = uidMax;
   try {
     api = await connexionImap();
@@ -271,7 +277,8 @@ export default async function handler(req: any, res: any) {
     let uids: number[] = [];
     if (uidMax > 0) {
       const r = await api.command("UID SEARCH UID " + (uidMax + 1) + ":*");
-      uids = uidsDeRecherche(r).filter((x) => x > uidMax);
+      uids = uidsDeRech
+erche(r).filter((x) => x > uidMax);
     } else {
       const r = await api.command("UID SEARCH SINCE " + DEPUIS);
       uids = uidsDeRecherche(r);
@@ -297,21 +304,36 @@ export default async function handler(req: any, res: any) {
     const results = await Promise.all(msgs.map(async (m: any) => {
       const uid = m.uid, msg = m.msg;
       try {
-        const rep = await fetch("https://" + hote + "/api/inbound-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-webhook-secret": SECRET },
-          body: JSON.stringify({ messageId: msg.messageId || ("imap-" + uid + "@umob-crm"), from: msg.from, fromName: msg.fromNom, subject: msg.sujet, text: msg.texte, date: msg.date }),
-        });
-        const jr: any = await rep.json().catch(() => ({}));
-        if (rep.ok && jr.note === "deja en quarantaine") { etats.dejaEnBase++; return { uid, ok: true }; }
-        if (rep.ok && jr.ignore) { etats.ignores++; return { uid, ok: true }; }
-        if (rep.ok && jr.quarantaine) { etats.quarantaines++; return { uid, ok: true }; }
-        return { uid, ok: false, err: "inbound " + rep.status + " " + String(jr.erreur || "").slice(0, 80) };
+        let rep: any = null, jr: any = {};
+        // 2 tentatives : un 429/504 transitoire (gros run parallèle) ne doit
+        // JAMAIS bloquer la progression du point de reprise.
+        for (let tentative = 0; tentative < 2; tentative++) {
+          rep = await fetch("https://" + hote + "/api/inbound-email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-webhook-secret": SECRET },
+            body: JSON.stringify({ messageId: msg.messageId || ("imap-" + uid + "@umob-crm"), from: msg.from, fromName: msg.fromNom, subject: msg.sujet, text: msg.texte, date: msg.date }),
+          });
+          jr = await rep.json().catch(() => ({}));
+          if (rep.ok) break;
+          await new Promise((r2) => setTimeout(r2, 1000));
+        }
+        // RÈGLE ANTI-BLOCAGE : toute réponse 2xx FAIT AVANCER uid_max, même si
+        // le JSON n'a aucun flag reconnu (compté dans "autres") — un mail qui
+        // ferait échouer la classification ne doit pas bloquer toute la file.
+        if (rep.ok) {
+          if (jr.note === "deja en quarantaine") etats.dejaEnBase++;
+          else if (jr.ignore) etats.ignores++;
+          else if (jr.quarantaine) etats.quarantaines++;
+          else etats.autres++;
+          return { uid, ok: true };
+        }
+        return { uid, ok: false, err: "inbound " + rep.status + " " + String(jr.erreur || JSON.stringify(jr).slice(0, 60) || "").slice(0, 100) };
       } catch (e: any) {
         return { uid, ok: false, err: String(e && e.message || e).slice(0, 100) };
       }
     }));
-    // uid_max n'avance que dans l'ordre des succès (Promise.all conserve
+    // uid_max n'avance que dans l'ordre des s
+uccès (Promise.all conserve
     // l'ordre) : un échec bloque la progression, le cron rejoue.
     for (const rr of results) {
       if (rr.ok) uidTraite = rr.uid;
