@@ -1,27 +1,26 @@
 // ── Poller IMAP maison — remplace le scénario Make « Integration Email » ────
-// CAUSE DE LA CRÉATION (11/2026) : Make a désactivé le scénario le 04/11/2026
+// CAUSE DE LA CREATION (11/2026) : Make a désactivé le scénario le 04/11/2026
 // (« Request Entity Too Large » : un email volumineux HTML/base64 explosait le
 // payload HTTP). Ce poller reprend la main : zéro dépendance payante, point
-// de reprise par UID en base, texte TRONQUÉ (jamais le HTML complet) → plus
-// jamais de 413.
+// de reprise par UID en base, texte TRONQUE (jamais le HTML complet).
 //
 // Chaîne : cron cron-job.org (2 min) → GET /api/poll-emails?secret=…
 //   1. lit le point de reprise (uid_max) dans la table crm_poll_etat ;
 //   2. IMAP LOGIN + SELECT INBOX (TLS 993, OVH) ;
 //   3. UID SEARCH UID <uid_max+1>:* (ou SINCE POLL_DEPUIS au 1er run) ;
 //   4. pour chaque UID : FETCH BODY.PEEK[] (sans marquer lu) → parseur MIME
-//      (text/plain prioritaire, repli html détagé, charsets 1252/UTF-8) ;
-//   5. pousse { messageId, from, fromName, subject, text ≤ 20 000, date } vers
+//      (text/plain prioritaire, repli html détagué, charsets 1252/UTF-8) ;
+//   5. pousse { messageId, from, fromName, subject, text <= 20000, date } vers
 //      /api/inbound-email (même classification IA + quarantaine crm_arrivees,
-//      dédoublonnage déjà géré là-bas) ;
+//      dédoublonnage déjà géré là-bas) — pushes PARALLÈLES (Promise.all) ;
 //   6. met à jour uid_max → le prochain run reprend exactement après.
 //
 // GET /api/poll-emails?secret=…  → { scannes, pouses, quarantaines, ignores,
-//   dejaEnBase, uidMax, dureeMs }. En cas d'erreur partielle : les mails
-// traités sont conservés, uid_max n'avance QUE jusqu'au dernier traité.
+//   dejaEnBase, erreurs (5 max), nbErreurs, uidMax, dureeMs }.
+// GET /api/poll-emails?config=1  → diagnostic variables (sans secret).
 // Variables : POLL_IMAP_HOST (défaut ex3.mail.ovh.net), POLL_IMAP_USER,
-//   POLL_IMAP_PASS, POLL_DEPUIS (défaut 1-Nov-2026, date du 1er run),
-//   POLL_MAX (défaut 8 mails/run), INBOUND_EMAIL_SECRET (auth + secret Make).
+//   POLL_IMAP_PASS, POLL_DEPUIS (défaut 1-Nov-2026), POLL_MAX (défaut 8),
+//   INBOUND_EMAIL_SECRET (auth de cette route + secret du push).
 
 import * as tls from "tls";
 
@@ -31,15 +30,14 @@ const PASS: string = process.env.POLL_IMAP_PASS || "";
 const DEPUIS: string = process.env.POLL_DEPUIS || "1-Nov-2026";
 const MAX: number = parseInt(process.env.POLL_MAX || "8", 10);
 const SECRET: string = process.env.INBOUND_EMAIL_SECRET || "";
-const SUP: string = process.env.SUPABASE_URL
- || "";
+const SUP: string = process.env.SUPABASE_URL || "";
 const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const DELAI_MS = 12000;
 
 // ── Client IMAP minimal (portage éprouvé de agent-sav-v2/lib/imap.js) ──────
-// ExIGENCE : les littéraux IMAP comptent des OCTETS → accumulateur Buffer
-// (jamais setEncoding utf8). Un faux "A5 OK" dans le corps d'un email NE
-// TERMINE PAS la commande.
+// Les littéraux IMAP comptent des OCTETS → accumulateur Buffer (jamais
+// setEncoding utf8). Un faux "A5 OK" dans le corps d'un email ne termine
+// pas la commande.
 function extraireReponse(acc: Buffer, tag: string): { texte: string; consommation: number } | null {
   const morceaux: string[] = []; let i = 0;
   while (i < acc.length) {
@@ -77,8 +75,7 @@ function connexionImap(): Promise<any> {
         command: (cmd: string) => {
           if (enCours) return Promise.reject(new Error("IMAP : commande deja en cours"));
           compteur++; const tag = "A" + compteur;
-          return new Promise((res
-2: any, rej2: any) => {
+          return new Promise((res2: any, rej2: any) => {
             enCours = { tag, res: res2, minuteur: setTimeout(() => {
               const a = enCours; enCours = null;
               try { so.destroy(); } catch (e) {}
@@ -127,8 +124,7 @@ function utf8DeOctets(s: string): string {
   const bytes = new Uint8Array(octets); let res = ""; let j = 0;
   while (j < bytes.length) {
     const b = bytes[j];
-    if (b < 0x80) { res += String.fr
-omCharCode(b); j += 1; }
+    if (b < 0x80) { res += String.fromCharCode(b); j += 1; }
     else if (b < 0xe0) { res += String.fromCharCode(((b & 0x1f) << 6) | (bytes[j + 1] & 0x3f)); j += 2; }
     else if (b < 0xf0) { res += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[j + 1] & 0x3f) << 6) | (bytes[j + 2] & 0x3f)); j += 3; }
     else {
@@ -165,19 +161,18 @@ function decoderMot(s: string): string {
   });
 }
 function detaguer(html: string): string {
-  return html.replace(/<style[\s\S]*
-?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ")
+  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/g, "'")
     .replace(/\s+/g, " ").trim();
 }
 // Retourne { from, fromNom, sujet, texte, messageId, date } — text/plain
-// prioritaire, repli html DÉTAGUÉ (jamais de base64 images → payload minuscule).
+// prioritaire, repli html DÉTAGUÉ (jamais d'images base64 → payload mince).
 function parseMessage(brut: string): any {
   brut = String(brut || "");
-  const idx = brut.indexOf("\r\n\r\n"); const sep = "\r\n\r\n";
+  const idx = brut.indexOf("\r\n\r\n");
   const idx2 = idx !== -1 ? idx : brut.indexOf("\n\n");
-  const sep2 = idx !== -1 ? sep : "\n\n";
+  const sep2 = idx !== -1 ? "\r\n\r\n" : "\n\n";
   const tete = idx2 !== -1 ? brut.slice(0, idx2) : brut;
   const corps = idx2 !== -1 ? brut.slice(idx2 + sep2.length) : "";
   const d: any = {};
@@ -201,8 +196,7 @@ function parseMessage(brut: string): any {
   }
   function couperPartie(p: string): [string, string] {
     const finTete = p.indexOf("\r\n\r\n");
-    const cut = finTet
-e !== -1 ? [finTete, 4] : [p.indexOf("\n\n"), 2];
+    const cut = finTete !== -1 ? [finTete, 4] : [p.indexOf("\n\n"), 2];
     if (cut[0] === -1) return ["", p];
     return [p.slice(0, cut[0]).replace(/\r?\n[ \t]+/g, " "), p.slice(cut[0] + cut[1])];
   }
@@ -243,11 +237,9 @@ e !== -1 ? [finTete, 4] : [p.indexOf("\n\n"), 2];
   };
 }
 
-// ── Handler ────────────────────────────────────────────────────────
-─────────
+// ── Handler ─────────────────────────────────────────────────────────────────
 export default async function handler(req: any, res: any) {
   const t0 = Date.now();
-  // Diagnostic sans secret : quelles variables sont présentes ?
   const u = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && u.searchParams.get("config") === "1") {
     return res.status(200).json({ ok: true, service: "poll-emails", variables: {
@@ -256,7 +248,7 @@ export default async function handler(req: any, res: any) {
   }
   const fourni = String((req.headers && req.headers["x-webhook-secret"]) || u.searchParams.get("secret") || "");
   if (SECRET && fourni !== SECRET) return res.status(401).json({ ok: false, erreur: "secret invalide" });
-  if (!USER || !PASS || !SUP || !KEY || !SECRET) return res.status(500).json({ ok: false, erreur: "config serveur incomplete (POLL_IMAP_USER/PASS, SUPABASE, INBOUND_EMAIL_SECRET) ?config=1" });
+  if (!USER || !PASS || !SUP || !KEY || !SECRET) return res.status(500).json({ ok: false, erreur: "config serveur incomplete ?config=1" });
 
   const sbH: any = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
   // 1. Point de reprise (uid_max) — table crm_poll_etat (id='imap').
@@ -266,7 +258,7 @@ export default async function handler(req: any, res: any) {
     if (rx.ok) { const rows: any[] = await rx.json(); uidMax = (rows[0] && rows[0].uid_max) || 0; }
   } catch (e: any) { /* table absente → uidMax=0 → mode SINCE */ }
 
-  // 2. IMAP.
+  // 2. IMAP + 3. recherche (reprise par UID, ou SINCE au premier run).
   let api: any = null;
   const etats: any = { scannes: 0, pouses: 0, quarantaines: 0, ignores: 0, dejaEnBase: 0, erreurs: [] as string[] };
   let uidTraite = uidMax;
@@ -276,8 +268,6 @@ export default async function handler(req: any, res: any) {
     const r1 = await api.command('LOGIN "' + ech(USER) + '" "' + ech(PASS) + '"');
     if (!estOk(r1, "A1")) throw new Error("IMAP LOGIN refuse : " + r1.split("\n").slice(0, 2).join(" ").slice(0, 150));
     await api.command("SELECT INBOX");
-    // 3. Recherche : reprise par UID, ou SINCE
- au premier run (rattrapage).
     let uids: number[] = [];
     if (uidMax > 0) {
       const r = await api.command("UID SEARCH UID " + (uidMax + 1) + ":*");
@@ -290,10 +280,8 @@ export default async function handler(req: any, res: any) {
     const aTraiter = uids.slice(0, MAX);
     etats.scannes = aTraiter.length;
 
-    // 4+5. Fetch IMAP SÉQUENTIEL (un seul socket, jamais en parallèle), puis
-    // push PARALLÈLE vers /api/inbound-email : les appels IA se chevauchent,
-    // un run de POLL_MAX mails tient en quelques secondes au lieu de
-    // POLL_MAX x ~3 s (sinon risque de dépasser les 60 s maxDuration Vercel).
+    // 4+5. Fetch IMAP SÉQUENTIEL (un seul socket), puis push PARALLÈLE vers
+    // /api/inbound-email (les appels IA se chevauchent → run court).
     const msgs: any[] = [];
     for (const uid of aTraiter) {
       try {
@@ -301,7 +289,7 @@ export default async function handler(req: any, res: any) {
         msgs.push({ uid, msg: parseMessage(brut) });
       } catch (e: any) {
         etats.erreurs.push("uid " + uid + " fetch: " + String(e && e.message || e).slice(0, 100));
-        break; // fetch en échec : la suite sera rejouée au prochain run
+        break;
       }
     }
     etats.pouses = msgs.length;
@@ -323,8 +311,8 @@ export default async function handler(req: any, res: any) {
         return { uid, ok: false, err: String(e && e.message || e).slice(0, 100) };
       }
     }));
-    // uid_max n'avance que sur les mails traités DANS L'ORDRE (Promise.all
-    // conserve l'ordre) : un échec bloque la progression, le cron rejoue.
+    // uid_max n'avance que dans l'ordre des succès (Promise.all conserve
+    // l'ordre) : un échec bloque la progression, le cron rejoue.
     for (const rr of results) {
       if (rr.ok) uidTraite = rr.uid;
       else { etats.erreurs.push("uid " + rr.uid + " : " + rr.err); break; }
@@ -333,8 +321,7 @@ export default async function handler(req: any, res: any) {
     if (api) api.detruire();
     return res.status(500).json({ ok: false, erreur: String(e && e.message || e).slice(0, 300), uidMax, ...etats, erreurs: etats.erreurs.slice(0, 5), nbErreurs: etats.erreurs.length });
   }
-  if (api) { try { await api.
-command("LOGOUT"); } catch (e) {} api.detruire(); }
+  if (api) { try { await api.command("LOGOUT"); } catch (e) {} api.detruire(); }
 
   // 6. Mise à jour du point de reprise (seulement s'il a avancé).
   if (uidTraite > uidMax) {
