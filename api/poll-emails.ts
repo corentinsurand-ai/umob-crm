@@ -16,6 +16,8 @@
 // GET /api/poll-emails?secret=…  → { scannes, pouses, quarantaines, ignores,
 //   dejaEnBase, autres, erreurs (5 max), nbErreurs, uidMax, dureeMs }.
 // GET /api/poll-emails?config=1  → diagnostic variables (sans secret).
+// GET /api/poll-emails?secret=…&imap=1 → debug IMAP (UIDVALIDITY, UIDNEXT, MESSAGES, derniers UIDs).
+// Garde-fou UIDVALIDITY : boîte OVH recréée → UIDs repartent de 0 → uid_max reset auto.
 // Variables : POLL_IMAP_HOST (défaut ex3.mail.ovh.net), POLL_IMAP_USER,
 //   POLL_IMAP_PASS, POLL_DEPUIS (défaut 1-Nov-2026), POLL_MAX (défaut 8),
 //   INBOUND_EMAIL_SECRET (auth de cette route + secret du push).
@@ -252,6 +254,12 @@ export default async function handler(req: any, res: any) {
     const rx = await fetch(SUP + "/rest/v1/crm_poll_etat?id=eq.imap&select=uid_max", { headers: sbH });
     if (rx.ok) { const rows: any[] = await rx.json(); uidMax = (rows[0] && rows[0].uid_max) || 0; }
   } catch (e: any) { /* table absente → uidMax=0 → mode SINCE */ }
+  // UIDVALIDITY mémorisée (ligne id='imap_uv', colonne uid_max réutilisée).
+  let uvStock = 0; let uvNow = 0; let resetUid = false;
+  try {
+    const ruv = await fetch(SUP + "/rest/v1/crm_poll_etat?id=eq.imap_uv&select=uid_max", { headers: sbH });
+    if (ruv.ok) { const rowsUv: any[] = await ruv.json(); uvStock = (rowsUv[0] && rowsUv[0].uid_max) || 0; }
+  } catch (e: any) { /* pas de ligne uv → premier run */ }
 
   let api: any = null;
   const etats: any = { scannes: 0, pouses: 0, quarantaines: 0, ignores: 0, dejaEnBase: 0, autres: 0, erreurs: [] as string[] };
@@ -262,6 +270,22 @@ export default async function handler(req: any, res: any) {
     const r1 = await api.command('LOGIN "' + ech(USER) + '" "' + ech(PASS) + '"');
     if (!estOk(r1, "A1")) throw new Error("IMAP LOGIN refuse : " + r1.split("\n").slice(0, 2).join(" ").slice(0, 150));
     await api.command("SELECT INBOX");
+    // Garde-fou UIDVALIDITY : si la boîte OVH est recréée/restaurée, les UIDs
+    // repartent de 0 et un uid_max mémorisé bloque le poller à jamais.
+    const rStat = await api.command("STATUS INBOX (UIDVALIDITY UIDNEXT MESSAGES)");
+    const mUv = /UIDVALIDITY (\d+)/.exec(rStat); const mUn = /UIDNEXT (\d+)/.exec(rStat); const mMsg = /MESSAGES (\d+)/.exec(rStat);
+    uvNow = mUv ? parseInt(mUv[1], 10) : 0;
+    const uidnext = mUn ? parseInt(mUn[1], 10) : 0;
+    const messages = mMsg ? parseInt(mMsg[1], 10) : 0;
+    if (uvStock > 0 && uvNow > 0 && uvNow !== uvStock) { uidMax = 0; uidTraite = 0; resetUid = true; }
+    // Mode debug (secret requis) : état de la boîte sans rien consommer.
+    if (u.searchParams.get("imap") === "1") {
+      const rAll = await api.command("UID SEARCH ALL");
+      const derniers = uidsDeRecherche(rAll).slice(-8);
+      try { await api.command("LOGOUT"); } catch (e) {}
+      api.detruire();
+      return res.status(200).json({ ok: true, debugImap: true, uidvalidity: uvNow, uidnext, messages, uidMaxStocke: uvStock, resetUid, derniersUids: derniers, dureeMs: Date.now() - t0 });
+    }
     let uids: number[] = [];
     if (uidMax > 0) {
       const r = await api.command("UID SEARCH UID " + (uidMax + 1) + ":*");
@@ -329,10 +353,15 @@ export default async function handler(req: any, res: any) {
   }
   if (api) { try { await api.command("LOGOUT"); } catch (e) {} api.detruire(); }
 
+  if (uvNow > 0) {
+    try {
+      await fetch(SUP + "/rest/v1/crm_poll_etat", { method: "POST", headers: { ...sbH, Prefer: "resolution=merge-duplicates" }, body: JSON.stringify([{ id: "imap_uv", uid_max: uvNow, maj_a: new Date().toISOString() }]) });
+    } catch (e: any) { /* non bloquant */ }
+  }
   if (uidTraite > uidMax) {
     try {
       await fetch(SUP + "/rest/v1/crm_poll_etat?id=eq.imap", { method: "PATCH", headers: sbH, body: JSON.stringify({ uid_max: uidTraite, maj_a: new Date().toISOString() }) });
     } catch (e: any) { etats.erreurs.push("maj uid_max : " + String(e && e.message || e).slice(0, 80)); }
   }
-  return res.status(200).json({ ok: true, uidMax: uidTraite, ...etats, erreurs: etats.erreurs.slice(0, 5), nbErreurs: etats.erreurs.length, dureeMs: Date.now() - t0 });
+  return res.status(200).json({ ok: true, uidMax: uidTraite, uidvalidity: uvNow, resetUid, ...etats, erreurs: etats.erreurs.slice(0, 5), nbErreurs: etats.erreurs.length, dureeMs: Date.now() - t0 });
 }
