@@ -277,7 +277,11 @@ export default async function handler(req: any, res: any) {
     uvNow = mUv ? parseInt(mUv[1], 10) : 0;
     const uidnext = mUn ? parseInt(mUn[1], 10) : 0;
     const messages = mMsg ? parseInt(mMsg[1], 10) : 0;
-    if (uvStock > 0 && uvNow > 0 && uvNow !== uvStock) { uidMax = 0; uidTraite = 0; resetUid = true; }
+    // Reset si UIDVALIDITY a changé, OU si uid_max mémorisé est >= UIDNEXT
+    // (impossible dans la boîte courante → la boîte a été recréée et les UIDs
+    // sont repartis de 0 ; l'ancien UIDVALIDITY n'ayant jamais été stocké,
+    // c'est ce test qui détecte le reset dès le 1er run).
+    if ((uvStock > 0 && uvNow > 0 && uvNow !== uvStock) || (uidMax > 0 && uidnext > 0 && uidMax >= uidnext)) { uidMax = 0; uidTraite = 0; resetUid = true; }
     // Mode debug (secret requis) : état de la boîte sans rien consommer.
     if (u.searchParams.get("imap") === "1") {
       const rAll = await api.command("UID SEARCH ALL");
