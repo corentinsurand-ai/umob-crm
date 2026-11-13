@@ -1,22 +1,20 @@
 // ── Poller IMAP maison — remplace le scénario Make « Integration Email » ────
 // CAUSE DE LA CREATION (11/2026) : Make a désactivé le scénario le 04/11/2026
-// (« Request Entity Too Large » : un email volumineux HTML/base64 explosait le
-// payload HTTP). Ce poller reprend la main : zéro dépendance payante, point
-// de reprise par UID en base, texte TRONQUE (jamais le HTML complet).
+// (« Request Entity Too Large »). Ce poller reprend la main : zéro dépendance
+// payante, point de reprise par UID en base, texte TRONQUE (jamais le HTML).
 //
 // Chaîne : cron cron-job.org (2 min) → GET /api/poll-emails?secret=…
 //   1. lit le point de reprise (uid_max) dans la table crm_poll_etat ;
 //   2. IMAP LOGIN + SELECT INBOX (TLS 993, OVH) ;
 //   3. UID SEARCH UID <uid_max+1>:* (ou SINCE POLL_DEPUIS au 1er run) ;
-//   4. pour chaque UID : FETCH BODY.PEEK[] (sans marquer lu) → parseur MIME
-//      (text/plain prioritaire, repli html détagué, charsets 1252/UTF-8) ;
-//   5. pousse { messageId, from, fromName, subject, text <= 20000, date } vers
-//      /api/inbound-email (même classification IA + quarantaine crm_arrivees,
-//      dédoublonnage déjà géré là-bas) — pushes PARALLÈLES (Promise.all) ;
-//   6. met à jour uid_max → le prochain run reprend exactement après.
+//   4. pour chaque UID : FETCH BODY.PEEK[] (sans marquer lu) → parseur MIME ;
+//   5. pousse vers /api/inbound-email (classification IA + quarantaine
+//      crm_arrivees) — pushes PARALLÈLES, 1 retry sur non-2xx, et toute
+//      réponse 2xx fait avancer uid_max (règle anti-blocage) ;
+//   6. met à jour uid_max.
 //
 // GET /api/poll-emails?secret=…  → { scannes, pouses, quarantaines, ignores,
-//   dejaEnBase, erreurs (5 max), nbErreurs, uidMax, dureeMs }.
+//   dejaEnBase, autres, erreurs (5 max), nbErreurs, uidMax, dureeMs }.
 // GET /api/poll-emails?config=1  → diagnostic variables (sans secret).
 // Variables : POLL_IMAP_HOST (défaut ex3.mail.ovh.net), POLL_IMAP_USER,
 //   POLL_IMAP_PASS, POLL_DEPUIS (défaut 1-Nov-2026), POLL_MAX (défaut 8),
@@ -31,8 +29,7 @@ const DEPUIS: string = process.env.POLL_DEPUIS || "1-Nov-2026";
 const MAX: number = parseInt(process.env.POLL_MAX || "8", 10);
 const SECRET: string = process.env.INBOUND_EMAIL_SECRET || "";
 const SUP: string = process.env.SUPABASE_URL || "";
-c
-onst KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const DELAI_MS = 12000;
 
 // ── Client IMAP minimal (portage éprouvé de agent-sav-v2/lib/imap.js) ──────
@@ -76,8 +73,7 @@ function connexionImap(): Promise<any> {
         command: (cmd: string) => {
           if (enCours) return Promise.reject(new Error("IMAP : commande deja en cours"));
           compteur++; const tag = "A" + compteur;
-          return new Promise((res2: any, rej2: any) =
-> {
+          return new Promise((res2: any, rej2: any) => {
             enCours = { tag, res: res2, minuteur: setTimeout(() => {
               const a = enCours; enCours = null;
               try { so.destroy(); } catch (e) {}
@@ -126,8 +122,7 @@ function utf8DeOctets(s: string): string {
   const bytes = new Uint8Array(octets); let res = ""; let j = 0;
   while (j < bytes.length) {
     const b = bytes[j];
-    if (b < 0x80) { res += String.fromCharCode(b); j += 
-1; }
+    if (b < 0x80) { res += String.fromCharCode(b); j += 1; }
     else if (b < 0xe0) { res += String.fromCharCode(((b & 0x1f) << 6) | (bytes[j + 1] & 0x3f)); j += 2; }
     else if (b < 0xf0) { res += String.fromCharCode(((b & 0x0f) << 12) | ((bytes[j + 1] & 0x3f) << 6) | (bytes[j + 2] & 0x3f)); j += 3; }
     else {
@@ -164,14 +159,11 @@ function decoderMot(s: string): string {
   });
 }
 function detaguer(html: string): string {
-  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").
-replace(/<script[\s\S]*?<\/script>/gi, " ")
+  return html.replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n\n").replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&quot;/gi, '"').replace(/&#39;/g, "'")
     .replace(/\s+/g, " ").trim();
 }
-// Retourne { from, fromNom, sujet, texte, messageId, date } — text/plain
-// prioritaire, repli html DÉTAGUÉ (jamais d'images base64 → payload mince).
 function parseMessage(brut: string): any {
   brut = String(brut || "");
   const idx = brut.indexOf("\r\n\r\n");
@@ -200,8 +192,7 @@ function parseMessage(brut: string): any {
   }
   function couperPartie(p: string): [string, string] {
     const finTete = p.indexOf("\r\n\r\n");
-    const cut = finTete !== -1 ? [finTete, 4] : [p.indexOf("\n\n
-"), 2];
+    const cut = finTete !== -1 ? [finTete, 4] : [p.indexOf("\n\n"), 2];
     if (cut[0] === -1) return ["", p];
     return [p.slice(0, cut[0]).replace(/\r?\n[ \t]+/g, " "), p.slice(cut[0] + cut[1])];
   }
@@ -243,8 +234,7 @@ function parseMessage(brut: string): any {
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────
-export default async function ha
-ndler(req: any, res: any) {
+export default async function handler(req: any, res: any) {
   const t0 = Date.now();
   const u = new URL(req.url || "/", "http://localhost");
   if (req.method === "GET" && u.searchParams.get("config") === "1") {
@@ -257,14 +247,12 @@ ndler(req: any, res: any) {
   if (!USER || !PASS || !SUP || !KEY || !SECRET) return res.status(500).json({ ok: false, erreur: "config serveur incomplete ?config=1" });
 
   const sbH: any = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
-  // 1. Point de reprise (uid_max) — table crm_poll_etat (id='imap').
   let uidMax = 0;
   try {
     const rx = await fetch(SUP + "/rest/v1/crm_poll_etat?id=eq.imap&select=uid_max", { headers: sbH });
     if (rx.ok) { const rows: any[] = await rx.json(); uidMax = (rows[0] && rows[0].uid_max) || 0; }
   } catch (e: any) { /* table absente → uidMax=0 → mode SINCE */ }
 
-  // 2. IMAP + 3. recherche (reprise par UID, ou SINCE au premier run).
   let api: any = null;
   const etats: any = { scannes: 0, pouses: 0, quarantaines: 0, ignores: 0, dejaEnBase: 0, autres: 0, erreurs: [] as string[] };
   let uidTraite = uidMax;
@@ -277,8 +265,7 @@ ndler(req: any, res: any) {
     let uids: number[] = [];
     if (uidMax > 0) {
       const r = await api.command("UID SEARCH UID " + (uidMax + 1) + ":*");
-      uids = uidsDeRech
-erche(r).filter((x) => x > uidMax);
+      uids = uidsDeRecherche(r).filter((x) => x > uidMax);
     } else {
       const r = await api.command("UID SEARCH SINCE " + DEPUIS);
       uids = uidsDeRecherche(r);
@@ -287,7 +274,7 @@ erche(r).filter((x) => x > uidMax);
     const aTraiter = uids.slice(0, MAX);
     etats.scannes = aTraiter.length;
 
-    // 4+5. Fetch IMAP SÉQUENTIEL (un seul socket), puis push PARALLÈLE vers
+    // Fetch IMAP SÉQUENTIEL (un seul socket), puis push PARALLÈLE vers
     // /api/inbound-email (les appels IA se chevauchent → run court).
     const msgs: any[] = [];
     for (const uid of aTraiter) {
@@ -305,8 +292,7 @@ erche(r).filter((x) => x > uidMax);
       const uid = m.uid, msg = m.msg;
       try {
         let rep: any = null, jr: any = {};
-        // 2 tentatives : un 429/504 transitoire (gros run parallèle) ne doit
-        // JAMAIS bloquer la progression du point de reprise.
+        // 2 tentatives : un 429/504 transitoire ne doit jamais bloquer.
         for (let tentative = 0; tentative < 2; tentative++) {
           rep = await fetch("https://" + hote + "/api/inbound-email", {
             method: "POST",
@@ -317,9 +303,8 @@ erche(r).filter((x) => x > uidMax);
           if (rep.ok) break;
           await new Promise((r2) => setTimeout(r2, 1000));
         }
-        // RÈGLE ANTI-BLOCAGE : toute réponse 2xx FAIT AVANCER uid_max, même si
-        // le JSON n'a aucun flag reconnu (compté dans "autres") — un mail qui
-        // ferait échouer la classification ne doit pas bloquer toute la file.
+        // RÈGLE ANTI-BLOCAGE : toute réponse 2xx FAIT AVANCER uid_max, même
+        // sans flag reconnu (compté dans "autres").
         if (rep.ok) {
           if (jr.note === "deja en quarantaine") etats.dejaEnBase++;
           else if (jr.ignore) etats.ignores++;
@@ -332,8 +317,7 @@ erche(r).filter((x) => x > uidMax);
         return { uid, ok: false, err: String(e && e.message || e).slice(0, 100) };
       }
     }));
-    // uid_max n'avance que dans l'ordre des s
-uccès (Promise.all conserve
+    // uid_max n'avance que dans l'ordre des succès (Promise.all conserve
     // l'ordre) : un échec bloque la progression, le cron rejoue.
     for (const rr of results) {
       if (rr.ok) uidTraite = rr.uid;
@@ -345,7 +329,6 @@ uccès (Promise.all conserve
   }
   if (api) { try { await api.command("LOGOUT"); } catch (e) {} api.detruire(); }
 
-  // 6. Mise à jour du point de reprise (seulement s'il a avancé).
   if (uidTraite > uidMax) {
     try {
       await fetch(SUP + "/rest/v1/crm_poll_etat?id=eq.imap", { method: "PATCH", headers: sbH, body: JSON.stringify({ uid_max: uidTraite, maj_a: new Date().toISOString() }) });
