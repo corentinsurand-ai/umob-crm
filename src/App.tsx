@@ -594,6 +594,8 @@ function normaliser(s: Etat): Etat {
     risque: "",
     // Migration « Origine » : champ absent des vieilles sauvegardes → vide.
     origine: "",
+    // SIREN / adresse postale / CP : défauts vides (fiches importées Sellsy).
+    siren: "", adresse: "", cp: "",
     modeles: [],
     ...x,
     contrats: x.contrats || ((x.pack || x.contratLocam) ? [{ pack: x.pack || "", modele: "", num: "", dateDebut: x.dateDebut || "", dateFin: x.dateFin || "", immats: x.immatriculations || "", etat: "" }] : []),
@@ -5466,6 +5468,10 @@ export default function App() {
           tel: formaterTelFr(en.tel || ""), franchiseur: "", modeLivraison: en.modeLivraison || "Scooter électrique",
           activite: "", statut: "Client", notes: en.notes || "", activites,
           modeles, contrats, risque: en.risque || "", origine: "Import Sellsy (quarantaine)",
+          // Champs Sheet (SIREN/adresse/CP) + listes devis : repris tels quels,
+          // et DEVIS vides explicites (sinon crash .map() avant normalisation).
+          siren: en.siren || "", adresse: en.adresse || "", cp: en.cp || "",
+          devisHistorique: [], devisImportes: [],
           ...fusionnerContrats(contrats),
         };
         entreprises.push(nv);
