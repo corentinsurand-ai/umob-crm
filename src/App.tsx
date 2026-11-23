@@ -5442,8 +5442,29 @@ export default function App() {
         resume.fusionnes++;
         entreprises = entreprises.map((x) => {
           if (x.id !== entId) return x;
-          const contratsFin = [...(x.contrats || [])];
-          for (const c of contrats) if (c.num && !contratsFin.some((k) => k.num === c.num)) { contratsFin.push(c); resume.contratsAjoutes++; }
+          // Contrats : dédup par n° (fusion immats/packs/dates) puis merge du JSON :
+          // un contrat existant est COMPLÉTÉ (dates, pack, immats) si le JSON a mieux.
+          const byNum = new Map<string, ContratLigne>();
+          const mergeImmats = (a: string, b: string) => Array.from(new Set([...(a || "").split(","), ...(b || "").split(",")] .map((s) => s.trim()).filter(Boolean))).join(", ");
+          for (const k of (x.contrats || [])) {
+            if (!k.num) { byNum.set("sansnum_" + byNum.size, k); continue; }
+            const e = byNum.get(k.num);
+            if (!e) { byNum.set(k.num, { ...k }); continue; }
+            byNum.set(k.num, { ...e,
+              pack: e.pack || k.pack, modele: e.modele || k.modele,
+              dateDebut: e.dateDebut || k.dateDebut, dateFin: e.dateFin || k.dateFin, etat: e.etat || k.etat,
+              immats: mergeImmats(e.immats, k.immats) });
+          }
+          for (const c of contrats) {
+            if (!c.num) continue;
+            const e = byNum.get(c.num);
+            if (e) {
+              e.dateDebut = e.dateDebut || c.dateDebut; e.dateFin = e.dateFin || c.dateFin;
+              e.pack = e.pack || c.pack; e.modele = e.modele || c.modele; e.etat = e.etat || c.etat;
+              e.immats = mergeImmats(e.immats, c.immats);
+            } else { byNum.set(c.num, c); resume.contratsAjoutes++; }
+          }
+          const contratsFin = Array.from(byNum.values());
           const acts = [...(x.activites || [])];
           for (const a of activites) if (!acts.some((k) => k.dateISO === a.dateISO && k.texte === a.texte)) { acts.unshift(a); resume.activitesAjoutees++; }
           const fusion = { ...x,
