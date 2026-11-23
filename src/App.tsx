@@ -36,7 +36,7 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRE,
 // au lieu de la période fusionnée min/max qui ne correspondait à aucun
 // contrat réel. ──
-interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string }
+interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string; libelle?: string; locam?: string }
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
   // ── SIREN + adresse postale du siège : champs PERMANENTS (fiche À propos,
   //  modale). Remplis automatiquement par la recherche SIREN / API gouv à la
@@ -131,7 +131,7 @@ const isoParis = (d: Date = new Date()): string => d.toLocaleDateString("sv-SE",
 // client. C’est la source officielle des clients : si le Sheet connaît la
 // société, elle EST cliente. Échec réseau → liste vide, aucun blocage, et JAMAIS
 // de champ contrat rempli sans donnée du Sheet (règle anti-invention). ──
-interface ClientSheet { code: string; nom: string; ville: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string; modeles: string[]; lignes: ContratLigne[]; contacts: ContactSheet[] }
+interface ClientSheet { code: string; nom: string; ville: string; adresse?: string; cp?: string; packs: string; dateDebut: string; dateFin: string; nbVehicules: string; contrats: string; immats: string; risque: string; modeles: string[]; lignes: ContratLigne[]; contacts: ContactSheet[] }
 // Contact du Sheet : une ligne peut porter un interlocuteur (Prénom Contact /
 // Nom Contact / Fonction Contact / Mobile Contact / Email Contact). Dédupliqués
 // par prénom+nom+mobile+email — jamais inventés, uniquement ce que dit le Sheet.
@@ -158,7 +158,7 @@ const parserCSV = (txt: string): string[][] => {
 // dédoublonne par ligne complète (JSON) — jamais de saut, jamais de doublon.
 // Cache mémoire de 60 s : le Sheet est lu à chaque création, recherche et
 // ouverture de fiche ; inutile de retélécharger ~10 pages à chaque fois. ──
-const URL_SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&tq=select%20*";
+const URL_SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
 let cacheSheet: { at: number; lignes: string[][] } | null = null;
 const lireToutSheet = async (): Promise<string[][]> => {
   if (cacheSheet && Date.now() - cacheSheet.at < 60000) return cacheSheet.lignes;
@@ -187,13 +187,20 @@ const lireToutSheet = async (): Promise<string[][]> => {
 const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureOk: boolean }> => {
   try {
     const lignes = await lireToutSheet();
-    const tete = (lignes[0] || []).map((h) => h.trim().toLowerCase());
-    const col = (n: string) => tete.findIndex((h) => h === n.toLowerCase());
+    // Onglet « Clients Complets » : les en-têtes contiennent des exemples de
+    // valeurs (« Code client 420 421 ? … ») → matching par PRÉFIXE, accents
+    // normalisés (« État contrat » vs « Etat contrat »).
+    const normH = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+    const tete = (lignes[0] || []).map(normH);
+    const col = (n: string) => tete.findIndex((h) => h.startsWith(normH(n)));
+    const colC = (n: string) => tete.findIndex((h) => h.includes(normH(n)));
     const cCode = col("Code client"), cNom = col("Nom client"), cVille = col("Ville"),
-      cPack = col("Libellé contrat"), cProd = tete.findIndex((h) => h.includes("libellé produit")), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
-      cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Statut_risque_client"),
-      cPrenom = col("Prénom Contact"), cNomCt = col("Nom Contact"), cFonction = col("Fonction Contact"), cMobile = col("Mobile Contact"), cMail = col("Email Contact"),
-      cImp = col("Impayes"), cProc = col("Procedure_collective_Radiation");
+      cAdr = col("Adresse de livraison"),
+      cPack = col("Libellé contrat"), cPackCode = col("Code produit"), cLib = col("Libellé contrat"), cLocam = col("N° dossier locam"),
+      cProd = colC("libellé produit"), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
+      cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Risque"),
+      cContact = col("Contact principal"), cFonction = col("Fonction"), cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
+      cImp = col("Impayes"), cProc = col("Procedure collective");
     if (cCode < 0 || cNom < 0) return { clients: [], lectureOk: false }; /* page d’erreur Google 200 ou colonnes absentes */
     const clients: ClientSheet[] = []; const idx = new Map<string, ClientSheet>();
     const prem = new Map<string, number>(); const der = new Map<string, number>();
@@ -203,11 +210,16 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
     for (const l of lignes.slice(1)) {
       const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
       const code = g(cCode); if (!code) continue;
-      if (!idx.has(code)) { const c: ClientSheet = { code, nom: g(cNom), ville: g(cVille), packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "", modeles: [], lignes: [], contacts: [] }; idx.set(code, c); clients.push(c); }
+      if (!idx.has(code)) {
+        // « 21 Avenue Jules Grec, 06600 ANTIBES » → adresse + CP + ville
+        const adr = g(cAdr); const mAdr = adr.match(/^(.*?)(\d{5})\s+(.+)$/);
+        const c: ClientSheet = { code, nom: g(cNom), ville: mAdr ? mAdr[3].trim() : g(cVille), adresse: mAdr ? mAdr[1].trim().replace(/,\s*$/, "") : adr, cp: mAdr ? mAdr[2] : "", packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "", risque: "", modeles: [], lignes: [], contacts: [] };
+        idx.set(code, c); clients.push(c);
+      }
       const c = idx.get(code)!;
       const p = g(cPack); if (p && !c.packs.includes(p)) c.packs = c.packs ? c.packs + " · " + p : p;
       const pr = modeleDepuis(g(cProd)); if (pr && !c.modeles.includes(pr)) c.modeles.push(pr);
-      c.lignes.push({ pack: g(cPack), modele: pr, num: g(cNum), dateDebut: g(cDd), dateFin: g(cDf), immats: g(cImm), etat: g(cEtat) });
+      c.lignes.push({ pack: g(cPackCode) || g(cPack), modele: pr, num: g(cNum), dateDebut: g(cDd), dateFin: g(cDf), immats: g(cImm), etat: g(cEtat), libelle: g(cLib), locam: g(cLocam) });
       const n = g(cNum); if (n && !c.contrats.includes(n)) c.contrats = c.contrats ? c.contrats + ", " + n : n;
       const im = g(cImm); if (im && !c.immats.includes(im)) c.immats = c.immats ? c.immats + ", " + im : im;
       const kd = cleDate(g(cDd)); if (!Number.isNaN(kd) && (prem.get(code) === undefined || kd < prem.get(code)!)) { prem.set(code, kd); c.dateDebut = fmtDate(kd); }
@@ -217,9 +229,11 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
       else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
       // ── Interlocuteurs du Sheet : prénom + nom (+ fonction, mobile, email).
       // Dédupliqués par prénom+nom+tel+email ; une ligne sans nom est ignorée. ──
-      const cp = g(cPrenom), cn = g(cNomCt);
-      if ((cp || cn) && !c.contacts.some((x) => x.prenom === cp && x.nom === cn && x.tel === g(cMobile) && x.email === g(cMail))) {
-        c.contacts.push({ prenom: cp, nom: cn, role: g(cFonction), tel: g(cMobile), email: g(cMail) });
+      const principal = g(cContact); const tk = principal.split(/\s+/).filter(Boolean);
+      const cp = tk.length > 1 ? tk[0] : "", cn = tk.length > 1 ? tk.slice(1).join(" ") : principal;
+      const telC = g(cMobile) || g(cTelFixe);
+      if ((cp || cn) && !c.contacts.some((x) => x.prenom === cp && x.nom === cn && x.tel === telC && x.email === g(cMail))) {
+        c.contacts.push({ prenom: cp, nom: cn, role: g(cFonction), tel: telC, email: g(cMail) });
       }
     }
     for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
@@ -237,6 +251,8 @@ const chargerClientsSheet = async (): Promise<{ clients: ClientSheet[]; lectureO
           if (!ex.dateDebut && l.dateDebut) ex.dateDebut = l.dateDebut;
           if (!ex.dateFin && l.dateFin) ex.dateFin = l.dateFin;
           if (!ex.etat && l.etat) ex.etat = l.etat;
+          if (!ex.libelle && l.libelle) ex.libelle = l.libelle;
+          if (!ex.locam && l.locam) ex.locam = l.locam;
         }
       }
       c.lignes = Array.from(groupes.values());
@@ -1137,7 +1153,7 @@ function Modale({
       const cliS = trouverClientSheet(clients, f.nom, (f.nomCommercial.split(" — ")[0] || f.nomCommercial), f.ville);
       if (cliS) {
         const fr = franchiseurDepuis(f.nomCommercial.split(" — ")[0] || "") || franchiseurDepuis(cliS.nom) || "Indépendant";
-        setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+        setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
         // Contacts du Sheet : mêmes règles que le chemin API gouv (fusion avec
         // les contacts déjà proposés, complétion tel/email, ajout sinon).
         if (cliS.contacts.length > 0) {
@@ -1194,7 +1210,7 @@ function Modale({
           // « Indépendant ». Règle anti-invention : la marque vient de l'enseigne
           // INSEE/Sheet, et « Indépendant » = absence de marque connue.
           const fr = franchiseurDepuis(fiche.nomCommercial.split(" — ")[0] || "") || franchiseurDepuis(cliS.nom) || "Indépendant";
-          setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l, num: "" })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
+          setEnt((e) => ({ ...e, statut: "Client" as Statut, modeLivraison: "U'mob", franchiseur: fr, pack: cliS.packs, modeles: cliS.modeles, contrats: cliS.lignes.map((l: ContratLigne) => ({ ...l })), dateDebut: cliS.dateDebut, dateFin: cliS.dateFin, nbVehicules: cliS.nbVehicules, contratLocam: "", immatriculations: cliS.immats, risque: cliS.risque, notes: "Client selon le Sheet « Infos Service Client » (" + cliS.code + " · " + cliS.nom + ") — contrat pré-rempli depuis le Sheet, à vérifier avant enregistrement." }));
           // ── Contacts du Sheet : prénom/nom/fonction/mobile/email du client
           // reconnu. On fusionne avec les dirigeants INSEE déjà proposés : si
           // un dirigeant INSEE correspond (prénom+nom), on COMPLÈTE son tel et
@@ -2445,20 +2461,23 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
       // boucle : le patch ne redéclenche pas l'effet, qui ne vit qu'au montage).
       const patch: Partial<Entreprise> = {
         statut: "Client",
+        modeLivraison: "U'mob", // client du Sheet = flotte louée U'mob
         pack: cliS.packs, modeles: cliS.modeles,
-        contrats: cliS.lignes.map((l) => ({ ...l, num: "" })),
+        contrats: cliS.lignes.map((l) => ({ ...l })), // num conservé : titre « CO02085 - Modèle Confort + 48 »
         dateDebut: cliS.dateDebut, dateFin: cliS.dateFin,
         nbVehicules: cliS.nbVehicules, immatriculations: cliS.immats,
         risque: cliS.risque,
+        adresse: ent.adresse || cliS.adresse || "", cp: ent.cp || cliS.cp || "", ville: ent.ville || cliS.ville || "",
       };
       const change =
-        ent.statut !== "Client" || ent.pack !== cliS.packs ||
+        ent.statut !== "Client" || ent.modeLivraison !== "U'mob" ||
+        ent.pack !== cliS.packs || ent.adresse !== patch.adresse || ent.cp !== patch.cp || ent.ville !== patch.ville ||
         (ent.modeles || []).join("|") !== cliS.modeles.join("|") ||
         ent.dateDebut !== cliS.dateDebut || ent.dateFin !== cliS.dateFin ||
         ent.nbVehicules !== cliS.nbVehicules || ent.immatriculations !== cliS.immats ||
         ent.risque !== cliS.risque ||
-        (ent.contrats || []).map((k) => [k.pack, k.modele, k.dateDebut, k.dateFin, k.immats, k.etat].join("|")).join("§") !==
-          cliS.lignes.map((l) => [l.pack, l.modele, l.dateDebut, l.dateFin, l.immats, l.etat].join("|")).join("§");
+        (ent.contrats || []).map((k) => [k.num, k.libelle, k.locam, k.pack, k.modele, k.dateDebut, k.dateFin, k.immats, k.etat].join("|")).join("§") !==
+          cliS.lignes.map((l) => [l.num, l.libelle, l.locam, l.pack, l.modele, l.dateDebut, l.dateFin, l.immats, l.etat].join("|")).join("§");
       if (change) onModifie(patch);
       // ── RATTRAPAGE des contacts existants : les fiches créées AVANT la
       // synchronisation Sheet des contacts n'ont pas le téléphone/email des
@@ -3120,7 +3139,10 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                   )}
                   {(e.contrats || []).map((k, i) => (
                     <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-2">
-                      <div className="mb-1 text-[11px] font-black text-slate-500">Contrat {i + 1}{k.etat ? " · " + k.etat : ""}</div>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-black text-slate-500">{k.num ? k.num + (k.libelle ? " - " + k.libelle : "") : "Contrat " + (i + 1)}{k.etat ? " · " + k.etat : ""}</span>
+                        {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <PropTexte label="Pack" valeur={affPack(k.pack)} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
                         <PropTexte label="Début" valeur={k.dateDebut} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateDebut: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
