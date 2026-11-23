@@ -1710,11 +1710,13 @@ function Modale({
 
 // Carte blanche générique des pages record : titre, action optionnelle en haut
 // à droite (bouton « + Ajouter » des cartes d'association), et contenu.
-function CarteFiche({ titre, action, children }: { titre: string; action?: React.ReactNode; children: React.ReactNode }) {
+function CarteFiche({ titre, icone, action, children }: { titre: string; icone?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <span className="text-[11px] font-black uppercase tracking-wider text-slate-400">{titre}</span>
+    <div className="rounded-2xl border border-slate-200/60 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.06)]">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-b border-slate-100 pb-2.5">
+        <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.08em] text-slate-500">
+          {icone && <span className="text-[13px]">{icone}</span>}{titre}
+        </span>
         {action}
       </div>
       {children}
@@ -1725,15 +1727,17 @@ function CarteFiche({ titre, action, children }: { titre: string; action?: React
 // Une ligne « propriété » façon HubSpot : libellé à gauche, valeur à droite.
 // La valeur vide ("") s'affiche comme un tiret. `label` est renommé `libelle`
 // en paramètre pour ne pas écraser la constante `label` définie plus haut.
-function Prop({ label: libelle, valeur }: { label: string; valeur: string }) {
+function Prop({ label: libelle, valeur, icone }: { label: string; valeur: React.ReactNode; icone?: string }) {
   return (
-    /* Propriété empilée façon HubSpot : petit libellé au-dessus, valeur en
-       dessous — bien plus lisible qu'un libellé/valeur sur la même ligne
-       quand les colonnes sont étroites. break-words (et non break-all)
-       pour couper uniquement sur les espaces. */
-    <div className="min-w-0">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{libelle}</div>
-      <div className="break-words text-[13px] font-semibold text-slate-800">{valeur || "—"}</div>
+    /* Propriété empilée façon HubSpot : libellé au-dessus, valeur en dessous,
+       séparateur discret entre les lignes (maquette validée). break-words
+       (et non break-all) pour couper uniquement sur les espaces. */
+    <div className="flex items-start gap-2.5 border-b border-slate-50 py-2 last:border-0">
+      {icone && <span className="mt-0.5 text-[13px] opacity-70">{icone}</span>}
+      <div className="min-w-0 flex-1">
+        <div className="text-[9.5px] font-bold uppercase tracking-[0.08em] text-slate-400">{libelle}</div>
+        <div className="mt-0.5 break-words text-[13px] font-semibold text-slate-800">{valeur || "—"}</div>
+      </div>
     </div>
   );
 }
@@ -2120,6 +2124,9 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
   // l'activité est mise à jour en place via onMaj — la sauvegarde
   // habituelle de l'état persiste le nouveau résumé dans Supabase.
   const [regenResume, setRegenResume] = useState<{ i: number; enCours: boolean; erreur: string }>({ i: -1, enCours: false, erreur: "" });
+  // ── Édition en place d'une activité (bouton ✏️) : texte + date de réalisation,
+  //    enregistrés via onMaj (même mécanisme immuable que la suppression). ──
+  const [edition, setEdition] = useState<{ i: number; texte: string; dateISO: string } | null>(null);
   const regenererResumeIA = async (ev: Activite, i: number) => {
     if (!ev.transcription || regenResume.enCours) return;
     setRegenResume({ i, enCours: true, erreur: "" });
@@ -2153,7 +2160,7 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
                 survol de la ligne, confirmation demandée). Rendue uniquement si
                 le parent fournit un handler (fiche entreprise). */}
             {/* Pastille de l'icône : couleur du type à ~9% d'opacité (suffixe "18"). */}
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[12px]"
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-slate-100 bg-white text-[14px] shadow-sm"
               style={{ background: `${meta.couleur}18` }}>{meta.icone}</span>
             <div className="min-w-0 flex-1">
               <div className="text-[10px] font-black uppercase tracking-wider" style={{ color: meta.couleur }}>{meta.libelle}</div>
@@ -2172,7 +2179,31 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
                   ○ À faire · cliquer pour clôturer
                 </button>
               ))}
-              <div className={"text-[12.5px] leading-relaxed " + (ev.fait ? "text-slate-400 line-through" : "text-slate-700")}>{ev.texte}</div>
+              {edition && edition.i === i && onMaj ? (
+                <div className="mt-1 space-y-1.5">
+                  <textarea value={edition.texte} rows={3} onChange={(e2) => setEdition({ ...edition, texte: e2.target.value })}
+                    className="w-full rounded-lg border border-cyan-300 bg-white px-2 py-1.5 text-[12.5px] leading-relaxed text-slate-700 outline-none focus:border-cyan-500" />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <input type="date" value={edition.dateISO} onChange={(e2) => setEdition({ ...edition, dateISO: e2.target.value })}
+                      title="Date de réalisation de l'activité"
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11.5px] font-semibold text-slate-600" />
+                    <button
+                      disabled={!edition.texte.trim()}
+                      onClick={() => {
+                        const iso = edition.dateISO || isoParis();
+                        const p = iso.split("-");
+                        const fr = p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : iso;
+                        onMaj(ev, { texte: edition.texte.trim(), dateISO: iso, date: fr === dateParis() ? "auj." : fr });
+                        setEdition(null);
+                      }}
+                      className="rounded-lg bg-emerald-100 px-2 py-0.5 text-[11px] font-black text-emerald-700 hover:bg-emerald-200 disabled:opacity-40">✓ Enregistrer</button>
+                    <button onClick={() => setEdition(null)}
+                      className="rounded-lg border border-slate-200 px-2 py-0.5 text-[11px] font-bold text-slate-500 hover:bg-slate-50">Annuler</button>
+                  </div>
+                </div>
+              ) : (
+                <div className={"text-[12.5px] leading-relaxed " + (ev.fait ? "text-slate-400 line-through" : "text-slate-700")}>{ev.texte}</div>
+              )}
               {(ev.type === "appel" && !!(ev.resumeIA || ev.transcription || ev.sentiment)) && (
                 <div className="mt-1.5 rounded-lg border border-emerald-100 bg-emerald-50/60 px-2.5 py-2">
                   <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] font-bold">
@@ -2241,6 +2272,18 @@ function Chronologie({ events, onOuvre, contacts, deals, onSupprimer, onMaj, onO
                 )}
               </div>
             </div>
+            {onMaj && (
+              <button
+                onClick={() => {
+                  const brut = ev.dateISO || "";
+                  const p = brut.split("/");
+                  const iso = /^\d{4}-\d{2}-\d{2}$/.test(brut) ? brut : (p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : isoParis());
+                  setEdition({ i, texte: ev.texte, dateISO: iso });
+                }}
+                title="Modifier cette activité"
+                className="shrink-0 self-center rounded-lg px-1.5 py-1 text-[12px] text-slate-300 opacity-0 transition-colors hover:bg-white hover:text-cyan-600 group-hover/act:opacity-100"
+              >✏️</button>
+            )}
             {onSupprimer && (
               <button
                 onClick={() => { if (window.confirm(`Supprimer cette activité ?\n\n« ${(ev.texte || "").slice(0, 80)}${(ev.texte || "").length > 80 ? "…" : ""} »`)) onSupprimer(ev); }}
@@ -2405,21 +2448,84 @@ function ComposerActivites({ onAjouter, contacts, deals, onOuvrirDevis }: {
 
 // En-tête des pages record : bandeau dégradé, avatar initiales chevauchant le
 // bandeau, nom + infos clés, et boutons d'action passés par le parent.
+/* Badge de statut éditable dans l'en-tête des fiches (à côté du nom, comme
+   HubSpot) : pastille colorée cliquable → menu des 3 statuts, changement
+   immédiat (même champ `statut` que le panneau « À propos »). */
+const STYLE_BADGE_STATUT: Record<Statut, { bg: string; text: string; gradient: string }> = {
+  Suspect: { bg: "bg-slate-100 ring-slate-200", text: "text-slate-600", gradient: "from-slate-400 to-slate-500" },
+  Prospect: { bg: "bg-amber-100 ring-amber-200", text: "text-amber-700", gradient: "from-amber-400 to-orange-500" },
+  Client: { bg: "bg-emerald-100 ring-emerald-200", text: "text-emerald-700", gradient: "from-emerald-400 to-teal-500" },
+};
+function BadgeStatut({ statut, onChange }: { statut: Statut; onChange: (s: Statut) => void }) {
+  const [ouvert, setOuvert] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const fermer = (ev: MouseEvent) => { if (ref.current && !ref.current.contains(ev.target as Node)) setOuvert(false); };
+    document.addEventListener("mousedown", fermer);
+    return () => document.removeEventListener("mousedown", fermer);
+  }, []);
+  const st = STYLE_BADGE_STATUT[statut];
+  return (
+    <div ref={ref} className="relative inline-block">
+      <motion.button
+        whileTap={{ scale: 0.96 }}
+        onClick={() => setOuvert((o) => !o)}
+        title="Changer le statut"
+        className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] font-black ring-1 ring-inset transition hover:brightness-95 ${st.bg} ${st.text}`}
+      >
+        <span className={`h-2 w-2 rounded-full bg-gradient-to-br ${st.gradient}`} />
+        {statut}
+        <motion.span animate={{ rotate: ouvert ? 180 : 0 }} className="text-[9px]">▼</motion.span>
+      </motion.button>
+      <AnimatePresence>
+        {ouvert && (
+          <motion.div
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6, scale: 0.97 }}
+            transition={{ duration: 0.15 }}
+            className="absolute left-0 top-full z-30 mt-1.5 w-48 overflow-hidden rounded-xl border border-slate-200/80 bg-white/95 py-1 shadow-xl shadow-slate-900/10 backdrop-blur"
+          >
+            {STATUTS.map((s) => {
+              const s2 = STYLE_BADGE_STATUT[s];
+              return (
+                <button key={s} onClick={() => { onChange(s); setOuvert(false); }}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] font-bold transition hover:bg-slate-50 ${s === statut ? s2.text : "text-slate-600"}`}>
+                  <span className={`h-2 w-2 rounded-full bg-gradient-to-br ${s2.gradient}`} />
+                  {s}
+                  {s === statut && <span className="ml-auto text-emerald-500">✓</span>}
+                </button>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 function EnteteFiche({ initiales, nom, sous, badge, boutons }: { initiales: string; nom: string; sous: string; badge?: React.ReactNode; boutons: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="h-12" style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }} />
-      {/* L'avatar remonte de 20px (-mt-5) pour chevaucher le bandeau,
+    // PAS de overflow-hidden sur la carte : le menu déroulant du badge de
+    // statut (top-full, z-30) doit pouvoir dépasser du bandeau.
+    <div className="rounded-2xl border border-slate-200/60 bg-white shadow-[0_2px_12px_rgba(15,23,42,0.06)]">
+      <div className="relative h-16 overflow-hidden rounded-t-2xl" style={{ background: "linear-gradient(120deg,#57c26b,#4f9ee8 55%,#7c6cf0)" }}>
+        <div className="absolute -right-8 -top-10 h-32 w-32 rounded-full bg-white/10" />
+        <div className="absolute right-24 top-2 h-16 w-16 rounded-full bg-white/10" />
+      </div>
+      {/* L'avatar remonte de 24px (-mt-6) pour chevaucher le bandeau,
           liseré blanc de 4px pour l'effet « photo de profil ». */}
-      <div className="flex flex-wrap items-center gap-3 px-4 pb-4">
-        <div className="-mt-5 flex h-12 w-12 items-center justify-center rounded-2xl border-4 border-white text-[15px] font-black text-white shadow-md"
+      <div className="flex flex-wrap items-center gap-3 px-5 pb-4">
+        <div className="-mt-6 flex h-12 w-12 items-center justify-center rounded-2xl border-4 border-white text-[15px] font-black text-white shadow-lg"
           style={{ background: "linear-gradient(135deg,#0ea5e9,#14b8a6)" }}>
           {initiales}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[17px] font-black text-slate-800">{nom}</div>
-          <div className="truncate text-[12px] text-slate-400">{sous}</div>
-          {badge}
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="text-[18px] font-black tracking-tight text-slate-800">{nom}</div>
+            {badge}
+          </div>
+          <div className="mt-0.5 truncate text-[12px] font-medium text-slate-400">{sous}</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">{boutons}</div>
       </div>
@@ -2705,17 +2811,18 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
         initiales={e.nom.slice(0, 2).toUpperCase()}
         nom={e.nom}
         sous={[e.ville, e.tel, e.site].filter(Boolean).join("  ·  ")}
+        badge={<BadgeStatut statut={e.statut} onChange={(s) => onModifie({ statut: s })} />}
         boutons={
           <>
             <button onClick={() => onOuvre({ type: "entreprise", id: e.id })}
-              className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+              className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-bold text-slate-600 shadow-sm transition hover:-translate-y-px hover:bg-slate-50">
               ✎ Modifier
             </button>
             {/* Devis : ouvre le module Devis avec ce compte pré-rempli. */}
             {onOuvrirDevis && (
               <button onClick={onOuvrirDevis}
                 title="Créer un devis pour cette entreprise — module Devis pré-rempli"
-                className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+                className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-bold text-slate-600 shadow-sm transition hover:-translate-y-px hover:bg-slate-50">
                 📄 Devis
               </button>
             )}
@@ -2734,10 +2841,10 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
           minimale + défilement horizontal si le panneau est étroit (même logique
           que le pipeline) : les 3 colonnes restent ainsi toujours visibles. */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[920px] grid-cols-[260px_minmax(0,1fr)_310px] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos (= panneau « Informations clés » HubSpot). */}
           <div className="col-roulette">
-            <CarteFiche titre="À propos">
+            <CarteFiche titre="À propos" icone="ℹ️">
               {/* Propriétés empilées, libellé au-dessus de la valeur. */}
               <div className="space-y-2.5">
               {/* Tous les champs sont éditables DIRECTEMENT dans le panneau
@@ -2958,12 +3065,11 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
 
           {/* Colonne centrale : Activités (composer + timeline), comme le
               bandeau central de la fiche HubSpot. */}
-          <div className="col-roulette rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="text-[13px] font-black text-slate-700">Activités</div>
+          <div className="col-roulette rounded-2xl border border-slate-200/60 bg-white p-4 shadow-[0_2px_12px_rgba(15,23,42,0.06)]">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
+              <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.08em] text-slate-500"><span className="text-[13px]">🕒</span>Activités</span>
               <button onClick={() => setConsignerOuvert(true)} title="Consigner ce qui a été fait + planifier l'action suivante (même formulaire que l'Agenda)"
-                className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
-                style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>➕ Consigner</button>
+                className="rounded-xl bg-gradient-to-r from-emerald-400 to-sky-500 px-3 py-1.5 text-[12px] font-black text-white shadow-md transition hover:-translate-y-px hover:brightness-105">➕ Consigner</button>
             </div>
             <ComposerActivites onAjouter={ajouterActivite} contacts={contacts} deals={deals} onOuvrirDevis={onOuvrirDevis} />
             <div className="mt-3">
@@ -3133,15 +3239,15 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Modèles</span>
                       {e.modeles.map((m) => (
-                        <span key={m} className="rounded-md bg-emerald-100 px-2 py-0.5 text-[11.5px] font-bold text-emerald-700">🛵 {m}</span>
+                        <span key={m} className="rounded-lg bg-emerald-100/80 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-inset ring-emerald-200/50">🛵 {m}</span>
                       ))}
                     </div>
                   )}
                   {(e.contrats || []).map((k, i) => (
-                    <div key={i} className="rounded-xl border border-slate-200 bg-slate-50/60 p-2">
+                    <div key={i} className="rounded-xl border border-slate-200/70 border-l-4 border-l-cyan-400 bg-white p-3 shadow-sm transition hover:-translate-y-px hover:shadow-md">
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <span className="text-[11px] font-black text-slate-500">{k.num ? k.num + (k.libelle ? " - " + k.libelle : "") : "Contrat " + (i + 1)}{k.etat ? " · " + k.etat : ""}</span>
-                        {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
+                        {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700 ring-1 ring-inset ring-cyan-200/60" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <PropTexte label="Pack" valeur={affPack(k.pack)} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
@@ -3165,7 +3271,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 <button key={c.id} onClick={() => onOuvreFiche({ type: "contact", id: c.id })}
                   className="flex w-full items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
                   {/* Avatar rond avec les initiales du contact. */}
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-[11px] font-black text-cyan-700">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-100 to-teal-100 text-[11px] font-black text-cyan-700 ring-1 ring-cyan-200/60">
                     {c.prenom[0]}{c.nom[0]}
                   </span>
                   <span className="min-w-0 flex-1">
@@ -3271,7 +3377,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
         boutons={
           <>
             <button onClick={() => onOuvre({ type: "contact", id: c.id })}
-              className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+              className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-bold text-slate-600 shadow-sm transition hover:-translate-y-px hover:bg-slate-50">
               ✎ Modifier
             </button>
             {/* Nouveau deal : si le contact n'a qu'UNE entreprise, on la
@@ -3290,10 +3396,10 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
           associations + résumé à droite (même structure que la fiche entreprise,
           défilement horizontal si le panneau est étroit). */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[920px] grid-cols-[260px_minmax(0,1fr)_310px] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos. */}
           <div className="col-roulette">
-            <CarteFiche titre="À propos">
+            <CarteFiche titre="À propos" icone="ℹ️">
               {/* Propriétés empilées, libellé au-dessus de la valeur. */}
               <div className="space-y-2.5">
               <Prop label="Prénom" valeur={c.prenom} />
@@ -3410,7 +3516,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
         sous={[entreprise?.nom, contact ? contact.prenom + " " + contact.nom : "", d.montant + " k€", d.etape].filter(Boolean).join("  ·  ")}
         boutons={
           <button onClick={() => onOuvre({ type: "deal", id: d.id, preset: "" })}
-            className="rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] font-bold text-slate-600 hover:bg-slate-50">
+            className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-bold text-slate-600 shadow-sm transition hover:-translate-y-px hover:bg-slate-50">
             ✎ Modifier
           </button>
         }
@@ -3418,10 +3524,10 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
 
       {/* 3 colonnes façon HubSpot, défilement horizontal si le panneau est étroit. */}
       <div className="overflow-x-auto pb-2 h-[calc(100vh-230px)]">
-        <div className="grid h-full min-w-[860px] grid-cols-[minmax(0,240px)_minmax(0,1fr)_minmax(0,270px)] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
+        <div className="grid h-full min-w-[920px] grid-cols-[260px_minmax(0,1fr)_310px] gap-4 [&>div]:h-full [&>div]:min-h-0 [&>div]:overflow-y-auto [&>div]:overscroll-contain [&>div]:[scrollbar-width:none] [&>div]:[&::-webkit-scrollbar]:hidden">
           {/* Colonne gauche : À propos — tout est éditable EN DIRECT. */}
           <div className="col-roulette">
-            <CarteFiche titre="À propos">
+            <CarteFiche titre="À propos" icone="ℹ️">
               <div className="space-y-2.5">
               {/* L'étape change via le select ; le changement est tracé
                   automatiquement dans l'historique (comme la modale/kanban). */}
@@ -3481,7 +3587,7 @@ function FicheDeal({ etat, id, onRetour, onOuvre, onOuvreFiche, onModifie }: {
               {contact ? (
                 <button onClick={() => onOuvreFiche({ type: "contact", id: contact.id })}
                   className="flex w-full items-center gap-2 rounded-xl px-1.5 py-1.5 text-left hover:bg-slate-50">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-100 text-[11px] font-black text-cyan-700">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-100 to-teal-100 text-[11px] font-black text-cyan-700 ring-1 ring-cyan-200/60">
                     {contact.prenom[0]}{contact.nom[0]}
                   </span>
                   <span className="min-w-0 flex-1">
