@@ -13,7 +13,8 @@ const SECRET: string = process.env.MAJ_FRANCHISEUR_SECRET || process.env.INBOUND
 const SIRENS_DOMINO: string[] = ["106227655", "400228227", "443515655", "488863986", "498166511", "498338698", "499369403", "500617634", "501054282", "501603922", "502268733", "503654071", "503883480", "510651078", "510693823", "510763766", "521065466", "523072528", "524329877", "527479224", "528185648", "533087367", "534541966", "537568529", "750019135", "795143569", "800251787", "801616988", "803671874", "808574123", "811584242", "813600996", "818835290", "819187493", "819626854", "820161784", "820308005", "820321362", "820438380", "821823226", "821911872", "823621024", "830555421", "830619771", "831067038", "832364525", "832491179", "832780332", "832951792", "833310717", "834975674", "838949014", "841622038", "841622210", "848797981", "849379730", "851312140", "880848734", "882057045", "885319673", "887840361", "888046596", "891995458", "893124487", "895097921", "895105047", "895105054", "895105070", "900279647", "902098425", "909538324", "910092782", "910853985", "912151362", "919928044", "920639853", "922348693", "942426131", "953059862", "953316668", "982743650", "984102277", "991709536", "991813023", "994987196"];
 
 const norm = (s: any): string => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
-const digits = (s: any): string => String(s || "").replace(/\D/g, "");
+// SIREN : on retire un éventuel suffixe « .0 » (reste d'import) avant de ne garder que les chiffres.
+const digits = (s: any): string => String(s || "").replace(/\.0+$/, "").replace(/\D/g, "");
 
 export default async function handler(req: any, res: any) {
   const u = new URL(req.url || "/", "http://localhost");
@@ -42,7 +43,7 @@ export default async function handler(req: any, res: any) {
     const nNom = norm(e.nom), nCom = norm(e.nomCommercial), siren = digits(e.siren);
     let match = "";
     if ((nNom + " " + nCom).includes("domino")) match = "nom";
-    else if (siren && sirenSet.has(siren)) match = "siren";
+    else if (siren && (sirenSet.has(siren) || sirenSet.has(siren.replace(/^0+/, "")))) match = "siren";
     if (!match) continue;
     const avant = String(e.franchiseur || "");
     rapport.push({ id: e.id, nom: e.nom, nomCommercial: e.nomCommercial || "", siren, ville: e.ville || "", statut: e.statut || "", avant, match });
