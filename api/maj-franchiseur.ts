@@ -51,7 +51,11 @@ export default async function handler(req: any, res: any) {
   }
 
   const dry = u.searchParams.get("dry") === "1";
-  if (dry) return res.status(200).json({ ok: true, dry: true, total: ents.length, matches: rapport.length, modifieesPrevues: modifiees, rapport });
+  if (dry) {
+    const avecSiren = ents.filter((e: any) => digits(e.siren)).length;
+    const sirensConnus = rapport.filter((r: any) => r.match === "siren").length;
+    return res.status(200).json({ ok: true, dry: true, total: ents.length, avecSiren, matches: rapport.length, dontSiren: sirensConnus, modifieesPrevues: modifiees, rapport });
+  }
 
   const rput = await fetch(base + "/rest/v1/crm_etat?id=eq.main", {
     method: "PATCH",
