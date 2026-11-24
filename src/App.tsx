@@ -117,6 +117,9 @@ const telCorrespond = (q: string, tel: string): boolean => {
 // sans accents ni ponctuation (sert à reconnaître une suggestion déjà CLIENTE
 // en base sous un autre nom légal).
 const norme = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+// Clé de regroupement « mots du nom dans le désordre » : « CHEIK NAZAR » et
+// « NAZAR CHEIK » ont la même clé (détecte les doublons nom/prénom inversés).
+const cleNomGroupe = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter(Boolean).sort().join(" ");
 // ── Horodatage officiel du CRM : TOUT est sur l'heure de PARIS, quel que soit
 //    le fuseau du navigateur (Intl avec timeZone explicite). dateParis = jj/mm/aaaa,
 //    heureParis = hh:mm, dateHeureParis = « jj/mm/aaaa à hh:mm »,
@@ -724,7 +727,51 @@ function normaliser(s: Etat): Etat {
     const aDonneesClient = (e.contrats || []).length > 0 || !!(e.pack || "").trim() || !!String(e.nbVehicules || "").trim() || !!(e.immatriculations || "").trim() || idsDeals.has(e.id);
     return aDonneesClient ? e : { ...e, statut: "Suspect" as Statut };
   });
-  return { ...s, entreprises: entreprisesStatut, contacts: contactsSansPers, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
+  // ── 5. Migration « doublons nom/prénom inversé » : l'ancienne conversion
+  // nom-de-personne → contact découpait « CHEIK NAZAR » en prénom NAZAR / nom CHEIK ;
+  // la migration inverse recréait « NAZAR CHEIK », que le match par nom exact de
+  // l'import ne reconnaissait pas → fiche dupliquée. Fusionne les fiches IMPORTÉES
+  // Sellsy dont les mots du nom sont identiques (ordre ignoré) : on garde la plus
+  // complète, on lui copie les champs vides de l'autre, et on rattache contacts /
+  // deals / activités de la fiche supprimée. Idempotent. Les fiches saisies à la
+  // main (origine ≠ import Sellsy) ne sont JAMAIS fusionnées.
+  const groupesNom = new Map<string, Entreprise[]>();
+  for (const e of entreprisesStatut) {
+    const k = cleNomGroupe(e.nom);
+    if (!k || k === e.nom.toLowerCase()) continue;
+    const arr = groupesNom.get(k) || [];
+    arr.push(e); groupesNom.set(k, arr);
+  }
+  const idsASupprimer = new Set<string>();
+  const remapVersGardee: Record<string, string> = {};
+  const patchFusion: Record<string, Partial<Entreprise>> = {};
+  const scoreFiche = (e: Entreprise) => (e.contrats || []).length * 10 + (e.activites || []).length * 2 + (e.siren ? 4 : 0) + (e.adresse ? 2 : 0) + (e.tel ? 1 : 0);
+  for (const groupe of groupesNom.values()) {
+    const importes = groupe.filter((e) => e.origine === "Import Sellsy (quarantaine)");
+    if (importes.length < 2) continue;
+    const [gardee, ...autres] = [...importes].sort((a, b) => scoreFiche(b) - scoreFiche(a));
+    for (const a of autres) {
+      idsASupprimer.add(a.id);
+      remapVersGardee[a.id] = gardee.id;
+      const p = patchFusion[gardee.id] || {};
+      if (!p.siren && a.siren) p.siren = a.siren;
+      if (!p.adresse && a.adresse) p.adresse = a.adresse;
+      if (!p.cp && a.cp) p.cp = a.cp;
+      if (!p.ville && a.ville) p.ville = a.ville;
+      if (!p.tel && a.tel) p.tel = a.tel;
+      if (!p.statut || p.statut === "Suspect") p.statut = a.statut;
+      p.notes = [p.notes, a.notes].filter(Boolean).join("\n");
+      p.activites = [...(p.activites || gardee.activites || []), ...(a.activites || [])];
+      p.contrats = [...(p.contrats || gardee.contrats || []), ...(a.contrats || [])];
+      patchFusion[gardee.id] = p;
+    }
+  }
+  const entreprisesFin = entreprisesStatut
+    .filter((e) => !idsASupprimer.has(e.id))
+    .map((e) => (patchFusion[e.id] ? { ...e, ...patchFusion[e.id] } : e));
+  const contactsRemap = contactsSansPers.map((c) => ({ ...c, entrepriseIds: c.entrepriseIds.map((eid) => remapVersGardee[eid] || eid) }));
+  const dealsRemap = dealsFinaux.map((d) => ({ ...d, entrepriseId: remapVersGardee[d.entrepriseId] || d.entrepriseId }));
+  return { ...s, entreprises: entreprisesFin, contacts: contactsRemap, deals: dealsRemap, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -5604,7 +5651,7 @@ export default function App() {
   const trouverEntrepriseImport = (etat: Etat, en: FicheImport["entreprise"]): Entreprise | null => {
     const telN = normTel(en.tel || "");
     return etat.entreprises.find((x) =>
-      (en.nom && norme(x.nom) === norme(en.nom)) ||
+      (en.nom && (norme(x.nom) === norme(en.nom) || cleNomGroupe(x.nom) === cleNomGroupe(en.nom))) ||
       (en.siren && x.siren && String(x.siren).replace(/\D/g, "") === String(en.siren).replace(/\D/g, "")) ||
       (telN.length >= 6 && normTel(x.tel || "") && (normTel(x.tel || "") === telN || normTel(x.tel || "").includes(telN) || telN.includes(normTel(x.tel || ""))))
     ) || null;
@@ -6001,7 +6048,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
         setApercu(data.map((f) => {
           const telN = normTel(f.entreprise.tel || "");
           const ex = etat.entreprises.find((x) =>
-            (f.entreprise.nom && norme(x.nom) === norme(f.entreprise.nom)) ||
+            (f.entreprise.nom && (norme(x.nom) === norme(f.entreprise.nom) || cleNomGroupe(x.nom) === cleNomGroupe(f.entreprise.nom))) ||
             (f.entreprise.siren && x.siren && String(x.siren).replace(/\D/g, "") === String(f.entreprise.siren).replace(/\D/g, "")) ||
             (telN.length >= 6 && normTel(x.tel || "") && (normTel(x.tel || "") === telN || normTel(x.tel || "").includes(telN) || telN.includes(normTel(x.tel || ""))))
           );
