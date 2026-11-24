@@ -690,25 +690,28 @@ function normaliser(s: Etat): Etat {
   const contactsFinaux = contacts.map(({ activites, ...reste }: { activites?: Activite[] } & Contact) => reste);
   const dealsFinaux = deals.map(({ activites, ...reste }: { activites?: Activite[] } & Deal) => reste);
 
-  // ── 3. Migration « particuliers importés comme fiches entreprise » : un
-  // compte Sellsy sans SIREN dont le nom est un nom de personne n'est PAS une
-  // société → converti en CONTACT (sans entreprise rattachée), en conservant
-  // ses commentaires Sellsy dans `notes`. On ne touche JAMAIS à une fiche qui
-  // a un contrat, un devis ou un deal (ex. EI « ALVAREZ MARC » = vraie société).
-  // Idempotent : une fois converti, la fiche n'existe plus.
+  // ── 3. Migration « comptes Sellsy = toujours des ENTREPRISES » (règle confirmée
+  // le 24/11) : l'export Sellsy « comptes » (prospects/clients) ne contient que des
+  // COMPTES, donc des entreprises, même avec un nom de personne (« CHEIK NAZAR »).
+  // Seul l'export « contacts » Sellsy contient des personnes (importées comme contacts).
+  // On annule donc l'ancienne conversion « nom de personne → contact » : tout contact
+  // au rôle « Prospect individuel (import Sellsy) » redevient une FICHE entreprise
+  // « Suspect » (commentaires Sellsy conservés en notes). Idempotent.
   const idsDeals = new Set(dealsFinaux.map((d) => d.entrepriseId));
-  const persContacts: Contact[] = [];
-  const entreprisesGardees = entreprises.filter((e) => {
-    if (!estNomPersonne(e.nom, e.siren)) return true;
-    if ((e.contrats || []).length > 0 || idsDeals.has(e.id) || (e.devisHistorique?.length || 0) > 0 || (e.devisImportes?.length || 0) > 0) return true;
-    const { prenom, nom } = decoupeNomPersonne(e.nom);
-    const pers = { prenom, nom, email: "", tel: e.tel || "" };
-    if (!contactsFinaux.some((x) => memePersonne(pers, x))) {
-      const notesPers = (e.activites || []).map((a) => `[${a.dateISO || a.date}] ${a.texte}`).join("\n");
-      persContacts.push({ id: "c" + e.id, prenom, nom, role: "Prospect individuel (import Sellsy)", email: "", tel: e.tel || "", entrepriseIds: [], ...(notesPers ? { notes: notesPers } : {}) });
-    }
+  const persRestaures: Entreprise[] = [];
+  const contactsSansPers = contactsFinaux.filter((c) => {
+    if (c.role !== "Prospect individuel (import Sellsy)") return true;
+    persRestaures.push({
+      id: "e" + c.id.replace(/^c+/, ""),
+      nom: (c.prenom + " " + c.nom).trim() || "Sans nom", nomCommercial: "", secteur: "",
+      ville: "", site: "", tel: c.tel || "", franchiseur: "", modeLivraison: "Scooter électrique",
+      activite: "", statut: "Suspect", notes: c.notes || "", activites: [], modeles: [], contrats: [],
+      risque: "", origine: "Import Sellsy (quarantaine)", siren: "", adresse: "", cp: "",
+      devisHistorique: [], devisImportes: [],
+    });
     return false;
   });
+  const entreprisesGardees = [...entreprises, ...persRestaures];
   // ── 4. Migration « statut Client forcé à l'import » : avant le fix du
   // 24/11 (commit 4ad7203), toute fiche créée par l'import recevait le statut
   // « Client » même quand le JSON disait « Suspect ». Rétrograde en « Suspect »
@@ -721,7 +724,7 @@ function normaliser(s: Etat): Etat {
     const aDonneesClient = (e.contrats || []).length > 0 || !!(e.pack || "").trim() || !!String(e.nbVehicules || "").trim() || !!(e.immatriculations || "").trim() || idsDeals.has(e.id);
     return aDonneesClient ? e : { ...e, statut: "Suspect" as Statut };
   });
-  return { ...s, entreprises: entreprisesStatut, contacts: [...contactsFinaux, ...persContacts], deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
+  return { ...s, entreprises: entreprisesStatut, contacts: contactsSansPers, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -5623,25 +5626,9 @@ export default function App() {
         date: isoVersFr(a.date), dateISO: (a.date || "").trim(), type: "note" as const,
         texte: a.texte + "\n\n[📥 " + (a.provenance || "Sellsy") + "]",
       }));
-      // ── Compte « personne physique » (pas de SIREN, nom de personne, pas de
-      // contrat) : on ne crée PAS de fiche entreprise → un CONTACT sans
-      // entreprise, avec les commentaires Sellsy conservés en `notes`. ──
-      if ((en.typePersonne === true || estNomPersonne(en.nom, en.siren)) && contrats.length === 0) {
-        const { prenom, nom } = decoupeNomPersonne(en.nom || "Sans nom");
-        const pers = { prenom, nom, email: en.email || "", tel: en.tel || "" };
-        const connu = contacts.find((x) => memePersonne(pers, x));
-        const notesPers = activites.map((a) => `[${a.dateISO || a.date}] ${a.texte}`).join("\n");
-        if (connu) {
-          contacts = contacts.map((x) => x.id === connu.id
-            ? { ...x, tel: x.tel || formaterTelFr(en.tel || ""), email: x.email || en.email || "", notes: [x.notes, notesPers].filter(Boolean).join("\n") }
-            : x);
-          resume.contactsRattaches++;
-        } else {
-          contacts.push({ id: "c" + Date.now() + "_pers_" + i, prenom, nom, role: "Prospect individuel (import Sellsy)", email: en.email || "", tel: formaterTelFr(en.tel || ""), entrepriseIds: [], ...(notesPers ? { notes: notesPers } : {}) });
-          resume.contactsCrees++;
-        }
-        return;
-      }
+      // Règle Sellsy (24/11) : tout compte de l'export « comptes » est une
+      // ENTREPRISE, même avec un nom de personne → toujours une fiche. Les
+      // personnes sont les contacts de l'export « contacts » Sellsy. ──
       const existante = trouverEntrepriseImport(etat, en);
       let entId: string;
       if (existante) {
@@ -5987,7 +5974,6 @@ interface FicheImport {
   entreprise: {
     nom: string; statut: string; ville: string; cp: string; adresse: string; siren: string;
     tel: string; email: string; modeLivraison: string; risque: string;
-    typePersonne?: boolean; // JSON v6 : compte personne physique pré-détecté → importé comme CONTACT, jamais comme fiche entreprise
     contrats: { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string[]; etat: string }[];
     nbVehicules: number; immatriculations: string[]; notes: string;
     activites: { date: string; texte: string; provenance: string; lectureSeule: boolean }[];
@@ -6019,7 +6005,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
             (f.entreprise.siren && x.siren && String(x.siren).replace(/\D/g, "") === String(f.entreprise.siren).replace(/\D/g, "")) ||
             (telN.length >= 6 && normTel(x.tel || "") && (normTel(x.tel || "") === telN || normTel(x.tel || "").includes(telN) || telN.includes(normTel(x.tel || ""))))
           );
-          return { f, mode: ex ? "fusionner" : (f.entreprise.typePersonne ? "contact" : "creer"), cible: ex ? (ex.nomCommercial || ex.nom) : "" };
+          return { f, mode: ex ? "fusionner" : "creer", cible: ex ? (ex.nomCommercial || ex.nom) : "" };
         }));
       } catch (err) {
         setErreur("Fichier illisible ou format inattendu (" + String(err) + ").");
@@ -6050,7 +6036,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
       {apercu.length > 0 && (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-            <div className="text-[13px] font-black text-slate-800">{apercu.length} fiche(s) prête(s) — {apercu.filter((a) => a.mode === "creer").length} création(s), {apercu.filter((a) => a.mode === "fusionner").length} fusion(s), {apercu.filter((a) => a.mode === "contact").length} contact(s) individuel(s)</div>
+            <div className="text-[13px] font-black text-slate-800">{apercu.length} fiche(s) prête(s) — {apercu.filter((a) => a.mode === "creer").length} création(s), {apercu.filter((a) => a.mode === "fusionner").length} fusion(s)</div>
             <button onClick={lancer} className="rounded-xl px-4 py-2 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>✅ Importer {apercu.length} fiche(s)</button>
           </div>
@@ -6067,9 +6053,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
                     <td className="px-3 py-1.5">
                       {a.mode === "creer"
                         ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">🆕 Créer</span>
-                        : a.mode === "contact"
-                          ? <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-black text-cyan-700">👤 Contact (personne)</span>
-                          : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">🔀 Fusionner avec « {a.cible} »</span>}
+                        : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">🔀 Fusionner avec « {a.cible} »</span>}
                     </td>
                     <td className="px-3 py-1.5 text-slate-500">{(a.f.entreprise.contrats || []).length}</td>
                     <td className="px-3 py-1.5 text-slate-500">{(a.f.contacts || []).length}</td>
