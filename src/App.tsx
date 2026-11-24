@@ -2735,22 +2735,26 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
 //    (tolérant 33 ↔ 0, espaces, partiel), n° d'offre, noms de deals et textes
 //    d'activités (≥ 2 caractères). ──
 function VoletRecherche({ q, etat, onOuvre }: { q: string; etat: Etat; onOuvre: (c: Cible) => void }) {
-  const t = q.trim().toLowerCase();
-  const mTxt = (x?: string) => !!t && (x || "").toLowerCase().includes(t);
-  const mTel = (x?: string) => telCorrespond(q, x || "");
-  const rEnt = etat.entreprises.filter((e) => mTxt(e.nom) || mTxt(e.nomCommercial) || mTxt(e.ville) || mTel(e.tel)).slice(0, 6);
-  const entDe = (id: string) => etat.entreprises.find((e) => e.id === id);
-  const rCt = etat.contacts.filter((c) => mTxt(c.prenom + " " + c.nom) || mTxt(c.nom) || mTel(c.tel) || mTxt(c.email)).slice(0, 5);
-  const rDv: { dv: DevisArchive; entId: string; entNom: string }[] = [];
-  etat.entreprises.forEach((e) => (e.devisHistorique ?? []).forEach((dv) => {
-    if (mTxt(dv.resume?.numOffre) || mTxt(e.nomCommercial || e.nom) || mTxt(e.nom) || mTel(e.tel)) rDv.push({ dv, entId: e.id, entNom: e.nomCommercial || e.nom });
-  }));
-  const rDvTop = rDv.slice(0, 6);
-  const rDe = etat.deals.filter((d) => mTxt(d.nom)).slice(0, 5);
-  const rAc: { a: Activite; e: Entreprise }[] = [];
-  if (t.length >= 2) etat.entreprises.forEach((e) => e.activites.forEach((a) => { if (mTxt(a.texte)) rAc.push({ a, e }); }));
-  const rAcTop = rAc.slice(0, 5);
-  const nb = rEnt.length + rCt.length + rDvTop.length + rDe.length + rAcTop.length;
+  const res = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    const mTxt = (x?: string) => !!t && (x || "").toLowerCase().includes(t);
+    const mTel = (x?: string) => telCorrespond(q, x || "");
+    const entParId = new Map(etat.entreprises.map((e) => [e.id, e] as [string, Entreprise]));
+    const rEnt = etat.entreprises.filter((e) => mTxt(e.nom) || mTxt(e.nomCommercial) || mTxt(e.ville) || mTel(e.tel)).slice(0, 6);
+    const rCt = etat.contacts.filter((c) => mTxt(c.prenom + " " + c.nom) || mTxt(c.nom) || mTel(c.tel) || mTxt(c.email)).slice(0, 5);
+    const rDv: { dv: DevisArchive; entId: string; entNom: string }[] = [];
+    etat.entreprises.forEach((e) => (e.devisHistorique ?? []).forEach((dv) => {
+      if (mTxt(dv.resume?.numOffre) || mTxt(e.nomCommercial || e.nom) || mTxt(e.nom) || mTel(e.tel)) rDv.push({ dv, entId: e.id, entNom: e.nomCommercial || e.nom });
+    }));
+    const rDvTop = rDv.slice(0, 6);
+    const rDe = etat.deals.filter((d) => mTxt(d.nom)).slice(0, 5);
+    const rAc: { a: Activite; e: Entreprise }[] = [];
+    if (t.length >= 2) etat.entreprises.forEach((e) => e.activites.forEach((a) => { if (mTxt(a.texte)) rAc.push({ a, e }); }));
+    const rAcTop = rAc.slice(0, 5);
+    const nb = rEnt.length + rCt.length + rDvTop.length + rDe.length + rAcTop.length;
+    return { rEnt, rCt, rDvTop, rDe, rAcTop, nb, entParId };
+  }, [q, etat]);
+  const { rEnt, rCt, rDvTop, rDe, rAcTop, nb, entParId } = res;
   const G = ({ titre, items }: { titre: string; items: { cle: string; nom: string; sub?: string; droite?: string; go: () => void }[] }) => (
     items.length === 0 ? null : (
       <div>
@@ -2774,7 +2778,7 @@ function VoletRecherche({ q, etat, onOuvre }: { q: string; etat: Etat; onOuvre: 
       <div className="max-h-80 divide-y divide-slate-100 overflow-auto">
         {nb === 0 && <p className="px-3 py-5 text-center text-xs text-slate-400">Aucun résultat — essaie un nom, un n° de devis ou un téléphone.</p>}
         <G titre="🏢 Entreprises" items={rEnt.map((e) => ({ cle: "e" + e.id, nom: e.nomCommercial || e.nom, sub: e.nomCommercial ? e.nom : undefined, droite: [e.ville, e.tel].filter(Boolean).join(" · "), go: () => onOuvre({ type: "entreprise", id: e.id }) }))} />
-        <G titre="👥 Contacts" items={rCt.map((c) => ({ cle: "c" + c.id, nom: c.prenom + " " + c.nom, sub: c.role || undefined, droite: [entDe(c.entrepriseIds[0] || "")?.nomCommercial || entDe(c.entrepriseIds[0] || "")?.nom, c.tel].filter(Boolean).join(" · "), go: () => onOuvre({ type: "contact", id: c.id }) }))} />
+        <G titre="👥 Contacts" items={rCt.map((c) => ({ cle: "c" + c.id, nom: c.prenom + " " + c.nom, sub: c.role || undefined, droite: [entParId.get(c.entrepriseIds[0] || "")?.nomCommercial || entParId.get(c.entrepriseIds[0] || "")?.nom, c.tel].filter(Boolean).join(" · "), go: () => onOuvre({ type: "contact", id: c.id }) }))} />
         <G titre="🧾 Devis" items={rDvTop.map((x) => ({ cle: "d" + x.dv.id, nom: (x.dv.resume?.numOffre || "—") + " — " + x.entNom, droite: (x.dv.resume?.loyerMensuelHT ? Math.round(x.dv.resume.loyerMensuelHT).toLocaleString("fr-FR") + " €/mois" : "") + (x.dv.statut === "accepte" ? " 🎉" : x.dv.statut === "envoye" ? " ✅" : ""), go: () => onOuvre({ type: "entreprise", id: x.entId }) }))} />
         <G titre="🎯 Deals" items={rDe.map((d) => ({ cle: "k" + d.id, nom: d.nom, sub: d.etape, droite: d.montant ? d.montant.toLocaleString("fr-FR") + " €/mois" : undefined, go: () => onOuvre({ type: "deal", id: d.id }) }))} />
         <G titre="🎧 Activités" items={rAcTop.map((x, i) => ({ cle: "a" + i + x.e.id, nom: x.a.texte, droite: (x.e.nomCommercial || x.e.nom) + (x.a.date ? " · " + x.a.date : ""), go: () => onOuvre({ type: "entreprise", id: x.e.id }) }))} />
@@ -4614,8 +4618,19 @@ function VueDashboard({ etat, onOuvre }: { etat: Etat; onOuvre: (c: Cible) => vo
    à la casse. */
 function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void }) {
   const q = recherche.toLowerCase().trim();
-  const liste = etat.entreprises.filter((e) =>
-    !q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel));
+  // Index précalculés UNE fois par état (pas par ligne) : avec ~14 000 entreprises
+  // et ~23 000 contacts, un .filter() global par ligne rendait le CRM inutilisable.
+  const index = useMemo(() => {
+    const nbContacts: Record<string, number> = {};
+    for (const c of etat.contacts) for (const eid of c.entrepriseIds) nbContacts[eid] = (nbContacts[eid] || 0) + 1;
+    const dealsActifs: Record<string, Deal[]> = {};
+    for (const d of etat.deals) if (d.etape !== "Gagné" && d.etape !== "Perdu") (dealsActifs[d.entrepriseId] = dealsActifs[d.entrepriseId] || []).push(d);
+    return { nbContacts, dealsActifs };
+  }, [etat]);
+  const liste = useMemo(() => etat.entreprises.filter((e) =>
+    !q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel)), [etat, q]);
+  // Cap d'affichage : au-delà de 300 lignes, inviter à affiner la recherche.
+  const visible = liste.slice(0, 300);
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       {/* Défilement horizontal si le panneau est étroit : les colonnes gardent
@@ -4636,9 +4651,9 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
         <tbody>
           {/* Compteurs (contacts, deals actifs, pipeline) recalculés par ligne :
               acceptable pour quelques centaines de lignes, sans dénormalisation. */}
-          {liste.map((e) => {
-            const nbC = etat.contacts.filter((c) => c.entrepriseIds.includes(e.id)).length;
-            const actifs = etat.deals.filter((d) => d.entrepriseId === e.id && d.etape !== "Gagné" && d.etape !== "Perdu");
+          {visible.map((e) => {
+            const nbC = index.nbContacts[e.id] || 0;
+            const actifs = index.dealsActifs[e.id] || [];
             return (
               /* Toute la ligne est cliquable → ouvre la page record de l'entreprise. */
               <tr key={e.id} onClick={() => onOuvre({ type: "entreprise", id: e.id })}
@@ -4671,6 +4686,9 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
           {liste.length === 0 && (
             <tr><td colSpan={7} className="px-4 py-6 text-center text-[12px] text-slate-400">Aucune entreprise trouvée.</td></tr>
           )}
+          {liste.length > visible.length && (
+            <tr><td colSpan={7} className="px-4 py-3 text-center text-[11.5px] font-bold text-slate-400">… et {liste.length - visible.length} autres entreprises — affinez la recherche pour les voir.</td></tr>
+          )}
         </tbody>
       </table>
       </div>
@@ -4686,11 +4704,20 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
    La recherche inclut le nom de l'entreprise du contact (recherche croisée). */
 function VueContacts({ etat, recherche, onOuvre }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void }) {
   const q = recherche.toLowerCase().trim();
-  const liste = etat.contacts.filter((c) => {
+  // Index précalculés UNE fois par état : un .filter() sur 14 000 entreprises par
+  // contact (× 23 000 contacts) rendait la vue inutilisable.
+  const entParId = useMemo(() => new Map(etat.entreprises.map((e) => [e.id, e] as [string, Entreprise])), [etat]);
+  const dealsParContact = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const d of etat.deals) if (d.contactId) m[d.contactId] = (m[d.contactId] || 0) + 1;
+    return m;
+  }, [etat]);
+  const liste = useMemo(() => etat.contacts.filter((c) => {
     // Recherche croisée : on matche aussi le nom de CHAQUE entreprise liée.
-    const es = etat.entreprises.filter((x) => c.entrepriseIds.includes(x.id));
+    const es = c.entrepriseIds.map((id) => entParId.get(id)).filter((x): x is Entreprise => !!x);
     return !q || [c.prenom, c.nom, c.role, c.email, ...es.map((x) => x.nom)].join(" ").toLowerCase().includes(q) || telCorrespond(q, c.tel);
-  });
+  }), [etat, q, entParId]);
+  const visible = liste.slice(0, 300);
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       {/* Même principe que la liste entreprises : largeur minimale garantie,
@@ -4707,9 +4734,9 @@ function VueContacts({ etat, recherche, onOuvre }: { etat: Etat; recherche: stri
           </tr>
         </thead>
         <tbody>
-          {liste.map((c) => {
-            const es = etat.entreprises.filter((x) => c.entrepriseIds.includes(x.id));
-            const ds = etat.deals.filter((d) => d.contactId === c.id);
+          {visible.map((c) => {
+            const es = c.entrepriseIds.map((id) => entParId.get(id)).filter((x): x is Entreprise => !!x);
+            const ds = dealsParContact[c.id] || 0;
             return (
               /* La ligne ouvre la fiche du contact… */
               <tr key={c.id} onClick={() => onOuvre({ type: "contact", id: c.id })}
@@ -4729,10 +4756,13 @@ function VueContacts({ etat, recherche, onOuvre }: { etat: Etat; recherche: stri
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-[12.5px] text-slate-500">{c.email || "—"}</td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-[12.5px] text-slate-500">{c.tel || "—"}</td>
-                <td className="whitespace-nowrap px-4 py-2.5 text-right text-[12.5px] font-black text-slate-600">{ds.length}</td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-right text-[12.5px] font-black text-slate-600">{ds}</td>
               </tr>
             );
           })}
+          {liste.length > visible.length && (
+            <tr><td colSpan={5} className="px-4 py-3 text-center text-[11.5px] font-bold text-slate-400">… et {liste.length - visible.length} autres contacts — affinez la recherche pour les voir.</td></tr>
+          )}
         </tbody>
       </table>
       </div>
