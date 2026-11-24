@@ -1,4 +1,4 @@
-import { lireEtat, ecrireEtat } from "./_etat";
+import { lireEtat, ecrireEtat } from "./etat-shards";
 
 // ── Webhook Ringover → CRM U'mob ────────────────────────────────────────────
 // Fonction serverless Vercel : Ringover pousse ici ses événements d'appel.
@@ -156,8 +156,7 @@ export default async function handler(req: any, res: any) {
       // DANS LE CRM : leur appelId suffit pour un replay ?call_id=...&replay=1 ──
       if (SUP && KEY) {
         try {
-          try {
-            const { etat: etatC } = await lireEtat(SUP, KEY);
+          const { etat: etatC } = await lireEtat(SUP, KEY);
             const appelsCRM: any[] = [];
             for (const e of etatC.entreprises || []) {
               for (const a of e.activites || []) {

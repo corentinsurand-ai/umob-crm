@@ -2,7 +2,7 @@
 // GET ?config=1 | ?secret=…&stats=1 | ?secret=…&sirens=1 | ?secret=…&dry=1
 //     | ?secret=…&importv8=1&lot=N   (N = 0..8, ou "all")  → importe un lot v8 puis tague Domino's
 //     | ?secret=…                    → tague Domino's seul
-import { lireEtat, ecrireEtat } from "./_etat";
+import { lireEtat, ecrireEtat } from "./etat-shards";
 
 export const config = { maxDuration: 300 };
 

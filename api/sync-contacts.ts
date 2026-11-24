@@ -1,4 +1,4 @@
-import { lireEtat } from "./_etat";
+import { lireEtat } from "./etat-shards";
 
 // ============================================================
 // /api/sync-contacts — Synchronise les contacts du CRM vers
