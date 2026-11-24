@@ -4631,12 +4631,23 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
     for (const d of etat.deals) if (d.etape !== "Gagné" && d.etape !== "Perdu") (dealsActifs[d.entrepriseId] = dealsActifs[d.entrepriseId] || []).push(d);
     return { nbContacts, dealsActifs };
   }, [etat]);
+  // Filtre « nettoyage progressif » : n'afficher que les fiches importées Sellsy
+  // (origine quarantaine) pour les corriger à l'usage, une par une.
+  const [onlyImport, setOnlyImport] = useState(false);
   const liste = useMemo(() => etat.entreprises.filter((e) =>
-    !q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel)), [etat, q]);
+    (!onlyImport || e.origine === "Import Sellsy (quarantaine)") &&
+    (!q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel))), [etat, q, onlyImport]);
   // Cap d'affichage : au-delà de 300 lignes, inviter à affiner la recherche.
   const visible = liste.slice(0, 300);
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2">
+        <label className="flex cursor-pointer items-center gap-1.5 text-[11.5px] font-bold text-slate-500">
+          <input type="checkbox" checked={onlyImport} onChange={(ev) => setOnlyImport(ev.target.checked)} className="accent-cyan-600" />
+          📥 Uniquement les fiches importées Sellsy (nettoyage progressif à l'usage)
+        </label>
+        {onlyImport && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-black text-slate-500">{liste.length} fiche(s)</span>}
+      </div>
       {/* Défilement horizontal si le panneau est étroit : les colonnes gardent
           une largeur lisible (min-w + whitespace-nowrap) au lieu de s'écraser. */}
       <div className="overflow-x-auto">
