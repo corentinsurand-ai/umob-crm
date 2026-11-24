@@ -709,7 +709,19 @@ function normaliser(s: Etat): Etat {
     }
     return false;
   });
-  return { ...s, entreprises: entreprisesGardees, contacts: [...contactsFinaux, ...persContacts], deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
+  // ── 4. Migration « statut Client forcé à l'import » : avant le fix du
+  // 24/11 (commit 4ad7203), toute fiche créée par l'import recevait le statut
+  // « Client » même quand le JSON disait « Suspect ». Rétrograde en « Suspect »
+  // les fiches importées qui n'ont AUCUNE donnée client (contrat / pack /
+  // véhicules / immatriculations / deal) — un vrai client importé en a forcément
+  // (607/607 dans les fichiers v5). Idempotent. Les fiches saisies à la main
+  // (origine ≠ import Sellsy) ne sont JAMAIS touchées.
+  const entreprisesStatut = entreprisesGardees.map((e) => {
+    if (e.origine !== "Import Sellsy (quarantaine)" || e.statut !== "Client") return e;
+    const aDonneesClient = (e.contrats || []).length > 0 || !!(e.pack || "").trim() || !!String(e.nbVehicules || "").trim() || !!(e.immatriculations || "").trim() || idsDeals.has(e.id);
+    return aDonneesClient ? e : { ...e, statut: "Suspect" as Statut };
+  });
+  return { ...s, entreprises: entreprisesStatut, contacts: [...contactsFinaux, ...persContacts], deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
