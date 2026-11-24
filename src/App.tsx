@@ -761,7 +761,11 @@ function normaliser(s: Etat): Etat {
       if (!p.tel && a.tel) p.tel = a.tel;
       if (a.statut === "Client") p.statut = "Client"; // jamais de rétrogradation : Client prime
       p.notes = [p.notes, a.notes].filter(Boolean).join("\n");
-      p.activites = [...(p.activites || gardee.activites || []), ...(a.activites || [])];
+      // dédup par date+texte (un même commentaire Sellsy peut arriver via le fichier
+      // d'origine ET via le fichier repair de fusion)
+      const actsG = p.activites || gardee.activites || [];
+      p.activites = [...actsG];
+      for (const aa of (a.activites || [])) if (!actsG.some((k) => (k.dateISO || k.date) === (aa.dateISO || aa.date) && k.texte === aa.texte) && !p.activites.some((k) => (k.dateISO || k.date) === (aa.dateISO || aa.date) && k.texte === aa.texte)) p.activites.push(aa);
       p.contrats = [...(p.contrats || gardee.contrats || []), ...(a.contrats || [])];
       patchFusion[gardee.id] = p;
     }
