@@ -738,7 +738,7 @@ function normaliser(s: Etat): Etat {
   const groupesNom = new Map<string, Entreprise[]>();
   for (const e of entreprisesStatut) {
     const k = cleNomGroupe(e.nom);
-    if (!k || k === e.nom.toLowerCase()) continue;
+    if (!k) continue; // nom vide uniquement : jamais de fusion sur un nom vide
     const arr = groupesNom.get(k) || [];
     arr.push(e); groupesNom.set(k, arr);
   }
@@ -6117,3 +6117,4 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
     </div>
   );
 }
+
