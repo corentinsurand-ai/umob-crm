@@ -78,7 +78,7 @@ interface DevisImporte { id: string; nom: string; taille: number; contentType: s
 // Les activités ne vivent QUE sur les entreprises : un contact n'a plus sa
 // propre liste d'activités (elles sont portées par ses entreprises, avec un
 // lien `contactId` pour les retrouver).
-interface Contact { id: string; prenom: string; nom: string; role: string; email: string; tel: string; entrepriseIds: string[] }
+interface Contact { id: string; prenom: string; nom: string; role: string; email: string; tel: string; entrepriseIds: string[]; notes?: string }
 
 // Reconnaissance d'une personne déjà en base (anti-doublons) : même email,
 // même téléphone (chiffres uniquement), ou même prénom+nom → c'est la MÊME
@@ -300,6 +300,31 @@ const memePersonne = (a: { prenom: string; nom: string; email: string; tel: stri
   (a.tel && b.tel && normTel(a.tel) === normTel(b.tel)) ||
   (a.prenom.trim().toLowerCase() === b.prenom.trim().toLowerCase() &&
     a.nom.trim().toLowerCase() === b.nom.trim().toLowerCase());
+
+// Détecte un nom de PERSONNE physique (ex. « ABDALAH SANOGO », « BOUTDARINE
+// Kamal ») par opposition à une société : pas de SIREN, pas de mot d'enseigne
+// (pizza, sarl…), pas de chiffre, 2 à 4 mots façon « NOM Prénom ».
+// Utilisé à l'import Sellsy : ces comptes sont des CONTACTS, pas des entreprises.
+const MOTS_SOCIETE = /\b(sarl|sas|sasu|sa\b|eurl|sci|scea|gaec|sca|snc|scop|association|holding|group|france|services|freres|fils|pizza|burger|kebab|sushi|coiffure|boulangerie|conduite|store|shop|market|food|restaurant|bar|cafe|immo|batiment|travaux|nettoyage|securite|transport|livraison|renovation|electricite|plomberie|menuiserie|onglerie|esthetic|beauty|institut|pharmacie|opticien|agency|conseil|consulting|digital|media|events|sport|fitness|gym|salle|escape|game|laser|bowling|karting|hotel|voyage|garage|carrosserie|meca|pieces|reparation|informatique|telecom|energie|assurance|banque|notaire|avocat|expert|comptable|interim|recrutement|formation|ecole|cours|permis|taxi|vtc|location|leasing|financement|credit|mutuelle)\b/i;
+const estNomPersonne = (nom: string, siren?: string): boolean => {
+  const n = (nom || "").trim();
+  if (!n || /\d/.test(n)) return false;
+  if (MOTS_SOCIETE.test(n)) return false;
+  const s = (siren || "").trim();
+  if (s && !isNaN(Number(s)) && Number(s) > 0) return false; // SIREN = société (même EI)
+  const mots = n.split(/\s+/);
+  if (mots.length < 2 || mots.length > 4) return false;
+  const tousMaj = mots.every((m) => /^[A-ZÀ-Þ' -]+$/.test(m) && /[A-ZÀ-Þ]/.test(m));
+  const nomPrenom = /^[A-ZÀ-Þ' -]{2,}\s+[A-ZÀ-Þ][a-zà-ÿ]+/.test(n);
+  return tousMaj || nomPrenom;
+};
+// Découpe un nom de personne en { prenom, nom } : dernier mot = prénom
+// (« SANOGO Abdalah » et « Abdalah SANOGO » → prenom Abdalah, nom SANOGO).
+const decoupeNomPersonne = (nom: string) => {
+  const mots = (nom || "").trim().split(/\s+/);
+  if (mots.length < 2) return { prenom: "", nom: (nom || "").trim() };
+  return { prenom: mots[mots.length - 1], nom: mots.slice(0, -1).join(" ") };
+};
 // Clés « propriétaire » d’un contact proposé : son prénom+nom normalisé, et si
 // son rôle mentionne une holding (« Gérant · via ADAVEN »), la holding aussi.
 // Sert à retirer de la liste les sociétés suggérées quand on DÉCOCHE leur dirigeant
@@ -664,7 +689,27 @@ function normaliser(s: Etat): Etat {
   // plus dans le modèle : seule l'entreprise porte des activités).
   const contactsFinaux = contacts.map(({ activites, ...reste }: { activites?: Activite[] } & Contact) => reste);
   const dealsFinaux = deals.map(({ activites, ...reste }: { activites?: Activite[] } & Deal) => reste);
-  return { ...s, entreprises, contacts: contactsFinaux, deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
+
+  // ── 3. Migration « particuliers importés comme fiches entreprise » : un
+  // compte Sellsy sans SIREN dont le nom est un nom de personne n'est PAS une
+  // société → converti en CONTACT (sans entreprise rattachée), en conservant
+  // ses commentaires Sellsy dans `notes`. On ne touche JAMAIS à une fiche qui
+  // a un contrat, un devis ou un deal (ex. EI « ALVAREZ MARC » = vraie société).
+  // Idempotent : une fois converti, la fiche n'existe plus.
+  const idsDeals = new Set(dealsFinaux.map((d) => d.entrepriseId));
+  const persContacts: Contact[] = [];
+  const entreprisesGardees = entreprises.filter((e) => {
+    if (!estNomPersonne(e.nom, e.siren)) return true;
+    if ((e.contrats || []).length > 0 || idsDeals.has(e.id) || (e.devisHistorique?.length || 0) > 0 || (e.devisImportes?.length || 0) > 0) return true;
+    const { prenom, nom } = decoupeNomPersonne(e.nom);
+    const pers = { prenom, nom, email: "", tel: e.tel || "" };
+    if (!contactsFinaux.some((x) => memePersonne(pers, x))) {
+      const notesPers = (e.activites || []).map((a) => `[${a.dateISO || a.date}] ${a.texte}`).join("\n");
+      persContacts.push({ id: "c" + e.id, prenom, nom, role: "Prospect individuel (import Sellsy)", email: "", tel: e.tel || "", entrepriseIds: [], ...(notesPers ? { notes: notesPers } : {}) });
+    }
+    return false;
+  });
+  return { ...s, entreprises: entreprisesGardees, contacts: [...contactsFinaux, ...persContacts], deals: dealsFinaux, modelesMailDevis: (s.modelesMailDevis || []).slice(), signatureMail: typeof s.signatureMail === "string" ? s.signatureMail : undefined, documentsDevis: Array.isArray(s.documentsDevis) ? (s.documentsDevis as DocumentDevis[]).filter((x: any) => x && x.contenuBase64) : undefined };
 }
 
 // État « base vide » (aucune donnée dans Supabase). Utilisé par l'écran
@@ -3411,6 +3456,7 @@ function FicheContact({ etat, id, onRetour, onOuvre, onOuvreFiche }: {
               <Prop label="Deals" valeur={String(deals.length)} />
               <Prop label="Pipeline actif" valeur={`${actifs.reduce((s, d) => s + d.montant, 0)} k€`} />
               </div>
+              {c.notes && <p className="mt-2 whitespace-pre-wrap rounded-xl bg-slate-50 p-2.5 text-[12.5px] leading-relaxed text-slate-600">{c.notes}</p>}
             </CarteFiche>
           </div>
 
@@ -5565,6 +5611,25 @@ export default function App() {
         date: isoVersFr(a.date), dateISO: (a.date || "").trim(), type: "note" as const,
         texte: a.texte + "\n\n[📥 " + (a.provenance || "Sellsy") + "]",
       }));
+      // ── Compte « personne physique » (pas de SIREN, nom de personne, pas de
+      // contrat) : on ne crée PAS de fiche entreprise → un CONTACT sans
+      // entreprise, avec les commentaires Sellsy conservés en `notes`. ──
+      if (estNomPersonne(en.nom, en.siren) && contrats.length === 0) {
+        const { prenom, nom } = decoupeNomPersonne(en.nom || "Sans nom");
+        const pers = { prenom, nom, email: en.email || "", tel: en.tel || "" };
+        const connu = contacts.find((x) => memePersonne(pers, x));
+        const notesPers = activites.map((a) => `[${a.dateISO || a.date}] ${a.texte}`).join("\n");
+        if (connu) {
+          contacts = contacts.map((x) => x.id === connu.id
+            ? { ...x, tel: x.tel || formaterTelFr(en.tel || ""), email: x.email || en.email || "", notes: [x.notes, notesPers].filter(Boolean).join("\n") }
+            : x);
+          resume.contactsRattaches++;
+        } else {
+          contacts.push({ id: "c" + Date.now() + "_pers_" + i, prenom, nom, role: "Prospect individuel (import Sellsy)", email: en.email || "", tel: formaterTelFr(en.tel || ""), entrepriseIds: [], ...(notesPers ? { notes: notesPers } : {}) });
+          resume.contactsCrees++;
+        }
+        return;
+      }
       const existante = trouverEntrepriseImport(etat, en);
       let entId: string;
       if (existante) {
@@ -5598,7 +5663,7 @@ export default function App() {
           const acts = [...(x.activites || [])];
           for (const a of activites) if (!acts.some((k) => k.dateISO === a.dateISO && k.texte === a.texte)) { acts.unshift(a); resume.activitesAjoutees++; }
           const fusion = { ...x,
-            statut: x.statut === "Suspect" ? "Client" : x.statut,
+            statut: (en.statut === "Client" ? "Client" : x.statut),
             ville: x.ville || en.ville || "", cp: x.cp || en.cp || "", adresse: x.adresse || en.adresse || "",
             siren: x.siren || en.siren || "", tel: x.tel || formaterTelFr(en.tel || ""),
             modeLivraison: x.modeLivraison || en.modeLivraison || "",
@@ -5617,7 +5682,7 @@ export default function App() {
         const nv: Entreprise = {
           id: entId, nom: en.nom || "Sans nom", nomCommercial: "", secteur: "", ville: en.ville || "", site: "",
           tel: formaterTelFr(en.tel || ""), franchiseur: "", modeLivraison: en.modeLivraison || "Scooter électrique",
-          activite: "", statut: "Client", notes: en.notes || "", activites,
+          activite: "", statut: ((en.statut as Statut) || "Suspect"), notes: en.notes || "", activites,
           modeles, contrats, risque: en.risque || "", origine: "Import Sellsy (quarantaine)",
           // Champs Sheet (SIREN/adresse/CP) + listes devis : repris tels quels,
           // et DEVIS vides explicites (sinon crash .map() avant normalisation).
