@@ -5626,7 +5626,7 @@ export default function App() {
       // ── Compte « personne physique » (pas de SIREN, nom de personne, pas de
       // contrat) : on ne crée PAS de fiche entreprise → un CONTACT sans
       // entreprise, avec les commentaires Sellsy conservés en `notes`. ──
-      if (estNomPersonne(en.nom, en.siren) && contrats.length === 0) {
+      if ((en.typePersonne === true || estNomPersonne(en.nom, en.siren)) && contrats.length === 0) {
         const { prenom, nom } = decoupeNomPersonne(en.nom || "Sans nom");
         const pers = { prenom, nom, email: en.email || "", tel: en.tel || "" };
         const connu = contacts.find((x) => memePersonne(pers, x));
@@ -5987,6 +5987,7 @@ interface FicheImport {
   entreprise: {
     nom: string; statut: string; ville: string; cp: string; adresse: string; siren: string;
     tel: string; email: string; modeLivraison: string; risque: string;
+    typePersonne?: boolean; // JSON v6 : compte personne physique pré-détecté → importé comme CONTACT, jamais comme fiche entreprise
     contrats: { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string[]; etat: string }[];
     nbVehicules: number; immatriculations: string[]; notes: string;
     activites: { date: string; texte: string; provenance: string; lectureSeule: boolean }[];
@@ -6018,7 +6019,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
             (f.entreprise.siren && x.siren && String(x.siren).replace(/\D/g, "") === String(f.entreprise.siren).replace(/\D/g, "")) ||
             (telN.length >= 6 && normTel(x.tel || "") && (normTel(x.tel || "") === telN || normTel(x.tel || "").includes(telN) || telN.includes(normTel(x.tel || ""))))
           );
-          return { f, mode: ex ? "fusionner" : "creer", cible: ex ? (ex.nomCommercial || ex.nom) : "" };
+          return { f, mode: ex ? "fusionner" : (f.entreprise.typePersonne ? "contact" : "creer"), cible: ex ? (ex.nomCommercial || ex.nom) : "" };
         }));
       } catch (err) {
         setErreur("Fichier illisible ou format inattendu (" + String(err) + ").");
@@ -6049,7 +6050,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
       {apercu.length > 0 && (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
-            <div className="text-[13px] font-black text-slate-800">{apercu.length} fiche(s) prête(s) — {apercu.filter((a) => a.mode === "creer").length} création(s), {apercu.filter((a) => a.mode === "fusionner").length} fusion(s)</div>
+            <div className="text-[13px] font-black text-slate-800">{apercu.length} fiche(s) prête(s) — {apercu.filter((a) => a.mode === "creer").length} création(s), {apercu.filter((a) => a.mode === "fusionner").length} fusion(s), {apercu.filter((a) => a.mode === "contact").length} contact(s) individuel(s)</div>
             <button onClick={lancer} className="rounded-xl px-4 py-2 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>✅ Importer {apercu.length} fiche(s)</button>
           </div>
@@ -6066,7 +6067,9 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
                     <td className="px-3 py-1.5">
                       {a.mode === "creer"
                         ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">🆕 Créer</span>
-                        : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">🔀 Fusionner avec « {a.cible} »</span>}
+                        : a.mode === "contact"
+                          ? <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-black text-cyan-700">👤 Contact (personne)</span>
+                          : <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700">🔀 Fusionner avec « {a.cible} »</span>}
                     </td>
                     <td className="px-3 py-1.5 text-slate-500">{(a.f.entreprise.contrats || []).length}</td>
                     <td className="px-3 py-1.5 text-slate-500">{(a.f.contacts || []).length}</td>
