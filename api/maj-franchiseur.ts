@@ -1,11 +1,12 @@
 // ── Mise à jour en masse : franchiseur « Domino's Pizza » ─────────────────────
 // GET /api/maj-franchiseur?config=1            → diagnostic (variables présentes)
-// GET /api/maj-franchiseur?secret=…&dry=1      → aperçu des fiches matchées, SANS écriture
+// GET /api/maj-franchiseur?secret=…&dry=1      → aperçu SANS écriture
 // GET /api/maj-franchiseur?secret=…            → applique franchiseur = "Domino's Pizza"
 // Secret = MAJ_FRANCHISEUR_SECRET, sinon INBOUND_EMAIL_SECRET (déjà en env Vercel).
-// Matching : nom / nom commercial contenant « domino » (insensible casse/accents/
-// apostrophe) OU SIREN dans la liste ci-dessous (Sheet « Clients Complets » +
-// exports Sellsy v3→v8 : nom OU comptesSellsy contenant « domino », 24/11/2026).
+// Matching : nom/nomCommercial contenant « domino », OU SIREN dans la liste
+// (Sheet « Clients Complets » + exports Sellsy v3→v8 nom/comptesSellsy, 24/11/2026).
+// Les fiches où « domino » n'apparaît que dans le reste de la fiche (notes,
+// activités…) sont listées avec match="blob" mais NON modifiées (faux positifs).
 const SUP: string = process.env.SUPABASE_URL || "";
 const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const SECRET: string = process.env.MAJ_FRANCHISEUR_SECRET || process.env.INBOUND_EMAIL_SECRET || "";
@@ -38,23 +39,24 @@ export default async function handler(req: any, res: any) {
 
   const sirenSet = new Set(SIRENS_DOMINO);
   const rapport: any[] = [];
-  let modifiees = 0;
+  let modifiees = 0, blob = 0;
   for (const e of ents) {
     const nNom = norm(e.nom), nCom = norm(e.nomCommercial), siren = digits(e.siren);
     let match = "";
     if ((nNom + " " + nCom).includes("domino")) match = "nom";
     else if (siren && (sirenSet.has(siren) || sirenSet.has(siren.replace(/^0+/, "")))) match = "siren";
+    else if (norm(JSON.stringify(e)).includes("domino")) { match = "blob"; blob++; }
     if (!match) continue;
     const avant = String(e.franchiseur || "");
     rapport.push({ id: e.id, nom: e.nom, nomCommercial: e.nomCommercial || "", siren, ville: e.ville || "", statut: e.statut || "", avant, match });
-    if (avant !== "Domino's Pizza") { e.franchiseur = "Domino's Pizza"; modifiees++; }
+    if (match !== "blob" && avant !== "Domino's Pizza") { e.franchiseur = "Domino's Pizza"; modifiees++; }
   }
 
   const dry = u.searchParams.get("dry") === "1";
   if (dry) {
     const avecSiren = ents.filter((e: any) => digits(e.siren)).length;
     const dontSiren = rapport.filter((r: any) => r.match === "siren").length;
-    return res.status(200).json({ ok: true, dry: true, total: ents.length, avecSiren, matches: rapport.length, dontSiren, modifieesPrevues: modifiees, rapport });
+    return res.status(200).json({ ok: true, dry: true, total: ents.length, avecSiren, matches: rapport.length, dontSiren, blob, modifieesPrevues: modifiees, rapport });
   }
 
   // Écriture : le jsonb complet peut dépasser le statement timeout → jusqu'à 3 essais.
