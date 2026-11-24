@@ -1,3 +1,5 @@
+import { lireEtat } from "./_etat";
+
 // ============================================================
 // /api/sync-contacts — Synchronise les contacts du CRM vers
 // l'annuaire Ringover, pour que le NOM s'affiche sur les appels
@@ -223,23 +225,15 @@ export default async function handler(req: any, res: any) {
     });
   }
 
-  // 1. Lire l'état du CRM (même table crm_etat que le webhook)
-  const rEtat = await fetch(supabaseUrl + "/rest/v1/crm_etat?select=*", {
-    headers: { apikey: supaKey, Authorization: "Bearer " + supaKey },
-  });
-  if (!rEtat.ok) {
-    return res.status(502).json({ erreur: "Supabase illisible", status: rEtat.status });
-  }
-  const lignes = await rEtat.json();
+  // 1. Lire l'état du CRM (même table crm_etat que le webhook, lecture shardée)
   let etat: any = null;
-  for (const l of lignes) {
-    const candidat = l.etat || l.data || l.value || l;
-    if (candidat && Array.isArray(candidat.contacts)) {
-      if (!etat || JSON.stringify(candidat).length > JSON.stringify(etat).length) etat = candidat;
-    }
+  try {
+    etat = (await lireEtat(String(supabaseUrl), String(supaKey))).etat;
+  } catch (e: any) {
+    return res.status(502).json({ erreur: "Supabase illisible", detail: String(e).slice(0, 200) });
   }
-  if (!etat) {
-    return res.status(404).json({ erreur: "crm_etat introuvable / structure inconnue", nbLignes: lignes.length });
+  if (!etat || !Array.isArray(etat.contacts)) {
+    return res.status(404).json({ erreur: "crm_etat introuvable / structure inconnue" });
   }
 
   // 2. Collecter les contacts à pousser (dédoublonnés par numéro)

@@ -1,3 +1,5 @@
+import { lireEtat, ecrireEtat } from "./_etat";
+
 // ── Webhook Ringover → CRM U'mob ────────────────────────────────────────────
 // Fonction serverless Vercel : Ringover pousse ici ses événements d'appel.
 //
@@ -154,10 +156,8 @@ export default async function handler(req: any, res: any) {
       // DANS LE CRM : leur appelId suffit pour un replay ?call_id=...&replay=1 ──
       if (SUP && KEY) {
         try {
-          const rsC = await fetch(SUP + "/rest/v1/crm_etat?id=eq.main&select=data", { headers: { apikey: KEY, Authorization: "Bearer " + KEY } });
-          if (rsC.ok) {
-            const rowsC: any[] = await rsC.json();
-            const etatC: any = (rowsC[0] || {}).data || {};
+          try {
+            const { etat: etatC } = await lireEtat(SUP, KEY);
             const appelsCRM: any[] = [];
             for (const e of etatC.entreprises || []) {
               for (const a of e.activites || []) {
@@ -166,7 +166,6 @@ export default async function handler(req: any, res: any) {
             }
             diag.appelsCRM = appelsCRM.slice(0, 15);
             if (!diag.appelsCRM.length) diag.noteCRM = "aucun appel consigné dans le CRM";
-          }
         } catch (e: any) { diag.noteCRM = "lecture CRM impossible: " + String(e).slice(0, 120); }
       }
       // paramètre explicite prioritaire
@@ -391,11 +390,10 @@ export default async function handler(req: any, res: any) {
 
   // ── Lecture de l'état du CRM (service role : contourne la RLS, côté serveur uniquement) ──
   const sbH: any = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
-  const rl = await fetch(SUP + "/rest/v1/crm_etat?id=eq.main&select=data", { headers: sbH });
-  if (!rl.ok) return res.status(500).json({ ok: false, erreur: "supabase_lecture", statut: rl.status });
-  const rows: any[] = await rl.json();
-  if (!rows.length) return res.status(200).json({ ok: true, note: "base CRM vide, appel ignoré" });
-  const etat: any = rows[0].data;
+  let etat: any = null;
+  try { etat = (await lireEtat(SUP, KEY)).etat; }
+  catch (e: any) { return res.status(500).json({ ok: false, erreur: "supabase_lecture", detail: String(e).slice(0, 200) }); }
+  if (!etat) return res.status(200).json({ ok: true, note: "base CRM vide, appel ignoré" });
 
   // ── Remplissage automatique de la fiche (uniquement champs vides, valeurs normalisées) ──
   const extr: any = (ia && ia.extraction && typeof ia.extraction === "object") ? ia.extraction : {};
@@ -517,12 +515,9 @@ export default async function handler(req: any, res: any) {
     const tacheCreeeFusion = creerTacheSuivante(deja.entreprise, a);
     const enrichi = appliquerExtraction(deja.entreprise, a) || gererContactExtrait(deja.entreprise, a) || modifie || tacheCreeeFusion;
     if (!enrichi) return res.status(200).json({ ok: true, note: "rien de neuf", appelId });
-    const ws = await fetch(SUP + "/rest/v1/crm_etat", {
-      method: "POST",
-      headers: { ...sbH, Prefer: "resolution=merge-duplicates" },
-      body: JSON.stringify([{ id: "main", data: etat, maj: new Date().toISOString() }]),
-    });
-    if (!ws.ok) return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status });
+    let wsOk = true, wsStatut = 0;
+    try { await ecrireEtat(SUP, KEY, etat); } catch (e: any) { wsOk = false; wsStatut = 500; console.log("ecriture shards KO:", String(e).slice(0, 200)); }
+    if (!wsOk) return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: wsStatut });
     console.log("Fusion enrichissement appel", appelId, "ok");
     return res.status(200).json({ ok: true, fusion: true, transcription: !!transcription, ficheEnrichie: true, tacheCreee: tacheCreeeFusion });
   }
@@ -597,11 +592,7 @@ export default async function handler(req: any, res: any) {
     if (ficheModifiee) console.log("Fiche enrichie automatiquement:", entreprise.nom);
   }
 
-  const ws = await fetch(SUP + "/rest/v1/crm_etat", {
-    method: "POST",
-    headers: { ...sbH, Prefer: "resolution=merge-duplicates" },
-    body: JSON.stringify([{ id: "main", data: etat, maj: now.toISOString() }]),
-  });
-  if (!ws.ok) { console.log("Ecriture Supabase KO:", ws.status); return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: ws.status }); }
+  try { await ecrireEtat(SUP, KEY, etat); }
+  catch (e: any) { console.log("Ecriture Supabase KO:", String(e).slice(0, 200)); return res.status(500).json({ ok: false, erreur: "supabase_ecriture", statut: 500 }); }
   return res.status(200).json({ ok: true, entreprise: entreprise ? entreprise.nom : "aucun rattachement", cree, ficheEnrichie: ficheModifiee, tacheCreee, sentiment: ia.sentiment || null, score: act.scoreIA || null, transcriptionRecue: !!transcription });
 }

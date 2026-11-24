@@ -2,6 +2,8 @@
 // GET ?config=1 | ?secret=…&stats=1 | ?secret=…&sirens=1 | ?secret=…&dry=1
 //     | ?secret=…&importv8=1&lot=N   (N = 0..8, ou "all")  → importe un lot v8 puis tague Domino's
 //     | ?secret=…                    → tague Domino's seul
+import { lireEtat, ecrireEtat } from "./_etat";
+
 export const config = { maxDuration: 300 };
 
 const SUP: string = process.env.SUPABASE_URL || "";
@@ -254,17 +256,20 @@ export default async function handler(req: any, res: any) {
   const base = SUP.replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
   const sbH: any = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
 
-  const rget = await fetch(base + "/rest/v1/crm_etat?id=eq.main&select=data,maj", { headers: sbH });
-  if (!rget.ok) return res.status(500).json({ ok: false, erreur: "lecture", statut: rget.status });
-  const rows: any[] = await rget.json();
-  if (!rows.length || !rows[0].data) return res.status(404).json({ ok: false, erreur: "ligne main introuvable" });
-  const etat: any = rows[0].data;
-  const ents: any[] = Array.isArray(etat.entreprises) ? etat.entreprises : [];
+  let etat: any, majMain: string | null = null;
+  try {
+    const lu = await lireEtat(SUP, KEY);
+    etat = lu.etat; majMain = lu.maj;
+  } catch (e: any) {
+    return res.status(500).json({ ok: false, erreur: "lecture", detail: String(e).slice(0, 300) });
+  }
+  if (!etat || !Array.isArray(etat.entreprises)) return res.status(404).json({ ok: false, erreur: "ligne main introuvable" });
+  const ents: any[] = etat.entreprises;
 
   if (u.searchParams.get("sirens") === "1") {
     const set = new Set<string>();
     for (const e of ents) { const s = digits(e.siren); if (s) set.add(s); }
-    return res.status(200).json({ ok: true, sirens: true, maj: rows[0].maj || null, total: ents.length, sirens: [...set].sort() });
+    return res.status(200).json({ ok: true, sirens: true, maj: majMain, total: ents.length, sirens: [...set].sort() });
   }
 
   if (u.searchParams.get("stats") === "1") {
@@ -283,7 +288,7 @@ export default async function handler(req: any, res: any) {
       if (e.origine) origines[e.origine] = (origines[e.origine] || 0) + 1;
       statuts[e.statut || "(vide)"] = (statuts[e.statut || "(vide)"] || 0) + 1;
     }
-    return res.status(200).json({ ok: true, stats: true, lignes: allRows, majMain: rows[0]?.maj || null,
+    return res.status(200).json({ ok: true, stats: true, lignes: allRows, majMain,
       totalEntreprises: ents.length, totalContacts: contacts.length, totalDeals: deals.length,
       avecSiren, avecSellsy, avecDomino, taguesDomino, origines, statuts });
   }
@@ -325,17 +330,12 @@ export default async function handler(req: any, res: any) {
       rapport: rapport.slice(0, 400) });
   }
 
-  let rput: any = null, corpsErr = "";
+  let ecrit: any = null, errEcrit = "";
   for (let essai = 1; essai <= 2; essai++) {
-    rput = await fetch(base + "/rest/v1/crm_etat?id=eq.main", {
-      method: "PATCH", headers: { ...sbH, Prefer: "return=minimal" },
-      body: JSON.stringify({ data: etat, maj: new Date().toISOString() }),
-    });
-    if (rput.ok) break;
-    corpsErr = (await rput.text()).slice(0, 300);
-    await new Promise((r) => setTimeout(r, 2000));
+    try { ecrit = await ecrireEtat(SUP, KEY, etat); break; }
+    catch (e: any) { errEcrit = String(e).slice(0, 300); await new Promise((r) => setTimeout(r, 2000)); }
   }
-  if (!rput || !rput.ok) return res.status(500).json({ ok: false, erreur: "ecriture", statut: rput?.status, corps: corpsErr, importv8, lots: lotsResume });
+  if (!ecrit) return res.status(500).json({ ok: false, erreur: "ecriture", detail: errEcrit, importv8, lots: lotsResume });
   return res.status(200).json({ ok: true, dry: false, importv8, lots: lotsResume, total: (etat.entreprises || []).length,
     matches: rapport.length, modifiees, rapport: rapport.slice(0, 400) });
 }
