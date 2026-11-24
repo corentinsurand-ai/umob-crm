@@ -2,6 +2,8 @@
 // GET ?config=1 | ?secret=…&stats=1 | ?secret=…&sirens=1 | ?secret=…&dry=1
 //     | ?secret=…&importv8=1&lot=N   (N = 0..8, ou "all")  → importe un lot v8 puis tague Domino's
 //     | ?secret=…                    → tague Domino's seul
+export const config = { maxDuration: 300 };
+
 const SUP: string = process.env.SUPABASE_URL || "";
 const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const SECRET: string = process.env.MAJ_FRANCHISEUR_SECRET || process.env.INBOUND_EMAIL_SECRET || "";
@@ -296,7 +298,7 @@ export default async function handler(req: any, res: any) {
   }
 
   let rput: any = null, corpsErr = "";
-  for (let essai = 1; essai <= 5; essai++) {
+  for (let essai = 1; essai <= 2; essai++) {
     rput = await fetch(base + "/rest/v1/crm_etat?id=eq.main", {
       method: "PATCH", headers: { ...sbH, Prefer: "return=minimal" },
       body: JSON.stringify({ data: etat, maj: new Date().toISOString() }),
