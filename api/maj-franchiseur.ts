@@ -1,20 +1,15 @@
-// ── Mise à jour en masse : franchiseur « Domino's Pizza » ─────────────────────
+// ── Mise à jour en masse : franchiseur « Domino's Pizza » + diagnostic état ────
 // GET /api/maj-franchiseur?config=1            → diagnostic (variables présentes)
+// GET /api/maj-franchiseur?secret=…&stats=1     → stats de l'état live (sans modifier)
 // GET /api/maj-franchiseur?secret=…&dry=1      → aperçu SANS écriture
 // GET /api/maj-franchiseur?secret=…            → applique franchiseur = "Domino's Pizza"
-// Secret = MAJ_FRANCHISEUR_SECRET, sinon INBOUND_EMAIL_SECRET (déjà en env Vercel).
-// Matching : nom/nomCommercial contenant « domino », OU SIREN dans la liste
-// (Sheet « Clients Complets » + exports Sellsy v3→v8 nom/comptesSellsy, 24/11/2026).
-// Les fiches où « domino » n'apparaît que dans le reste de la fiche (notes,
-// activités…) sont listées avec match="blob" mais NON modifiées (faux positifs).
 const SUP: string = process.env.SUPABASE_URL || "";
 const KEY: string = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const SECRET: string = process.env.MAJ_FRANCHISEUR_SECRET || process.env.INBOUND_EMAIL_SECRET || "";
 
-const SIRENS_DOMINO: string[] = ["100677863", "103320891", "106227655", "400228227", "443515655", "477879514", "488863986", "498166511", "498338698", "499369403", "500617634", "501054282", "501603922", "502268733", "503654071", "503883480", "510651078", "510693823", "510763766", "521065466", "521989863", "523072528", "524329877", "527479224", "528185648", "533087367", "534541966", "537568529", "750019135", "789823473", "795143569", "800251787", "801616988", "802653881", "803671874", "804946754", "808574123", "811584242", "813600996", "814374559", "817874696", "818835290", "819187493", "819626854", "820161784", "820308005", "820321362", "820438380", "821823226", "821911872", "823621024", "828284976", "830555421", "830619771", "831067038", "832364525", "832491179", "832780332", "832951792", "833310717", "834975674", "838949014", "840603237", "841622038", "841622210", "848797981", "849379730", "851312140", "880848734", "882057045", "883813206", "885319673", "887840361", "888046596", "891995458", "893124487", "895097921", "895105047", "895105054", "895105070", "898371992", "900279647", "902098425", "909064503", "909538324", "910092782", "910145721", "910853985", "912151362", "919928044", "920639853", "921576609", "922348693", "932719750", "941140196", "942426131", "943149419", "949419436", "953059862", "953316668", "982743650", "984102277", "991709536", "991740614", "991813023", "994987196", "999587371"];
+const SIRENS_DOMINO: string[] = ["840603237", "103320891", "900279647", "895097921", "523072528", "501054282", "510763766", "841622038", "880848734", "537568529", "820321362", "921576609", "750019135", "528185648", "803671874", "503654071", "801616988", "802653881", "910145721", "808574123", "942426131", "817874696", "848797981", "984102277", "885319673", "820161784", "814374559", "477879514", "949419436", "821911872", "838949014", "920639853", "828284976", "902098425", "882057045", "910853985", "502268733", "534541966", "832491179", "912151362", "830555421", "851312140", "821823226", "527479224", "991813023", "991709536", "510693823", "498338698", "909538324", "830619771", "800251787", "499369403", "820438380", "100677863", "953316668", "832951792", "834975674", "883813206", "795143569", "888046596", "841622210", "106227655", "510651078", "909064503", "521989863", "941140196", "895105054", "891995458", "818835290", "849379730", "533087367", "831067038", "498166511", "893124487", "922348693", "804946754", "943149419", "982743650", "813600996", "832780332", "832364525", "488863986", "524329877", "811584242", "503883480", "819626854", "910092782", "898371992", "895105047", "789823473", "820308005", "919928044", "819187493", "443515655", "932719750", "521065466", "500617634", "991740614", "501603922", "895105070", "953059862", "999587371", "887840361", "833310717", "994987196", "823621024", "400228227"];
 
 const norm = (s: any): string => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
-// SIREN : on retire un éventuel suffixe « .0 » (reste d'import) avant de ne garder que les chiffres.
 const digits = (s: any): string => String(s || "").replace(/\.0+$/, "").replace(/\D/g, "");
 
 export default async function handler(req: any, res: any) {
@@ -26,9 +21,35 @@ export default async function handler(req: any, res: any) {
   const fourni = String(u.searchParams.get("secret") || (req.headers && req.headers["x-webhook-secret"]) || "");
   if (!SECRET || fourni !== SECRET) return res.status(401).json({ ok: false, erreur: "secret invalide" });
   if (!SUP || !KEY) return res.status(500).json({ ok: false, erreur: "config serveur incomplète" });
-  // RÈGLE DURABLE : SUPABASE_URL peut contenir /rest/v1 → normaliser la base.
   const base = SUP.replace(/\/+$/, "").replace(/\/rest\/v1$/, "");
   const sbH: any = { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
+
+  // ── mode stats : inventaire de crm_etat (toutes lignes) ──
+  if (u.searchParams.get("stats") === "1") {
+    const rall = await fetch(base + "/rest/v1/crm_etat?select=id,maj", { headers: sbH });
+    const allRows: any[] = rall.ok ? await rall.json() : [];
+    const rget = await fetch(base + "/rest/v1/crm_etat?id=eq.main&select=data,maj", { headers: sbH });
+    const rows: any[] = rget.ok ? await rget.json() : [];
+    const etat: any = rows[0]?.data || {};
+    const ents: any[] = Array.isArray(etat.entreprises) ? etat.entreprises : [];
+    const contacts: any[] = Array.isArray(etat.contacts) ? etat.contacts : [];
+    const deals: any[] = Array.isArray(etat.deals) ? etat.deals : [];
+    let avecSiren = 0, avecSellsy = 0, avecDomino = 0, avecOrigine = 0;
+    const origines: any = {};
+    const statuts: any = {};
+    for (const e of ents) {
+      const blob = norm(JSON.stringify(e));
+      if (digits(e.siren)) avecSiren++;
+      if (blob.includes("sellsy")) avecSellsy++;
+      if (blob.includes("domino")) avecDomino++;
+      if (e.origine) { avecOrigine++; origines[e.origine] = (origines[e.origine] || 0) + 1; }
+      statuts[e.statut || "(vide)"] = (statuts[e.statut || "(vide)"] || 0) + 1;
+    }
+    return res.status(200).json({ ok: true, stats: true,
+      lignes: allRows, majMain: rows[0]?.maj || null,
+      totalEntreprises: ents.length, totalContacts: contacts.length, totalDeals: deals.length,
+      avecSiren, avecSellsy, avecDomino, avecOrigine, origines, statuts });
+  }
 
   const rget = await fetch(base + "/rest/v1/crm_etat?id=eq.main&select=data", { headers: sbH });
   if (!rget.ok) return res.status(500).json({ ok: false, erreur: "lecture crm_etat", statut: rget.status, corps: (await rget.text()).slice(0, 300) });
@@ -59,7 +80,6 @@ export default async function handler(req: any, res: any) {
     return res.status(200).json({ ok: true, dry: true, total: ents.length, avecSiren, matches: rapport.length, dontSiren, blob, modifieesPrevues: modifiees, rapport });
   }
 
-  // Écriture : le jsonb complet peut dépasser le statement timeout → jusqu'à 3 essais.
   let rput: any = null, corpsErr = "";
   for (let essai = 1; essai <= 3; essai++) {
     rput = await fetch(base + "/rest/v1/crm_etat?id=eq.main", {
