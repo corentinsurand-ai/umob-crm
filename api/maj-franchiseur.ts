@@ -216,6 +216,15 @@ function appliquerImport(etat: any, fiches: any[], tagLot: string) {
 
 export default async function handler(req: any, res: any) {
   const u = new URL(req.url || "/", "http://localhost");
+  if (u.searchParams.get("debug") === "ecriture-test") {
+    const t0 = Date.now();
+    const r = await fetch(`${SUP}/rest/v1/crm_etat?id=eq.main`, {
+      method: "PATCH",
+      headers: { apikey: SRK, Authorization: `Bearer ${SRK}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ maj: new Date().toISOString() }),
+    });
+    return Response.json({ ok: r.ok, statut: r.status, ms: Date.now() - t0, body: r.ok ? null : (await r.text()).slice(0, 300) });
+  }
   if (u.searchParams.get("config") === "1") {
     return res.status(200).json({ ok: true, service: "maj-franchiseur", variables: {
       SUPABASE_URL: !!SUP, SUPABASE_SERVICE_ROLE_KEY: !!KEY, SECRET: !!SECRET } });
