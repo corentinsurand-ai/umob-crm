@@ -4617,6 +4617,39 @@ function VueDashboard({ etat, onOuvre }: { etat: Etat; onOuvre: (c: Cible) => vo
   );
 }
 
+/* ---- Filtre façon Excel (autofilter) : dropdown sous l'en-tête de colonne,
+   liste des valeurs distinctes avec cases à cocher + recherche rapide. ---- */
+function MenuFiltreColonne({ valeurs, selection, onAppliquer, onFermer }: { valeurs: string[]; selection: string[]; onAppliquer: (s: string[]) => void; onFermer: () => void }) {
+  const [tmp, setTmp] = useState<string[]>(selection);
+  const [q, setQ] = useState("");
+  const visibles = valeurs.filter((v) => !q.trim() || v.toLowerCase().includes(q.trim().toLowerCase()));
+  const coche = (v: string, on: boolean) => setTmp((t) => (on ? [...t, v] : t.filter((x) => x !== v)));
+  return (
+    <div className="absolute left-0 top-full z-40 mt-1 w-64 rounded-xl border border-slate-200 bg-white p-2 text-left normal-case shadow-xl" onClick={(ev) => ev.stopPropagation()}>
+      <input value={q} onChange={(ev) => setQ(ev.target.value)} placeholder="Rechercher une valeur…"
+        className="mb-1.5 w-full rounded-lg border border-slate-200 px-2 py-1 text-[11.5px] outline-none focus:border-cyan-500" />
+      <div className="mb-1 flex items-center justify-between text-[10.5px] font-bold text-slate-400">
+        <button type="button" className="text-cyan-600 hover:underline" onClick={() => setTmp(valeurs)}>Tout cocher</button>
+        <span>{tmp.length}/{valeurs.length}</span>
+        <button type="button" className="text-cyan-600 hover:underline" onClick={() => setTmp([])}>Tout décocher</button>
+      </div>
+      <div className="max-h-56 overflow-y-auto rounded-lg border border-slate-100">
+        {visibles.map((v) => (
+          <label key={v || "__vide__"} className="flex cursor-pointer items-center gap-1.5 px-2 py-1 text-[11.5px] font-semibold text-slate-600 hover:bg-slate-50">
+            <input type="checkbox" className="accent-cyan-600" checked={tmp.includes(v)} onChange={(ev) => coche(v, ev.target.checked)} />
+            <span className="truncate">{v === "" ? "(vide)" : v}</span>
+          </label>
+        ))}
+        {visibles.length === 0 && <div className="px-2 py-2 text-[11px] text-slate-400">Aucune valeur</div>}
+      </div>
+      <div className="mt-1.5 flex justify-end gap-1.5">
+        <button type="button" onClick={onFermer} className="rounded-lg px-2.5 py-1 text-[11px] font-bold text-slate-400 hover:bg-slate-100">Annuler</button>
+        <button type="button" onClick={() => onAppliquer(tmp)} className="rounded-lg bg-slate-800 px-2.5 py-1 text-[11px] font-black text-white">Appliquer</button>
+      </div>
+    </div>
+  );
+}
+
 /* ---- Liste des entreprises : tableau à colonnes façon page index HubSpot. ----
    La recherche filtre sur nom + NOM COMMERCIAL + secteur + ville, insensible
    à la casse. */
@@ -4634,9 +4667,53 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
   // Filtre « nettoyage progressif » : n'afficher que les fiches importées Sellsy
   // (origine quarantaine) pour les corriger à l'usage, une par une.
   const [onlyImport, setOnlyImport] = useState(false);
-  const liste = useMemo(() => etat.entreprises.filter((e) =>
-    (!onlyImport || e.origine === "Import Sellsy (quarantaine)") &&
-    (!q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel))), [etat, q, onlyImport]);
+  // Filtres façon Excel, par colonne : cle → valeurs sélectionnées (liste vide = inactif).
+  const [filtres, setFiltres] = useState<Record<string, string[]>>({});
+  const [ouvertCol, setOuvertCol] = useState<string | null>(null);
+  // Valeurs distinctes de chaque colonne (pour les dropdowns de filtre).
+  const valeursCol = useMemo(() => {
+    const acc: Record<string, Set<string>> = { nom: new Set(), statut: new Set(), franchiseur: new Set(), ville: new Set(), tel: new Set(), contacts: new Set(), deals: new Set(), pipeline: new Set() };
+    for (const e of etat.entreprises) {
+      const actifs = index.dealsActifs[e.id] || [];
+      acc.nom.add(e.nomCommercial || e.nom); acc.statut.add(e.statut); acc.franchiseur.add(e.franchiseur || ""); acc.ville.add(e.ville || ""); acc.tel.add(e.tel || "");
+      acc.contacts.add(String(index.nbContacts[e.id] || 0)); acc.deals.add(String(actifs.length)); acc.pipeline.add(String(actifs.reduce((s2, d) => s2 + d.montant, 0)));
+    }
+    const out: Record<string, string[]> = {};
+    for (const k of Object.keys(acc)) out[k] = Array.from(acc[k]).sort((a, b) => a.localeCompare(b, "fr"));
+    return out;
+  }, [etat, index]);
+  const liste = useMemo(() => {
+    const clesActives = Object.entries(filtres).filter(([, sel]) => sel && sel.length > 0);
+    return etat.entreprises.filter((e) => {
+      if (clesActives.length > 0) {
+        const actifs = index.dealsActifs[e.id] || [];
+        const vals: Record<string, string> = {
+          nom: e.nomCommercial || e.nom, statut: e.statut, franchiseur: e.franchiseur || "", ville: e.ville || "", tel: e.tel || "",
+          contacts: String(index.nbContacts[e.id] || 0), deals: String(actifs.length), pipeline: String(actifs.reduce((s2, d) => s2 + d.montant, 0)),
+        };
+        for (const [cle, sel] of clesActives) if (!sel.includes(vals[cle])) return false;
+      }
+      return (!onlyImport || e.origine === "Import Sellsy (quarantaine)") &&
+        (!q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel));
+    });
+  }, [etat, q, onlyImport, filtres, index]);
+  const nbFiltres = Object.values(filtres).filter((x) => x && x.length > 0).length;
+  // En-tête de colonne avec bouton ▾ ouvrant le filtre (actif = pastille cyan).
+  const enteteFiltre = (cle: string, titre: string, aligneDroite = false) => (
+    <th className={"relative px-4 py-2.5" + (aligneDroite ? " text-right" : "")}>
+      <div className={"flex items-center gap-1" + (aligneDroite ? " justify-end" : "")}>
+        {titre}
+        <button type="button" title={"Filtrer par " + titre}
+          onClick={(ev) => { ev.stopPropagation(); setOuvertCol(ouvertCol === cle ? null : cle); }}
+          className={"rounded px-1 text-[10px] leading-none " + (filtres[cle] && filtres[cle]!.length > 0 && filtres[cle]!.length < (valeursCol[cle]?.length || 0) ? "bg-cyan-100 font-black text-cyan-700" : "text-slate-300 hover:text-slate-500")}>▾</button>
+      </div>
+      {ouvertCol === cle && (
+        <MenuFiltreColonne valeurs={valeursCol[cle] || []} selection={filtres[cle] || (valeursCol[cle] || [])}
+          onAppliquer={(sel) => { setFiltres((f) => { const n = { ...f }; if (sel.length === 0 || sel.length >= (valeursCol[cle] || []).length) delete n[cle]; else n[cle] = sel; return n; }); setOuvertCol(null); }}
+          onFermer={() => setOuvertCol(null)} />
+      )}
+    </th>
+  );
   // ── Tri de la liste (nom / franchiseur / statut / ville) ──
   const RANG_STATUT: Record<string, number> = { Suspect: 0, Prospect: 1, Client: 2 };
   const [tri, setTri] = useState<"nom" | "franchiseur" | "statut" | "ville">("nom");
@@ -4677,6 +4754,7 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
           📥 Uniquement les fiches importées Sellsy (nettoyage progressif à l'usage)
         </label>
         {onlyImport && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-black text-slate-500">{liste.length} fiche(s)</span>}
+        {nbFiltres > 0 && <button onClick={() => setFiltres({})} className="rounded-lg bg-cyan-100 px-2 py-1 text-[11px] font-black text-cyan-700 hover:bg-cyan-200">✕ {nbFiltres} filtre actif{nbFiltres > 1 ? "s" : ""}</button>}
         <span className="flex-1" />
         <select value={tri} onChange={(ev) => setTri(ev.target.value as "nom" | "franchiseur" | "statut" | "ville")}
           className="rounded-lg border border-slate-200 px-2 py-1 text-[11.5px] font-bold text-slate-600">
@@ -4696,13 +4774,14 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
       <table className="w-full min-w-[700px] text-left">
         <thead>
           <tr className="border-b border-slate-100 bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            <th className="px-4 py-2.5">Entreprise</th>
-            <th className="px-4 py-2.5">Statut</th>
-            <th className="px-4 py-2.5">Ville</th>
-            <th className="px-4 py-2.5">Téléphone</th>
-            <th className="px-4 py-2.5">Contacts</th>
-            <th className="px-4 py-2.5">Deals actifs</th>
-            <th className="px-4 py-2.5 text-right">Pipeline</th>
+            {enteteFiltre("nom", "Entreprise")}
+            {enteteFiltre("franchiseur", "Franchiseur")}
+            {enteteFiltre("statut", "Statut")}
+            {enteteFiltre("ville", "Ville")}
+            {enteteFiltre("tel", "Téléphone")}
+            {enteteFiltre("contacts", "Contacts")}
+            {enteteFiltre("deals", "Deals actifs")}
+            {enteteFiltre("pipeline", "Pipeline", true)}
           </tr>
         </thead>
         <tbody>
@@ -4727,6 +4806,7 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
                     </span>
                   </span>
                 </td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-[12px] font-semibold text-slate-600">{e.franchiseur || "—"}</td>
                 {/* Badge coloré du statut : gris = Suspect, bleu = Prospect,
                     vert = Client (comme le cycle de vie HubSpot). */}
                 <td className="whitespace-nowrap px-4 py-2.5">
@@ -4741,10 +4821,10 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
             );
           })}
           {liste.length === 0 && (
-            <tr><td colSpan={7} className="px-4 py-6 text-center text-[12px] text-slate-400">Aucune entreprise trouvée.</td></tr>
+            <tr><td colSpan={8} className="px-4 py-6 text-center text-[12px] text-slate-400">Aucune entreprise trouvée.</td></tr>
           )}
           {liste.length > visible.length && (
-            <tr><td colSpan={7} className="px-4 py-3 text-center text-[11.5px] font-bold text-slate-400">… et {liste.length - visible.length} autres entreprises — affinez la recherche pour les voir.</td></tr>
+            <tr><td colSpan={8} className="px-4 py-3 text-center text-[11.5px] font-bold text-slate-400">… et {liste.length - visible.length} autres entreprises — affinez la recherche pour les voir.</td></tr>
           )}
         </tbody>
       </table>
@@ -6204,5 +6284,6 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
     </div>
   );
 }
+
 
 
