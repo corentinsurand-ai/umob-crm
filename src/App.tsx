@@ -759,7 +759,7 @@ function normaliser(s: Etat): Etat {
       if (!p.cp && a.cp) p.cp = a.cp;
       if (!p.ville && a.ville) p.ville = a.ville;
       if (!p.tel && a.tel) p.tel = a.tel;
-      if (!p.statut || p.statut === "Suspect") p.statut = a.statut;
+      if (a.statut === "Client") p.statut = "Client"; // jamais de rétrogradation : Client prime
       p.notes = [p.notes, a.notes].filter(Boolean).join("\n");
       p.activites = [...(p.activites || gardee.activites || []), ...(a.activites || [])];
       p.contrats = [...(p.contrats || gardee.contrats || []), ...(a.contrats || [])];
