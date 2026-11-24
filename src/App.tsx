@@ -4637,8 +4637,38 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
   const liste = useMemo(() => etat.entreprises.filter((e) =>
     (!onlyImport || e.origine === "Import Sellsy (quarantaine)") &&
     (!q || [e.nom, e.nomCommercial, e.statut, e.secteur, e.ville].join(" ").toLowerCase().includes(q) || telCorrespond(q, e.tel))), [etat, q, onlyImport]);
+  // ── Tri de la liste (nom / franchiseur / statut / ville) ──
+  const RANG_STATUT: Record<string, number> = { Suspect: 0, Prospect: 1, Client: 2 };
+  const [tri, setTri] = useState<"nom" | "franchiseur" | "statut" | "ville">("nom");
+  const listeTriee = useMemo(() => {
+    const arr = [...liste];
+    const cmpNom = (a: Entreprise, b: Entreprise) => (a.nomCommercial || a.nom).localeCompare(b.nomCommercial || b.nom, "fr");
+    if (tri === "franchiseur") arr.sort((a, b) => (a.franchiseur || "ZZZ").localeCompare(b.franchiseur || "ZZZ", "fr") || cmpNom(a, b));
+    else if (tri === "statut") arr.sort((a, b) => (RANG_STATUT[a.statut] ?? 9) - (RANG_STATUT[b.statut] ?? 9) || cmpNom(a, b));
+    else if (tri === "ville") arr.sort((a, b) => (a.ville || "ZZZ").localeCompare(b.ville || "ZZZ", "fr") || cmpNom(a, b));
+    else arr.sort(cmpNom);
+    return arr;
+  }, [liste, tri]);
+  // ── Export Excel (SpreadsheetML 2003 : .xls ouvert nativement par Excel,
+  //    UTF-8, sans librairie externe) de la liste FILTRÉE + TRIÉE complète ──
+  const exporterExcel = () => {
+    const esc = (x: string) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const cols = ["Nom", "Nom commercial", "Statut", "Franchiseur", "Secteur", "Activité", "Ville", "CP", "Adresse", "SIREN", "Téléphone", "Mode de livraison", "Risque", "Nb contacts", "Deals actifs", "Pipeline k€", "Origine", "Notes"];
+    const row = (cells: string[]) => "<Row>" + cells.map((c) => '<Cell><Data ss:Type="String">' + esc(c) + "</Data></Cell>").join("") + "</Row>";
+    const body = [row(cols), ...listeTriee.map((e) => {
+      const actifs = index.dealsActifs[e.id] || [];
+      return row([e.nom, e.nomCommercial, e.statut, e.franchiseur, e.secteur, e.activite, e.ville, e.cp || "", e.adresse || "", e.siren || "", e.tel, e.modeLivraison, e.risque, String(index.nbContacts[e.id] || 0), String(actifs.length), String(actifs.reduce((s2, d) => s2 + d.montant, 0)), e.origine || "", (e.notes || "").replace(/\n/g, " ⏎ ")]);
+    })].join("\n");
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Entreprises"><Table>' + body + "</Table></Worksheet></Workbook>";
+    const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "umob-entreprises-" + isoParis() + ".xls";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  };
   // Cap d'affichage : au-delà de 300 lignes, inviter à affiner la recherche.
-  const visible = liste.slice(0, 300);
+  const visible = listeTriee.slice(0, 300);
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2">
@@ -4647,6 +4677,18 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
           📥 Uniquement les fiches importées Sellsy (nettoyage progressif à l'usage)
         </label>
         {onlyImport && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-black text-slate-500">{liste.length} fiche(s)</span>}
+        <span className="flex-1" />
+        <select value={tri} onChange={(ev) => setTri(ev.target.value as "nom" | "franchiseur" | "statut" | "ville")}
+          className="rounded-lg border border-slate-200 px-2 py-1 text-[11.5px] font-bold text-slate-600">
+          <option value="nom">Tri : Nom A→Z</option>
+          <option value="franchiseur">Tri : Franchiseur</option>
+          <option value="statut">Tri : Statut (Suspect→Client)</option>
+          <option value="ville">Tri : Ville</option>
+        </select>
+        <button onClick={exporterExcel}
+          className="rounded-lg bg-slate-800 px-2.5 py-1 text-[11.5px] font-black text-white hover:bg-slate-700">
+          📥 Exporter Excel ({listeTriee.length})
+        </button>
       </div>
       {/* Défilement horizontal si le panneau est étroit : les colonnes gardent
           une largeur lisible (min-w + whitespace-nowrap) au lieu de s'écraser. */}
@@ -6162,4 +6204,5 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
     </div>
   );
 }
+
 
