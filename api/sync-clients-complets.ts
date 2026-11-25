@@ -221,7 +221,7 @@ export default async function handler(req: any, res: any) {
       const doublonsTel = [...byTel.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ tel: k, nb: v.length, noms: v.map((e) => e.nom || e.nomCommercial), ids: v.map((e) => e.id) }));
       return res.status(200).json({
         total: ents.length,
-        doublonsNom: doublonsNom.length, detailNom: doublonsNom.slice(0, 30),
+        doublonsNom: doublonsNom.length, detailNom: doublonsNom.slice(0, 30).map((d) => ({ cle: d.cle, fiches: d.noms.map((n, k) => ({ nom: n, id: d.ids[k], adresse: (byNom.get(d.cle)![k] as any).adresse || "", cp: (byNom.get(d.cle)![k] as any).cp || "", ville: (byNom.get(d.cle)![k] as any).ville || "", siren: (byNom.get(d.cle)![k] as any).siren || "", tel: (byNom.get(d.cle)![k] as any).tel || "", statut: (byNom.get(d.cle)![k] as any).statut || "" })) })),
         doublonsSiren: doublonsSiren.length, detailSiren: doublonsSiren.slice(0, 30),
         doublonsTel: doublonsTel.length, detailTel: doublonsTel.slice(0, 30),
       });
