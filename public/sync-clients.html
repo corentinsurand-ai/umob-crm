@@ -4,37 +4,71 @@
 <meta charset="utf-8">
 <title>Sync Clients Complets → CRM</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
   h1 { font-size: 20px; }
-  .box { border: 2px dashed #ccc; border-radius: 8px; padding: 24px; text-align: center; margin: 16px 0; }
   button { background: #2563eb; color: #fff; border: 0; padding: 12px 24px; border-radius: 6px; font-size: 15px; cursor: pointer; }
   button:disabled { background: #9ca3af; }
-  pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; max-height: 300px; }
-  .ok { color: #16a34a; } .err { color: #dc2626; }
+  pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; max-height: 400px; white-space: pre-wrap; }
+  .ok { color: #16a34a; } .err { color: #dc2626; } .info { color: #2563eb; }
+  #bar { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; margin: 12px 0; display: none; }
+  #bar > div { height: 100%; background: #2563eb; width: 0%; transition: width .3s; }
 </style>
 </head>
 <body>
 <h1>🔄 Synchroniser « Clients Complets » → CRM</h1>
-<p>1. Ouvre le Google Sheet « Infos Service Client » → onglet <b>Clients Complets</b> → <b>Fichier → Télécharger → Valeurs CSV (.csv)</b></p>
-<p>2. Sélectionne le fichier CSV téléchargé ci-dessous :</p>
-<div class="box">
-  <input type="file" id="f" accept=".csv,text/csv">
-</div>
-<button id="b" disabled>Lancer la synchro</button>
-<pre id="out">En attente…</pre>
+<p>Lit automatiquement l'onglet <b>Clients Complets</b> du Google Sheet « Infos Service Client », puis pousse les clients dans le CRM (sans doublon).</p>
+<button id="b">▶ Lancer la synchro</button>
+<div id="bar"><div></div></div>
+<pre id="out">Prêt. Clique sur le bouton.</pre>
 <script>
-const f = document.getElementById('f'), b = document.getElementById('b'), out = document.getElementById('out');
-f.onchange = () => { b.disabled = !f.files.length; };
+const SHEET = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
+const out = document.getElementById('out'), b = document.getElementById('b'), bar = document.getElementById('bar'), barIn = bar.querySelector('div');
+
+function parserCSV(txt) {
+  const lignes = []; let cur = [], f = "", q = false; const GL = String.fromCharCode(34);
+  for (let i = 0; i < txt.length; i++) { const ch = txt[i];
+    if (q) { if (ch === GL) { if (txt[i+1] === GL) { f += GL; i++; } else q = false; } else f += ch; }
+    else if (ch === GL) q = true;
+    else if (ch === ",") { cur.push(f); f = ""; }
+    else if (ch === "
+") { cur.push(f); lignes.push(cur); cur = []; f = ""; }
+    else if (ch !== "") f += ch; }
+  if (f !== "" || cur.length) { cur.push(f); lignes.push(cur); }
+  return lignes;
+}
+const log = (msg, cls) => { out.textContent += "\n" + msg; out.className = cls || ''; window.scrollTo(0, document.body.scrollHeight); };
+
+async function lireToutSheet() {
+  const vues = new Set(); const toutes = []; let avecEntete = false; let off = 0; let page = 0;
+  while (off < 5000) {
+    const rep = await fetch(SHEET + "%20limit%20100%20offset%20" + off);
+    if (!rep.ok) throw new Error("HTTP " + rep.status + " offset " + off);
+    const p = parserCSV(await rep.text());
+    if (!p.length) break;
+    if (!avecEntete) { toutes.push(p[0]); avecEntete = true; }
+    let nouvelles = 0;
+    for (const l of p.slice(1)) { const cle = JSON.stringify(l); if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; } }
+    const nb = p.length - 1;
+    if (!nb || !nouvelles) break;
+    off += nb; page++;
+    bar.style.display = 'block'; barIn.style.width = Math.min(100, off / 2400 * 100) + '%';
+    log("… " + toutes.length + " lignes lues (page " + page + ")", 'info');
+  }
+  if (!avecEntete) throw new Error("Sheet vide");
+  return toutes.map(l => l.map(c => c.includes(',') || c.includes('"') || c.includes('\n') ? '"' + c.replace(/"/g, '""') + '"' : c).join(',')).join("\n");
+}
+
 b.onclick = async () => {
-  b.disabled = true; out.textContent = 'Envoi du CSV…';
+  b.disabled = true; out.textContent = ''; bar.style.display = 'block';
   try {
-    const csv = await f.files[0].text();
-    out.textContent = 'CSV envoyé (' + csv.length + ' caractères), traitement côté serveur…';
+    log("📥 Lecture du Google Sheet…", 'info');
+    const csv = await lireToutSheet();
+    log("✅ Sheet lu : " + csv.length + " caractères. Envoi au serveur…", 'info');
     const r = await fetch('/api/sync-clients-complets', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv });
     const j = await r.json();
-    out.textContent = JSON.stringify(j, null, 2);
-    out.className = j.ok ? 'ok' : 'err';
-  } catch (e) { out.textContent = 'ERREUR: ' + e; out.className = 'err'; }
+    log("📊 RAPPORT :", j.ok ? 'ok' : 'err');
+    log(JSON.stringify(j, null, 2), j.ok ? 'ok' : 'err');
+  } catch (e) { log("❌ ERREUR: " + e, 'err'); }
   b.disabled = false;
 };
 </script>
