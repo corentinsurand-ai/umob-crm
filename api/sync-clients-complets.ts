@@ -72,6 +72,9 @@ const parserCSV = (txt: string): string[][] => {
 };
 const norme = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 const normTel = (t: string) => (t || "").replace(/\D/g, "");
+// Un portable (06/07) n'a pas sa place dans « Téléphone entreprise » (règle Corentin :
+// le mobile vit sur la fiche contact).
+const estMobileFr = (t: string) => { const d = normTel(t || ""); const nat = d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d; return nat.length === 10 && nat.charAt(0) === "0" && (nat.charAt(1) === "6" || nat.charAt(1) === "7"); };
 const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
 const MODELE_DEPUIS: [string, string][] = [["infinitypro","Infinity Pro"],["compactpro","Compact Pro"],["dailypro","Daily Pro"]];
 const modeleDepuis = (p: string) => { const n = norme(p); const t = MODELE_DEPUIS.find(([k]) => n.includes(k)); return t ? t[1] : ""; };
@@ -226,6 +229,40 @@ export default async function handler(req: any, res: any) {
         doublonsTel: doublonsTel.length, detailTel: doublonsTel.slice(0, 30),
       });
     }
+    // ── Nettoyage « Téléphone entreprise » : déplace les portables (06/07) vers la
+    //    fiche contact rattachée (si son tel est vide), puis vide le champ entreprise.
+    //    ?test=nettoyerTel = dry-run (rapport seul) · ?run=nettoyerTel = écrit en base. ──
+    if (q.get("test") === "nettoyerTel" || q.get("run") === "nettoyerTel") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      let mobiles = 0, deplaces = 0, enNote = 0, sansContact = 0;
+      const exemples: any[] = [];
+      for (const e of ents) {
+        if (!estMobileFr(e.tel || "")) continue;
+        mobiles++;
+        const telBrut = String(e.tel || "").trim();
+        const lis = contacts.filter((c) => (c.entrepriseIds || []).includes(e.id));
+        let deplace = false;
+        for (const c of lis) {
+          if (!normTel(c.tel || "")) {
+            c.tel = telBrut; deplaces++; deplace = true;
+            if (exemples.length < 20) exemples.push({ nom: e.nom || e.nomCommercial, tel: telBrut, versContact: (c.prenom + " " + c.nom).trim() });
+            break;
+          }
+        }
+        if (!deplace) {
+          e.notes = (e.notes ? e.notes + "\n" : "") + (lis.length ? "Ancien tel entreprise (mobile, contact déjà renseigné) : " + telBrut : "Tel mobile sans contact rattaché : " + telBrut);
+          if (lis.length) enNote++; else sansContact++;
+        }
+        e.tel = "";
+      }
+      const rapport: any = { ok: true, entreprisesTotales: ents.length, mobilesEnTelEntreprise: mobiles, deplacesSurContact: deplaces, gardesEnNote: enNote, sansContactLie: sansContact, exemples, date: new Date().toISOString() };
+      if (q.get("run") === "nettoyerTel") { await ecrireEtat(supabaseUrl, supaKey, etat); rapport.ecrit = true; }
+      else rapport.ecrit = false;
+      return res.status(200).json(rapport);
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
@@ -281,7 +318,7 @@ export default async function handler(req: any, res: any) {
         const id = "e-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
         ents.push({
           id, nom: cl.nom, nomCommercial: cl.nom, secteur: "", ville: cl.ville || "", site: "",
-          tel: cl.telFixe || cl.mobile || "", franchiseur: "", modeLivraison: "", activite: "",
+          tel: cl.telFixe || "", // jamais de mobile dans « Téléphone entreprise » : le portable va sur la fiche contact franchiseur: "", modeLivraison: "", activite: "",
           statut: estActif ? STATUT_CLIENT : "Suspect",
           notes: "Code Sheet: " + cl.code + (statutSheet ? "\nStatut Sheet: " + statutSheet : ""),
           activites: [], siren: cl.siren || "", adresse: cl.adresse || "", cp: cl.cp || "",

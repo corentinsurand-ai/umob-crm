@@ -95,6 +95,10 @@ const formaterTelFr = (t: any): string => {
 // chiffres et on équivalise le préfixe international 33 ↔ 0 national :
 // « 04 78 22 10 87 », « 04.78.22.10.87 », « 0478221087 » et « +33478221087 »
 // sont donc tous interchangeables, côté numéro stocké ET côté recherche tapée.
+// Un portable (06/07) n'a pas sa place dans « Téléphone entreprise » (règle Corentin :
+// le mobile vit sur la fiche contact). À l'import Sellsy, on ne garde que les fixes.
+const estMobileFr = (t: string) => { const d = normTel(t || ""); const nat = d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d; return nat.length === 10 && nat.charAt(0) === "0" && (nat.charAt(1) === "6" || nat.charAt(1) === "7"); };
+const telEntrepriseDepuis = (t: string) => { const f = formaterTelFr(t || ""); return estMobileFr(f) ? "" : f; };
 const normeTelRecherche = (t: string): string => {
   const d = (t || "").replace(/\D/g, "");
   return d.startsWith("33") && d.length === 11 ? "0" + d.slice(2) : d;
@@ -6029,7 +6033,7 @@ export default function App() {
           const fusion = { ...x,
             statut: (en.statut === "Client" ? "Client" : x.statut),
             ville: x.ville || en.ville || "", cp: x.cp || en.cp || "", adresse: x.adresse || en.adresse || "",
-            siren: x.siren || en.siren || "", tel: x.tel || formaterTelFr(en.tel || ""),
+            siren: x.siren || en.siren || "", tel: x.tel || telEntrepriseDepuis(en.tel || ""),
             modeLivraison: x.modeLivraison || en.modeLivraison || "",
             risque: x.risque || en.risque || "",
             contrats: contratsFin, activites: acts,
@@ -6045,7 +6049,7 @@ export default function App() {
         const modeles = Array.from(new Set(contrats.flatMap((c) => (c.modele || "").split(" · ").map((s) => s.trim()).filter(Boolean))));
         const nv: Entreprise = {
           id: entId, nom: en.nom || "Sans nom", nomCommercial: "", secteur: "", ville: en.ville || "", site: "",
-          tel: formaterTelFr(en.tel || ""), franchiseur: "", modeLivraison: en.modeLivraison || "Scooter électrique",
+          tel: telEntrepriseDepuis(en.tel || ""), franchiseur: "", modeLivraison: en.modeLivraison || "Scooter électrique",
           activite: "", statut: ((en.statut as Statut) || "Suspect"), notes: en.notes || "", activites,
           modeles, contrats, risque: en.risque || "", origine: "Import Sellsy (quarantaine)",
           // Champs Sheet (SIREN/adresse/CP) + listes devis : repris tels quels,
