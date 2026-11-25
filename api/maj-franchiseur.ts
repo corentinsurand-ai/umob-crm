@@ -296,6 +296,25 @@ function appliquerImport(etat: any, fiches: any[], tagLot: string) {
   return resume;
 }
 
+function parseCSV(text: string): string[][] {
+  const rows: string[][] = [];
+  let cur: string[] = [], cell = "", inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQ = false; }
+      else cell += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ",") { cur.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      cur.push(cell); cell = ""; rows.push(cur); cur = [];
+    } else cell += ch;
+  }
+  if (cell !== "" || cur.length) { cur.push(cell); rows.push(cur); }
+  return rows;
+}
+
 export default async function handler(req: any, res: any) {
   const u = new URL(req.url || "/", "http://localhost");
   if (u.searchParams.get("debug") === "taille") {
@@ -411,10 +430,37 @@ export default async function handler(req: any, res: any) {
     if (match !== "blob" && avant !== "Domino's Pizza") { e.franchiseur = "Domino's Pizza"; modifiees++; }
   }
 
+  // ── synchro statut depuis le Sheet « Clients Complets » (Actif → Client) ──
+  let statSheet: any = null;
+  if (u.searchParams.get("statutsheet") === "1") {
+    const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
+    const txt = await (await fetch(SHEET_CSV)).text();
+    const rowsCsv = parseCSV(txt);
+    const mapStatut: Record<string, string> = {};
+    for (const r of rowsCsv) {
+      if (!r || r.length < 6) continue;
+      const siren = (r[5] || "").replace(/\D/g, "");
+      const st = (r[2] || "").trim();
+      if (siren.length === 9 && st) { if (!mapStatut[siren] || st === "Actif") mapStatut[siren] = st; }
+    }
+    let majClient = 0;
+    const details: any[] = [];
+    for (const e of etat.entreprises || []) {
+      const s = digits(e.siren);
+      if (!s) continue;
+      const st = mapStatut[s] || mapStatut[s.replace(/^0+/, "")];
+      if (st === "Actif" && e.statut !== "Client") {
+        details.push({ nom: e.nom, nomCommercial: e.nomCommercial || "", siren: s, avant: e.statut || "" });
+        e.statut = "Client"; majClient++;
+      }
+    }
+    statSheet = { sirensAvecStatut: Object.keys(mapStatut).length, majClient, details: details.slice(0, 300) };
+  }
+
   const dry = u.searchParams.get("dry") === "1";
   if (dry) {
     return res.status(200).json({ ok: true, dry: true, importv8, lots: lotsResume, total: (etat.entreprises || []).length,
-      matches: rapport.length, dontSiren: rapport.filter((r: any) => r.match === "siren").length, blob, modifieesPrevues: modifiees,
+      matches: rapport.length, dontSiren: rapport.filter((r: any) => r.match === "siren").length, blob, modifieesPrevues: modifiees, statSheet,
       rapport: rapport.slice(0, 400) });
   }
 
@@ -425,5 +471,5 @@ export default async function handler(req: any, res: any) {
   }
   if (!ecrit) return res.status(500).json({ ok: false, erreur: "ecriture", detail: errEcrit, importv8, lots: lotsResume });
   return res.status(200).json({ ok: true, dry: false, importv8, lots: lotsResume, total: (etat.entreprises || []).length,
-    matches: rapport.length, modifiees, rapport: rapport.slice(0, 400) });
+    matches: rapport.length, modifiees, statSheet, rapport: rapport.slice(0, 400) });
 }
