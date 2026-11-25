@@ -1,20 +1,68 @@
-// ── /api/sync-clients-complets ──────────────────────────────────────────────
+// ── /api/sync-clients-complets (autonome, sans import) ─────────────────────
 // Synchronise l'onglet « Clients Complets » du Google Sheet « Infos Service
-// Client » vers le CRM (table crm_etat, état shardé).
-//   - Si une entreprise du CRM correspond (nom normalisé ou téléphone),
-//     elle est MISE À JOUR (statut, flotte, contrats, risque, notes).
-//   - Sinon elle est CRÉÉE. JAMAIS de doublon.
-// Appel : GET ?run=1  → synchro complète
-//         GET ?test=sheet → lit 1 page du Sheet (diagnostic)
-//         GET ?test=full  → lit tout le Sheet, compte les clients (diagnostic)
-//         GET ?test=etat  → lit l'état CRM, compte les entreprises (diagnostic)
+// Client » vers le CRM (table crm_etat shardé). Anti-doublon par nom/tel.
+//   GET ?run=1        → synchro complète
+//   GET ?test=sheet   → 1 page du Sheet (diagnostic)
+//   GET ?test=full    → tout le Sheet, compte les clients
+//   GET ?test=etat    → état CRM, compte les entreprises
 // ────────────────────────────────────────────────────────────────────────────
 
-import { lireEtat, ecrireEtat } from "./etat-shards";
+// ── Shard helpers (copié depuis api/etat-shards.ts pour rester autonome) ────
+const SHARD_TAILLE = 1_000_000;
+function decouperShards(etat: any) {
+  const ents: any[] = Array.isArray(etat?.entreprises) ? etat.entreprises : [];
+  const base = { ...etat, entreprises: [] as any[] };
+  const shards: { id: string; data: any }[] = [];
+  let cur: any[] = [], t = 0, n = 0;
+  for (const e of ents) {
+    const s = JSON.stringify(e).length;
+    if (cur.length && t + s > SHARD_TAILLE) { shards.push({ id: "ent-" + String(n).padStart(4, "0"), data: { entreprises: cur } }); n++; cur = []; t = 0; }
+    cur.push(e); t += s;
+  }
+  if (cur.length) shards.push({ id: "ent-" + String(n).padStart(4, "0"), data: { entreprises: cur } });
+  return { base, shards };
+}
+function baseRest(sup: string) { return sup.replace(/\/+$/, "").replace(/\/rest\/v1$/, ""); }
+async function lireEtat(sup: string, cle: string) {
+  const base = baseRest(sup);
+  const h = { apikey: cle, Authorization: "Bearer " + cle, "Content-Type": "application/json" };
+  const r = await fetch(base + "/rest/v1/crm_etat?select=id,data,maj&or=(id.eq.main,id.like.ent-%25)", { headers: h });
+  if (!r.ok) throw new Error("lecture crm_etat " + r.status + " " + (await r.text()).slice(0, 200));
+  const rows: any[] = await r.json();
+  const main = rows.find((x) => x.id === "main") || rows[0];
+  if (!main || !main.data) throw new Error("ligne main introuvable");
+  const etat: any = main.data;
+  const vus = new Set<string>(); const ents: any[] = [];
+  const ajouter = (liste: any[]) => { for (const e of liste || []) if (e && e.id && !vus.has(e.id)) { vus.add(e.id); ents.push(e); } };
+  ajouter(Array.isArray(etat.entreprises) ? etat.entreprises : []);
+  const shards = rows.filter((x) => x.id !== "main" && String(x.id).startsWith("ent-")).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  for (const s of shards) ajouter((s.data || {}).entreprises);
+  etat.entreprises = ents;
+  return { etat, maj: main.maj || null, nbShards: shards.length };
+}
+async function ecrireEtat(sup: string, cle: string, etat: any) {
+  const base = baseRest(sup);
+  const h = { apikey: cle, Authorization: "Bearer " + cle, "Content-Type": "application/json" };
+  const { base: baseData, shards } = decouperShards(etat);
+  const maj = new Date().toISOString();
+  const r = await fetch(base + "/rest/v1/crm_etat?id=eq.main", { method: "PATCH", headers: { ...h, Prefer: "return=minimal" }, body: JSON.stringify({ data: baseData, maj }) });
+  if (!r.ok) throw new Error("ecriture main " + r.status + " " + (await r.text()).slice(0, 200));
+  for (const s of shards) {
+    const rr = await fetch(base + "/rest/v1/crm_etat", { method: "POST", headers: { ...h, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: s.id, data: s.data, maj }) });
+    if (!rr.ok) throw new Error("ecriture shard " + s.id + " " + rr.status + " " + (await rr.text()).slice(0, 200));
+  }
+  const rl = await fetch(base + "/rest/v1/crm_etat?select=id&id=like.ent-%25", { headers: h });
+  const exist: any[] = rl.ok ? await rl.json() : [];
+  const gards = new Set(shards.map((s) => s.id));
+  const stale = exist.map((x) => x.id).filter((id) => !gards.has(id));
+  if (stale.length) {
+    const rd = await fetch(base + '/rest/v1/crm_etat?id=in.("' + stale.join('","') + '")', { method: "DELETE", headers: h });
+    if (!rd.ok) throw new Error("cleanup shards " + rd.status);
+  }
+  return { nbShards: shards.length, staleSupprimes: stale.length };
+}
 
-const UA = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36" };
-
-// ── Mini-parseur CSV (identique à src/App.tsx) ──────────────────────────────
+// ── CSV + Sheet ──────────────────────────────────────────────────────────────
 const parserCSV = (txt: string): string[][] => {
   const lignes: string[][] = []; let cur: string[] = []; let f = ""; let q = false;
   const GL = String.fromCharCode(34);
@@ -27,25 +75,16 @@ const parserCSV = (txt: string): string[][] => {
   if (f !== "" || cur.length) { cur.push(f); lignes.push(cur); }
   return lignes;
 };
-
 const URL_SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
+const UA = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" };
 
 const norme = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 const normTel = (t: string) => (t || "").replace(/\D/g, "");
 const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-
-const MODELE_DEPUIS: [string, string][] = [
-  ["infinitypro", "Infinity Pro"], ["compactpro", "Compact Pro"], ["dailypro", "Daily Pro"],
-];
-const modeleDepuis = (p: string): string => {
-  const n = norme(p);
-  const t = MODELE_DEPUIS.find(([k]) => n.includes(k));
-  return t ? t[1] : "";
-};
-
-const normRisque = (s: string): string => {
-  const n = norme(s);
-  if (!n) return "";
+const MODELE_DEPUIS: [string, string][] = [["infinitypro","Infinity Pro"],["compactpro","Compact Pro"],["dailypro","Daily Pro"]];
+const modeleDepuis = (p: string) => { const n = norme(p); const t = MODELE_DEPUIS.find(([k]) => n.includes(k)); return t ? t[1] : ""; };
+const normRisque = (s: string) => {
+  const n = norme(s); if (!n) return "";
   if (n.includes("bloque") || n.includes("block")) return "Bloqué";
   if (n.includes("defaut") || n.includes("impaye")) return "Impayé";
   if (n.includes("proced") || n.includes("collective") || n.includes("redressement") || n.includes("liquidation")) return "Procédure collective";
@@ -55,39 +94,32 @@ const normRisque = (s: string): string => {
 };
 
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string; libelle?: string; locam?: string }
-interface ContactSheet { prenom: string; nom: string; role: string; tel: string; email: string }
 interface ClientSheet {
   code: string; nom: string; ville: string; adresse?: string; cp?: string;
   packs: string; dateDebut: string; dateFin: string; nbVehicules: string;
   contrats: string; immats: string; risque: string; modeles: string[];
-  lignes: ContratLigne[]; contacts: ContactSheet[]; telFixe: string; mobile: string; email: string;
+  lignes: ContratLigne[]; telFixe: string; mobile: string; email: string;
 }
 
-// ── Lecture paginée du Sheet ─────────────────────────────────────────────────
-const lireToutSheet = async (): Promise<string[][]> => {
-  const vues = new Set<string>();
-  const toutes: string[][] = [];
-  let avecEntete = false;
+async function lireToutSheet(): Promise<string[][]> {
+  const vues = new Set<string>(); const toutes: string[][] = []; let avecEntete = false;
   for (let off = 0; off < 5000;) {
     const rep = await fetch(URL_SHEET_CSV + "%20limit%20100%20offset%20" + off, { headers: UA });
-    if (!rep.ok) throw new Error("HTTP " + rep.status + " offset " + off + " body=" + (await rep.text()).slice(0, 200));
+    if (!rep.ok) throw new Error("HTTP " + rep.status + " offset " + off);
     const page = parserCSV(await rep.text());
     if (page.length === 0) break;
     if (!avecEntete) { toutes.push(page[0]); avecEntete = true; }
     let nouvelles = 0;
-    for (const l of page.slice(1)) {
-      const cle = JSON.stringify(l);
-      if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; }
-    }
+    for (const l of page.slice(1)) { const cle = JSON.stringify(l); if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; } }
     const nb = page.length - 1;
     if (nb === 0 || nouvelles === 0) break;
     off += nb;
   }
   if (!avecEntete) throw new Error("Sheet vide");
   return toutes;
-};
+}
 
-const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
+async function chargerClientsSheet(): Promise<ClientSheet[]> {
   const lignes = await lireToutSheet();
   const tete = (lignes[0] || []).map(normH);
   const col = (n: string) => tete.findIndex((h) => h.startsWith(normH(n)));
@@ -99,16 +131,13 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
     cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Risque"),
     cContact = col("Contact principal"), cFonction = col("Fonction"), cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
     cImp = col("Impayes"), cProc = col("Procedure collective");
-  if (cCode < 0 || cNom < 0) throw new Error("Colonnes Code client / Nom client introuvables. Headers=" + JSON.stringify(tete));
-
+  if (cCode < 0 || cNom < 0) throw new Error("Colonnes introuvables. Headers=" + JSON.stringify(tete));
   const clients: ClientSheet[] = [];
   const idx = new Map<string, ClientSheet>();
-  const prem = new Map<string, number>();
-  const der = new Map<string, number>();
+  const prem = new Map<string, number>(); const der = new Map<string, number>();
   const cleDate = (d: string) => { const p = d.trim().split("/").map(Number); return p.length === 3 ? p[2] * 10000 + p[1] * 100 + p[0] : NaN; };
   const p2 = (n: number) => (n < 10 ? "0" : "") + n;
   const fmtDate = (k: number) => p2(k % 100) + "/" + p2(Math.floor(k / 100) % 100) + "/" + Math.floor(k / 10000);
-
   for (const l of lignes.slice(1)) {
     const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
     const code = g(cCode); if (!code) continue;
@@ -118,8 +147,7 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
         code, nom: g(cNom), ville: mAdr ? mAdr[3].trim() : g(cVille),
         adresse: mAdr ? mAdr[1].trim().replace(/,\s*$/, "") : adr, cp: mAdr ? mAdr[2] : "",
         packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "",
-        risque: "", modeles: [], lignes: [], contacts: [],
-        telFixe: g(cTelFixe), mobile: g(cMobile), email: g(cMail),
+        risque: "", modeles: [], lignes: [], telFixe: g(cTelFixe), mobile: g(cMobile), email: g(cMail),
       };
       idx.set(code, c); clients.push(c);
     }
@@ -134,18 +162,12 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
     const rq = normRisque(g(cRq)); if (rq && !c.risque) c.risque = rq;
     else if (!c.risque && g(cImp).toLowerCase() === "true") c.risque = "Impayé";
     else if (!c.risque && g(cProc)) c.risque = "Procédure collective";
-    const principal = g(cContact); const tk = principal.split(/\s+/).filter(Boolean);
-    const cp = tk.length > 1 ? tk[0] : "", cn = tk.length > 1 ? tk.slice(1).join(" ") : principal;
-    const telC = g(cMobile) || g(cTelFixe);
-    if ((cp || cn) && !c.contacts.some((x) => x.prenom === cp && x.nom === cn && x.tel === telC && x.email === g(cMail))) {
-      c.contacts.push({ prenom: cp, nom: cn, role: g(cFonction), tel: telC, email: g(cMail) });
-    }
   }
   for (const c of clients) c.nbVehicules = c.immats ? String(c.immats.split(",").map((s) => s.trim()).filter(Boolean).length) : "";
   return clients;
-};
+}
 
-const matchEntreprise = (client: ClientSheet, ents: any[]): number => {
+function matchEntreprise(client: ClientSheet, ents: any[]): number {
   const nClient = norme(client.nom);
   if (!nClient) return -1;
   for (let i = 0; i < ents.length; i++) {
@@ -155,105 +177,71 @@ const matchEntreprise = (client: ClientSheet, ents: any[]): number => {
   const telsSheet = [normTel(client.telFixe), normTel(client.mobile)].filter((t) => t.length >= 9);
   if (telsSheet.length) {
     for (let i = 0; i < ents.length; i++) {
-      const e = ents[i];
-      if (telsSheet.some((ts) => normTel(e.tel || "") === ts)) return i;
+      if (telsSheet.some((ts) => normTel(ents[i].tel || "") === ts)) return i;
     }
   }
   for (let i = 0; i < ents.length; i++) {
-    const e = ents[i];
-    const nE = norme(e.nom || "") || norme(e.nomCommercial || "");
+    const nE = norme(ents[i].nom || "") || norme(ents[i].nomCommercial || "");
     if (nE.length >= 5 && nClient.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i;
   }
   return -1;
-};
+}
 
 const STATUT_CLIENT = "Client";
 
-// ── Handler ──────────────────────────────────────────────────────────────────
 export default async function handler(req: any, res: any) {
-  const base = new URL(req.url || "/", "http://localhost");
-  const q = base.searchParams;
-  const secret = process.env.SYNC_SECRET;
-  if (secret && q.get("secret") !== secret) {
-    return res.status(403).json({ erreur: "secret invalide" });
-  }
+  try {
+    const base = new URL(req.url || "/", "http://localhost");
+    const q = base.searchParams;
+    const secret = process.env.SYNC_SECRET;
+    if (secret && q.get("secret") !== secret) return res.status(403).json({ erreur: "secret invalide" });
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseUrl = process.env.SUPABASE_URL || "";
+    const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-  // ── Mode diagnostic : 1 page du Sheet ──
-  if (q.get("test") === "sheet") {
-    try {
+    if (q.get("test") === "sheet") {
       const rep = await fetch(URL_SHEET_CSV + "%20limit%205%20offset%200", { headers: UA });
       const txt = await rep.text();
       const page = parserCSV(txt);
-      return res.status(200).json({
-        ok: rep.ok, status: rep.status, tailleTexte: txt.length,
-        nbLignes: page.length, headers: page[0] || [],
-        ligne1: page[1] || null, ligne2: page[2] || null,
-      });
-    } catch (e: any) { return res.status(500).json({ erreur: String(e) }); }
-  }
-
-  // ── Mode diagnostic : tout le Sheet, compte les clients ──
-  if (q.get("test") === "full") {
-    try {
+      return res.status(200).json({ ok: rep.ok, status: rep.status, tailleTexte: txt.length, nbLignes: page.length, headers: page[0] || [], ligne1: page[1] || null });
+    }
+    if (q.get("test") === "full") {
       const t0 = Date.now();
       const clients = await chargerClientsSheet();
       return res.status(200).json({ ok: true, clients: clients.length, dureeMs: Date.now() - t0, premier: clients[0] ? { code: clients[0].code, nom: clients[0].nom } : null });
-    } catch (e: any) { return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
-  }
-
-  // ── Mode diagnostic : état CRM ──
-  if (q.get("test") === "etat") {
-    if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante", SUPABASE_URL: !!supabaseUrl, SUPABASE_SERVICE_ROLE_KEY: !!supaKey });
-    try {
+    }
+    if (q.get("test") === "etat") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante", SUPABASE_URL: !!supabaseUrl, KEY: !!supaKey });
       const t0 = Date.now();
-      const { etat, nbShards } = await lireEtat(String(supabaseUrl), String(supaKey));
-      return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards, dureeMs: Date.now() - t0, clesEtat: Object.keys(etat || {}).slice(0, 20) });
-    } catch (e: any) { return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
-  }
+      const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
+      return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards, dureeMs: Date.now() - t0 });
+    }
+    if (req.method === "GET" && !q.get("run")) {
+      return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "?run=1 · ?test=sheet|full|etat", SUPABASE_URL: !!supabaseUrl, KEY: !!supaKey, SYNC_SECRET: !!secret });
+    }
+    if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquantes" });
 
-  // ── Mode info (défaut) ──
-  if (req.method === "GET" && !q.get("run")) {
-    return res.status(200).json({
-      endpoint: "/api/sync-clients-complets",
-      usage: "GET ?run=1 (synchro) · ?test=sheet | ?test=full | ?test=etat (diagnostics)",
-      SUPABASE_URL: !!supabaseUrl, SUPABASE_SERVICE_ROLE_KEY: !!supaKey, SYNC_SECRET_DEFINI: !!secret,
-    });
-  }
-
-  if (!supabaseUrl || !supaKey) {
-    return res.status(503).json({ erreur: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquantes" });
-  }
-
-  // ── Synchro complète ──
-  try {
     const t0 = Date.now();
     const clientsSheet = await chargerClientsSheet();
-    console.log("SYNC: clients sheet =", clientsSheet.length, "en", Date.now() - t0, "ms");
-
-    const { etat, nbShards } = await lireEtat(String(supabaseUrl), String(supaKey));
+    console.log("SYNC: sheet clients =", clientsSheet.length, Date.now() - t0, "ms");
+    const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
     if (!etat || !Array.isArray(etat.entreprises)) return res.status(404).json({ erreur: "crm_etat introuvable" });
     const ents: any[] = etat.entreprises;
     const nbAvant = ents.length;
-    console.log("SYNC: entreprises CRM =", nbAvant, "shards =", nbShards);
+    console.log("SYNC: entreprises =", nbAvant, "shards =", nbShards);
 
     let crees = 0, modifies = 0, inchanges = 0;
     const details: any[] = [];
     const utilises = new Set<number>();
-
     for (const cl of clientsSheet) {
       const i = matchEntreprise(cl, ents);
       const statutSheet = cl.lignes.length ? cl.lignes[0].etat : "";
-      const estActifContrat = norme(statutSheet).includes("actif");
-
+      const estActif = norme(statutSheet).includes("actif");
       if (i >= 0 && utilises.has(i)) { inchanges++; continue; }
-
       if (i >= 0) {
         utilises.add(i);
         const e = ents[i];
-        const avant = JSON.stringify({ s: e.statut, p: e.pack, c: e.contratLocam, im: e.immatriculations, r: e.risque, n: e.nbVehicules });
+        const avant = JSON.stringify({ s: e.statut, p: e.pack, c: e.contratLocam, im: e.immatriculations, r: e.risque });
         if (cl.packs) e.pack = cl.packs;
         if (cl.dateDebut) e.dateDebut = cl.dateDebut;
         if (cl.dateFin) e.dateFin = cl.dateFin;
@@ -261,41 +249,30 @@ export default async function handler(req: any, res: any) {
         if (cl.contrats) e.contratLocam = cl.contrats;
         if (cl.immats) e.immatriculations = cl.immats;
         if (cl.modeles.length) e.modeles = cl.modeles;
-        if (cl.lignes.length) e.contrats = cl.lignes.map((l: ContratLigne) => ({
-          pack: l.pack || "", modele: l.modele || "", num: l.num || "",
-          dateDebut: l.dateDebut || "", dateFin: l.dateFin || "",
-          immats: l.immats || "", etat: l.etat || "", libelle: l.libelle, locam: l.locam,
-        }));
+        if (cl.lignes.length) e.contrats = cl.lignes.map((l) => ({ pack: l.pack || "", modele: l.modele || "", num: l.num || "", dateDebut: l.dateDebut || "", dateFin: l.dateFin || "", immats: l.immats || "", etat: l.etat || "", libelle: l.libelle, locam: l.locam }));
         if (cl.risque) e.risque = cl.risque;
-        if (estActifContrat && e.statut !== STATUT_CLIENT) e.statut = STATUT_CLIENT;
+        if (estActif && e.statut !== STATUT_CLIENT) e.statut = STATUT_CLIENT;
         const noteCode = "Code Sheet: " + cl.code;
-        if (!String(e.notes || "").includes(noteCode)) {
-          e.notes = e.notes ? e.notes + "\n" + noteCode : noteCode;
-        }
+        if (!String(e.notes || "").includes(noteCode)) e.notes = e.notes ? e.notes + "\n" + noteCode : noteCode;
         if (!e.ville && cl.ville) e.ville = cl.ville;
         if (!e.adresse && cl.adresse) e.adresse = cl.adresse;
         if (!e.cp && cl.cp) e.cp = cl.cp;
-        const apres = JSON.stringify({ s: e.statut, p: e.pack, c: e.contratLocam, im: e.immatriculations, r: e.risque, n: e.nbVehicules });
+        const apres = JSON.stringify({ s: e.statut, p: e.pack, c: e.contratLocam, im: e.immatriculations, r: e.risque });
         if (avant !== apres) { modifies++; if (details.length < 30) details.push({ action: "modifié", nom: e.nom || e.nomCommercial, code: cl.code }); }
         else inchanges++;
       } else {
         const id = "e-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
         const nouveau: any = {
-          id, nom: cl.nom, nomCommercial: cl.nom, secteur: "",
-          ville: cl.ville || "", site: "", tel: cl.telFixe || cl.mobile || "",
-          franchiseur: "", modeLivraison: "", activite: "",
-          statut: estActifContrat ? STATUT_CLIENT : "Suspect",
+          id, nom: cl.nom, nomCommercial: cl.nom, secteur: "", ville: cl.ville || "", site: "",
+          tel: cl.telFixe || cl.mobile || "", franchiseur: "", modeLivraison: "", activite: "",
+          statut: estActif ? STATUT_CLIENT : "Suspect",
           notes: "Code Sheet: " + cl.code + (statutSheet ? "\nStatut Sheet: " + statutSheet : ""),
           activites: [], siren: "", adresse: cl.adresse || "", cp: cl.cp || "",
           origine: "Import Sheet Clients Complets",
           pack: cl.packs || "", dateDebut: cl.dateDebut || "", dateFin: cl.dateFin || "",
           nbVehicules: cl.nbVehicules || "", contratLocam: cl.contrats || "",
           immatriculations: cl.immats || "", modeles: cl.modeles || [],
-          contrats: cl.lignes.map((l: ContratLigne) => ({
-            pack: l.pack || "", modele: l.modele || "", num: l.num || "",
-            dateDebut: l.dateDebut || "", dateFin: l.dateFin || "",
-            immats: l.immats || "", etat: l.etat || "", libelle: l.libelle, locam: l.locam,
-          })),
+          contrats: cl.lignes.map((l) => ({ pack: l.pack || "", modele: l.modele || "", num: l.num || "", dateDebut: l.dateDebut || "", dateFin: l.dateFin || "", immats: l.immats || "", etat: l.etat || "", libelle: l.libelle, locam: l.locam })),
           risque: cl.risque || "",
         };
         ents.push(nouveau);
@@ -303,15 +280,8 @@ export default async function handler(req: any, res: any) {
         if (details.length < 30) details.push({ action: "créé", nom: cl.nom, code: cl.code, statut: nouveau.statut });
       }
     }
-
-    const { nbShards: nbShardsEcrits } = await ecrireEtat(String(supabaseUrl), String(supaKey), etat);
-
-    const rapport = {
-      ok: true, clientsSheet: clientsSheet.length,
-      entreprisesAvant: nbAvant, entreprisesApres: ents.length,
-      crees, modifies, inchanges, nbShards: nbShardsEcrits,
-      dureeMs: Date.now() - t0, details, date: new Date().toISOString(),
-    };
+    const { nbShards: nbShardsEcrits } = await ecrireEtat(supabaseUrl, supaKey, etat);
+    const rapport = { ok: true, clientsSheet: clientsSheet.length, entreprisesAvant: nbAvant, entreprisesApres: ents.length, crees, modifies, inchanges, nbShards: nbShardsEcrits, dureeMs: Date.now() - t0, details, date: new Date().toISOString() };
     console.log("SYNC RAPPORT", JSON.stringify(rapport));
     return res.status(200).json(rapport);
   } catch (e: any) {
