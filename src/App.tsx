@@ -814,7 +814,7 @@ const label = "mb-1 block text-[11px] font-bold text-slate-500";
    automatiquement plus tard — par l'analyse IA des conversations (appels,
    e-mails) ou par une recherche internet automatique sur l'entreprise.
    L'IA n'aura qu'à choisir dans la liste au lieu d'inventer du texte. */
-const OPTIONS_FRANCHISEUR = ["Indépendant", "Domino's Pizza", "Burger King", "McDonald's", "KFC", "Subway", "Pizza Hut", "O'Tacos", "La Boîte à Pizza"];
+const OPTIONS_FRANCHISEUR = ["Indépendant", ...FRANCHISEURS.map(([, label]) => label), "Burger King", "McDonald's", "KFC", "Subway", "O'Tacos"];
 const OPTIONS_MODE_LIVRAISON = ["U'mob", "Scooter électrique", "Scooter thermique", "Vélo électrique", "Cargo bike", "Voiture", "À pied", "Uber Eats / Deliveroo", "Mixte"];
 const OPTIONS_ACTIVITE = ["Restauration rapide", "Restauration traditionnelle", "Livraison de repas", "Boulangerie / Pâtisserie", "Commerce floral", "Alimentation bio", "Commerce de détail", "Services", "Autre"];
 // ── Origine de la relation (champ « Origine » du panneau À propos) ──
@@ -4657,7 +4657,7 @@ function MenuFiltreColonne({ valeurs, selection, onAppliquer, onFermer }: { vale
 /* ---- Liste des entreprises : tableau à colonnes façon page index HubSpot. ----
    La recherche filtre sur nom + NOM COMMERCIAL + secteur + ville, insensible
    à la casse. */
-function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void }) {
+function VueEntreprises({ etat, recherche, onOuvre, onModifie }: { etat: Etat; recherche: string; onOuvre: (c: Cible) => void; onModifie: (id: string, patch: Partial<Entreprise>) => void }) {
   const q = recherche.toLowerCase().trim();
   // Index précalculés UNE fois par état (pas par ligne) : avec ~14 000 entreprises
   // et ~23 000 contacts, un .filter() global par ligne rendait le CRM inutilisable.
@@ -4869,7 +4869,16 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
                     </span>
                   </span>
                 </td>
-                <td className="whitespace-nowrap px-4 py-2.5 text-[12px] font-semibold text-slate-600">{e.franchiseur || "—"}</td>
+                <td className="whitespace-nowrap px-4 py-2.5 text-[12px] font-semibold text-slate-600">
+                  {/* Édition inline du franchiseur directement dans la liste. */}
+                  <select value={e.franchiseur || ""} onClick={(ev) => ev.stopPropagation()} title="Modifier le franchiseur"
+                    onChange={(ev) => onModifie(e.id, { franchiseur: ev.target.value })}
+                    className="cursor-pointer rounded-md border border-transparent bg-transparent px-1 py-0.5 text-[12px] font-semibold text-slate-600 hover:border-slate-200 hover:bg-white focus:border-slate-300 focus:outline-none">
+                    {!e.franchiseur && <option value="">—</option>}
+                    {e.franchiseur && !OPTIONS_FRANCHISEUR.includes(e.franchiseur) && <option value={e.franchiseur}>{e.franchiseur}</option>}
+                    {OPTIONS_FRANCHISEUR.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
                 {/* Badge coloré du statut : gris = Suspect, bleu = Prospect,
                     vert = Client (comme le cycle de vie HubSpot). */}
                 <td className="whitespace-nowrap px-4 py-2.5">
@@ -6223,7 +6232,7 @@ export default function App() {
         ) : (
           <>
             {vue === "dashboard" && <VueDashboard etat={etat} onOuvre={ouvrir} />}
-            {vue === "entreprises" && <VueEntreprises etat={etat} recherche={recherche} onOuvre={ouvrir} />}
+            {vue === "entreprises" && <VueEntreprises etat={etat} recherche={recherche} onOuvre={ouvrir} onModifie={modifierEntreprise} />}
             {vue === "contacts" && <VueContacts etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "deals" && <VueDeals etat={etat} recherche={recherche} onOuvre={ouvrir} />}
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
