@@ -205,6 +205,27 @@ export default async function handler(req: any, res: any) {
       const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
       return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards });
     }
+    if (q.get("test") === "doublons") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const byNom = new Map<string, any[]>(); const bySiren = new Map<string, any[]>(); const byTel = new Map<string, any[]>();
+      for (const e of ents) {
+        const nn = norme(e.nom || "") || norme(e.nomCommercial || "");
+        if (nn) { if (!byNom.has(nn)) byNom.set(nn, []); byNom.get(nn)!.push(e); }
+        const s = normTel(e.siren || ""); if (s.length >= 9) { if (!bySiren.has(s)) bySiren.set(s, []); bySiren.get(s)!.push(e); }
+        const t = normTel(e.tel || ""); if (t.length >= 9) { if (!byTel.has(t)) byTel.set(t, []); byTel.get(t)!.push(e); }
+      }
+      const doublonsNom = [...byNom.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ cle: k, nb: v.length, noms: v.map((e) => e.nom || e.nomCommercial), ids: v.map((e) => e.id) }));
+      const doublonsSiren = [...bySiren.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ siren: k, nb: v.length, noms: v.map((e) => e.nom || e.nomCommercial), ids: v.map((e) => e.id) }));
+      const doublonsTel = [...byTel.entries()].filter(([, v]) => v.length > 1).map(([k, v]) => ({ tel: k, nb: v.length, noms: v.map((e) => e.nom || e.nomCommercial), ids: v.map((e) => e.id) }));
+      return res.status(200).json({
+        total: ents.length,
+        doublonsNom: doublonsNom.length, detailNom: doublonsNom.slice(0, 30),
+        doublonsSiren: doublonsSiren.length, detailSiren: doublonsSiren.slice(0, 30),
+        doublonsTel: doublonsTel.length, detailTel: doublonsTel.slice(0, 30),
+      });
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
