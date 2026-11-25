@@ -117,6 +117,8 @@ function chargerClientsDepuisCSV(csv: string): ClientSheet[] {
   for (const l of lignes.slice(1)) {
     const g = (i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
     const code = g(cCode); if (!code) continue;
+    // Ignorer les lignes d'exemple (code qui n'est pas C####)
+    if (!/^C\d+$/i.test(code)) continue;
     if (!idx.has(code)) {
       const adr = g(cAdr); const mAdr = adr.match(/^(.*?)(\d{5})\s+(.+)$/);
       const c: ClientSheet = {
@@ -166,9 +168,10 @@ function matchEntreprise(client: ClientSheet, idx: IndexEnts): number {
   if (sc.length >= 9 && idx.bySiren.has(sc)) return idx.bySiren.get(sc)!;
   if (idx.byNom.has(nClient)) return idx.byNom.get(nClient)!;
   for (const t of [normTel(client.telFixe), normTel(client.mobile)]) if (t.length >= 9 && idx.byTel.has(t)) return idx.byTel.get(t)!;
-  if (nClient.length >= 5) {
+  // 3. Inclusion forte UNIQUEMENT si le nom fait >= 8 caractères (évite les faux positifs)
+  if (nClient.length >= 8) {
     const noms = idx.nomsNorm;
-    for (let i = 0; i < noms.length; i++) { const nE = noms[i]; if (nE && nE.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i; }
+    for (let i = 0; i < noms.length; i++) { const nE = noms[i]; if (nE && nE.length >= 8 && (nE.includes(nClient) || nClient.includes(nE))) return i; }
   }
   return -1;
 }
@@ -223,8 +226,10 @@ export default async function handler(req: any, res: any) {
     let crees = 0, modifies = 0, inchanges = 0;
     const details: any[] = [];
     const utilises = new Set<number>();
+    let logCount = 0;
     for (const cl of clientsSheet) {
       const i = matchEntreprise(cl, indexEnts);
+      if (logCount < 15) { logCount++; console.log("MATCH", cl.code, JSON.stringify(cl.nom), "→", i >= 0 ? JSON.stringify(ents[i].nom || ents[i].nomCommercial) + " (statut=" + ents[i].statut + ")" : "AUCUN"); }
       const statutSheet = cl.statutClient || (cl.lignes.length ? cl.lignes[0].etat : "");
       const estActif = norme(statutSheet).includes("actif");
       if (i >= 0 && utilises.has(i)) { inchanges++; continue; }
