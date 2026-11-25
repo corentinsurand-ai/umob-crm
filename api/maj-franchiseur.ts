@@ -443,18 +443,41 @@ export default async function handler(req: any, res: any) {
       const st = (r[2] || "").trim();
       if (siren.length === 9 && st) { if (!mapStatut[siren] || st === "Actif") mapStatut[siren] = st; }
     }
-    let majClient = 0;
+    const sheetRows: { n: string; siren: string; st: string }[] = [];
+    for (const r of rowsCsv) {
+      if (!r || r.length < 6) continue;
+      const siren = (r[5] || "").replace(/\D/g, "");
+      const st = (r[2] || "").trim();
+      const n = norm(r[1] || "");
+      if (n && st) sheetRows.push({ n, siren, st });
+    }
+    let majClient = 0, sirensRajoutes = 0;
     const details: any[] = [];
     for (const e of etat.entreprises || []) {
       const s = digits(e.siren);
-      if (!s) continue;
-      const st = mapStatut[s] || mapStatut[s.replace(/^0+/, "")];
+      let st = s ? (mapStatut[s] || mapStatut[s.replace(/^0+/, "")]) : undefined;
+      let via = "siren", sirenSheet = s;
+      if (!st) {
+        // repli par nom : le nom CRM (≥ 6 car.) contenu dans le nom Sheet (ex. NOUR BREIZH → NOUR BREIZH (DOMINO'S PIZZA SAINT-BRIEUC))
+        const nCrm = norm(e.nom || "");
+        const nCom = norm(e.nomCommercial || "");
+        if (nCrm.length >= 6 || nCom.length >= 6) {
+          for (const sr of sheetRows) {
+            if ((nCrm.length >= 6 && sr.n.includes(nCrm)) || (nCom.length >= 6 && sr.n.includes(nCom))) {
+              st = sr.st; via = "nom"; sirenSheet = sr.siren || s; break;
+            }
+          }
+        }
+      }
       if (st === "Actif" && e.statut !== "Client") {
-        details.push({ nom: e.nom, nomCommercial: e.nomCommercial || "", siren: s, avant: e.statut || "" });
+        details.push({ nom: e.nom, nomCommercial: e.nomCommercial || "", siren: s || sirenSheet, avant: e.statut || "", via });
         e.statut = "Client"; majClient++;
       }
+      if (st === "Actif" && !s && sirenSheet && sirenSheet.length === 9 && via === "nom") {
+        e.siren = sirenSheet; sirensRajoutes++;
+      }
     }
-    statSheet = { sirensAvecStatut: Object.keys(mapStatut).length, majClient, details: details.slice(0, 300) };
+    statSheet = { sirensAvecStatut: Object.keys(mapStatut).length, majClient, sirensRajoutes, details: details.slice(0, 300) };
   }
 
   const dry = u.searchParams.get("dry") === "1";
