@@ -4728,14 +4728,45 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
   }, [liste, tri]);
   // ── Export Excel (SpreadsheetML 2003 : .xls ouvert nativement par Excel,
   //    UTF-8, sans librairie externe) de la liste FILTRÉE + TRIÉE complète ──
+  // ── Export Excel (SpreadsheetML 2003 : .xls ouvert nativement par Excel,
+  //    UTF-8, sans librairie externe) de la liste FILTRÉE + TRIÉE complète.
+  //    Colonnes sélectionnables par l'utilisateur (état colsExport). ──
+  const COLS_EXPORT: { cle: string; label: string; get: (e: Entreprise) => string }[] = [
+    { cle: "nom", label: "Nom", get: (e) => e.nom },
+    { cle: "nomCommercial", label: "Nom commercial", get: (e) => e.nomCommercial },
+    { cle: "statut", label: "Statut", get: (e) => e.statut },
+    { cle: "franchiseur", label: "Franchiseur", get: (e) => e.franchiseur },
+    { cle: "secteur", label: "Secteur", get: (e) => e.secteur },
+    { cle: "activite", label: "Activité", get: (e) => e.activite },
+    { cle: "ville", label: "Ville", get: (e) => e.ville },
+    { cle: "cp", label: "CP", get: (e) => e.cp || "" },
+    { cle: "adresse", label: "Adresse", get: (e) => e.adresse || "" },
+    { cle: "siren", label: "SIREN", get: (e) => e.siren || "" },
+    { cle: "tel", label: "Téléphone entreprise", get: (e) => e.tel },
+    { cle: "modeLivraison", label: "Mode de livraison", get: (e) => e.modeLivraison },
+    { cle: "risque", label: "⚠️ Risque", get: (e) => e.risque },
+    { cle: "contact", label: "👤 Contact principal", get: (e) => { const c = etat.contacts.find((x) => x.entrepriseIds.includes(e.id)); return c ? (c.prenom + " " + c.nom).trim() : ""; } },
+    { cle: "telContact", label: "📱 Portable contact", get: (e) => { const c = etat.contacts.find((x) => x.entrepriseIds.includes(e.id)); return c?.tel || ""; } },
+    { cle: "emailContact", label: "✉️ Email contact", get: (e) => { const c = etat.contacts.find((x) => x.entrepriseIds.includes(e.id)); return c?.email || ""; } },
+    { cle: "pack", label: "Pack", get: (e) => e.pack },
+    { cle: "nbVehicules", label: "Nb véhicules", get: (e) => e.nbVehicules },
+    { cle: "immatriculations", label: "Immatriculations", get: (e) => e.immatriculations },
+    { cle: "contratLocam", label: "N° contrat Locam", get: (e) => e.contratLocam },
+    { cle: "modeles", label: "Modèles", get: (e) => (e.modeles || []).join(", ") },
+    { cle: "nbContacts", label: "Nb contacts", get: (e) => String(index.nbContacts[e.id] || 0) },
+    { cle: "deals", label: "Deals actifs", get: (e) => String((index.dealsActifs[e.id] || []).length) },
+    { cle: "pipeline", label: "Pipeline k€", get: (e) => String((index.dealsActifs[e.id] || []).reduce((s, d) => s + d.montant, 0)) },
+    { cle: "origine", label: "Origine", get: (e) => e.origine || "" },
+    { cle: "notes", label: "Notes", get: (e) => (e.notes || "").replace(/\n/g, " ⏎ ") },
+  ];
+  const [colsExport, setColsExport] = useState<string[]>(["nom", "statut", "franchiseur", "ville", "tel", "contact", "telContact", "emailContact", "risque", "nbContacts", "deals", "pipeline"]);
+  const [panneauExport, setPanneauExport] = useState(false);
   const exporterExcel = () => {
     const esc = (x: string) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const cols = ["Nom", "Nom commercial", "Statut", "Franchiseur", "Secteur", "Activité", "Ville", "CP", "Adresse", "SIREN", "Téléphone", "Mode de livraison", "Risque", "Nb contacts", "Deals actifs", "Pipeline k€", "Origine", "Notes"];
+    const colsChoisies = COLS_EXPORT.filter((c) => colsExport.includes(c.cle));
+    const cols = colsChoisies.map((c) => c.label);
     const row = (cells: string[]) => "<Row>" + cells.map((c) => '<Cell><Data ss:Type="String">' + esc(c) + "</Data></Cell>").join("") + "</Row>";
-    const body = [row(cols), ...listeTriee.map((e) => {
-      const actifs = index.dealsActifs[e.id] || [];
-      return row([e.nom, e.nomCommercial, e.statut, e.franchiseur, e.secteur, e.activite, e.ville, e.cp || "", e.adresse || "", e.siren || "", e.tel, e.modeLivraison, e.risque, String(index.nbContacts[e.id] || 0), String(actifs.length), String(actifs.reduce((s2, d) => s2 + d.montant, 0)), e.origine || "", (e.notes || "").replace(/\n/g, " ⏎ ")]);
-    })].join("\n");
+    const body = [row(cols), ...listeTriee.map((e) => row(colsChoisies.map((c) => c.get(e))))].join("\n");
     const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Entreprises"><Table>' + body + "</Table></Worksheet></Workbook>";
     const blob = new Blob([xml], { type: "application/vnd.ms-excel" });
     const url = URL.createObjectURL(blob);
@@ -4743,6 +4774,7 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
     a.href = url; a.download = "umob-entreprises-" + isoParis() + ".xls";
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
+    setPanneauExport(false);
   };
   // Cap d'affichage : au-delà de 300 lignes, inviter à affiner la recherche.
   const visible = listeTriee.slice(0, 300);
@@ -4763,10 +4795,37 @@ function VueEntreprises({ etat, recherche, onOuvre }: { etat: Etat; recherche: s
           <option value="statut">Tri : Statut (Suspect→Client)</option>
           <option value="ville">Tri : Ville</option>
         </select>
-        <button onClick={exporterExcel}
-          className="rounded-lg bg-slate-800 px-2.5 py-1 text-[11.5px] font-black text-white hover:bg-slate-700">
-          📥 Exporter Excel ({listeTriee.length})
-        </button>
+        <div className="relative">
+          <button onClick={() => setPanneauExport(!panneauExport)}
+            className="rounded-lg bg-slate-800 px-2.5 py-1 text-[11.5px] font-black text-white hover:bg-slate-700">
+            📥 Exporter Excel ({listeTriee.length}) ▾
+          </button>
+          {panneauExport && (
+            <div className="absolute right-0 z-40 mt-1 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl" onClick={(ev) => ev.stopPropagation()}>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">Colonnes à exporter</span>
+                <span className="flex gap-2 text-[10.5px] font-bold">
+                  <button className="text-blue-600 hover:underline" onClick={() => setColsExport(COLS_EXPORT.map((c) => c.cle))}>Tout cocher</button>
+                  <button className="text-blue-600 hover:underline" onClick={() => setColsExport([])}>Tout décocher</button>
+                </span>
+              </div>
+              <div className="max-h-72 overflow-y-auto pr-1">
+                {COLS_EXPORT.map((c) => (
+                  <label key={c.cle} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-[12px] text-slate-700 hover:bg-slate-50">
+                    <input type="checkbox" checked={colsExport.includes(c.cle)}
+                      onChange={(ev) => setColsExport(ev.target.checked ? [...colsExport, c.cle] : colsExport.filter((x) => x !== c.cle))}
+                      className="h-3.5 w-3.5 accent-slate-800" />
+                    {c.label}
+                  </label>
+                ))}
+              </div>
+              <button onClick={exporterExcel} disabled={colsExport.length === 0}
+                className="mt-2 w-full rounded-lg bg-emerald-600 px-2.5 py-1.5 text-[12px] font-black text-white hover:bg-emerald-500 disabled:opacity-40">
+                📥 Télécharger ({listeTriee.length} lignes, {colsExport.length} colonnes)
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       {/* Défilement horizontal si le panneau est étroit : les colonnes gardent
           une largeur lisible (min-w + whitespace-nowrap) au lieu de s'écraser. */}
@@ -6376,6 +6435,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
     </div>
   );
 }
+
 
 
 
