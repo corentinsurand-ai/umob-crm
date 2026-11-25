@@ -3,13 +3,16 @@
 // Client » vers le CRM (table crm_etat, état shardé).
 //   - Si une entreprise du CRM correspond (nom normalisé ou téléphone),
 //     elle est MISE À JOUR (statut, flotte, contrats, risque, notes).
-//   - Sinon elle est CRÉÉE.
-//   - JAMAIS de doublon : matching par nom normalisé + téléphone.
-// Appel : GET https://umob-crm.vercel.app/api/sync-clients-complets?run=1
-// (ou POST). Paramètre optionnel &secret= si SYNC_SECRET est défini.
+//   - Sinon elle est CRÉÉE. JAMAIS de doublon.
+// Appel : GET ?run=1  → synchro complète
+//         GET ?test=sheet → lit 1 page du Sheet (diagnostic)
+//         GET ?test=full  → lit tout le Sheet, compte les clients (diagnostic)
+//         GET ?test=etat  → lit l'état CRM, compte les entreprises (diagnostic)
 // ────────────────────────────────────────────────────────────────────────────
 
 import { lireEtat, ecrireEtat } from "./etat-shards";
+
+const UA = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36" };
 
 // ── Mini-parseur CSV (identique à src/App.tsx) ──────────────────────────────
 const parserCSV = (txt: string): string[][] => {
@@ -25,10 +28,8 @@ const parserCSV = (txt: string): string[][] => {
   return lignes;
 };
 
-// ── URL du Sheet « Clients Complets » ───────────────────────────────────────
 const URL_SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
 
-// ── Normalisations (identiques à src/App.tsx) ───────────────────────────────
 const norme = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 const normTel = (t: string) => (t || "").replace(/\D/g, "");
 const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
@@ -53,7 +54,6 @@ const normRisque = (s: string): string => {
   return s.trim();
 };
 
-// ── Types ────────────────────────────────────────────────────────────────────
 interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string; libelle?: string; locam?: string }
 interface ContactSheet { prenom: string; nom: string; role: string; tel: string; email: string }
 interface ClientSheet {
@@ -63,14 +63,14 @@ interface ClientSheet {
   lignes: ContratLigne[]; contacts: ContactSheet[]; telFixe: string; mobile: string; email: string;
 }
 
-// ── Lecture paginée du Sheet (identique à lireToutSheet de App.tsx) ──────────
+// ── Lecture paginée du Sheet ─────────────────────────────────────────────────
 const lireToutSheet = async (): Promise<string[][]> => {
   const vues = new Set<string>();
   const toutes: string[][] = [];
   let avecEntete = false;
   for (let off = 0; off < 5000;) {
-    const rep = await fetch(URL_SHEET_CSV + "%20limit%20100%20offset%20" + off);
-    if (!rep.ok) throw new Error("HTTP " + rep.status + " offset " + off);
+    const rep = await fetch(URL_SHEET_CSV + "%20limit%20100%20offset%20" + off, { headers: UA });
+    if (!rep.ok) throw new Error("HTTP " + rep.status + " offset " + off + " body=" + (await rep.text()).slice(0, 200));
     const page = parserCSV(await rep.text());
     if (page.length === 0) break;
     if (!avecEntete) { toutes.push(page[0]); avecEntete = true; }
@@ -87,7 +87,6 @@ const lireToutSheet = async (): Promise<string[][]> => {
   return toutes;
 };
 
-// ── Construction des fiches clients depuis le Sheet (adapté de chargerClientsSheet) ──
 const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
   const lignes = await lireToutSheet();
   const tete = (lignes[0] || []).map(normH);
@@ -100,7 +99,7 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
     cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Risque"),
     cContact = col("Contact principal"), cFonction = col("Fonction"), cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
     cImp = col("Impayes"), cProc = col("Procedure collective");
-  if (cCode < 0 || cNom < 0) throw new Error("Colonnes Code client / Nom client introuvables");
+  if (cCode < 0 || cNom < 0) throw new Error("Colonnes Code client / Nom client introuvables. Headers=" + JSON.stringify(tete));
 
   const clients: ClientSheet[] = [];
   const idx = new Map<string, ClientSheet>();
@@ -146,16 +145,13 @@ const chargerClientsSheet = async (): Promise<ClientSheet[]> => {
   return clients;
 };
 
-// ── Matching entreprise ──────────────────────────────────────────────────────
 const matchEntreprise = (client: ClientSheet, ents: any[]): number => {
   const nClient = norme(client.nom);
   if (!nClient) return -1;
-  // 1. Match exact par nom normalisé
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
     if (norme(e.nom || "") === nClient || norme(e.nomCommercial || "") === nClient) return i;
   }
-  // 2. Match par téléphone (fixe ou mobile du sheet vs tel entreprise)
   const telsSheet = [normTel(client.telFixe), normTel(client.mobile)].filter((t) => t.length >= 9);
   if (telsSheet.length) {
     for (let i = 0; i < ents.length; i++) {
@@ -163,7 +159,6 @@ const matchEntreprise = (client: ClientSheet, ents: any[]): number => {
       if (telsSheet.some((ts) => normTel(e.tel || "") === ts)) return i;
     }
   }
-  // 3. Match par inclusion forte (un nom contient l'autre, min 5 caractères)
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
     const nE = norme(e.nom || "") || norme(e.nomCommercial || "");
@@ -174,40 +169,75 @@ const matchEntreprise = (client: ClientSheet, ents: any[]): number => {
 
 const STATUT_CLIENT = "Client";
 
-// ── Handler Vercel ───────────────────────────────────────────────────────────
+// ── Handler ──────────────────────────────────────────────────────────────────
 export default async function handler(req: any, res: any) {
   const base = new URL(req.url || "/", "http://localhost");
+  const q = base.searchParams;
   const secret = process.env.SYNC_SECRET;
-  if (secret && base.searchParams.get("secret") !== secret && !(req.body && req.body.secret === secret)) {
+  if (secret && q.get("secret") !== secret) {
     return res.status(403).json({ erreur: "secret invalide" });
-  }
-
-  if (req.method === "GET" && !base.searchParams.get("run")) {
-    return res.status(200).json({
-      endpoint: "/api/sync-clients-complets",
-      usage: "GET ?run=1 (ou POST) pour lancer la synchro Sheet → CRM",
-      SUPABASE_URL: !!process.env.SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-      SYNC_SECRET_DEFINI: !!secret,
-    });
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  // ── Mode diagnostic : 1 page du Sheet ──
+  if (q.get("test") === "sheet") {
+    try {
+      const rep = await fetch(URL_SHEET_CSV + "%20limit%205%20offset%200", { headers: UA });
+      const txt = await rep.text();
+      const page = parserCSV(txt);
+      return res.status(200).json({
+        ok: rep.ok, status: rep.status, tailleTexte: txt.length,
+        nbLignes: page.length, headers: page[0] || [],
+        ligne1: page[1] || null, ligne2: page[2] || null,
+      });
+    } catch (e: any) { return res.status(500).json({ erreur: String(e) }); }
+  }
+
+  // ── Mode diagnostic : tout le Sheet, compte les clients ──
+  if (q.get("test") === "full") {
+    try {
+      const t0 = Date.now();
+      const clients = await chargerClientsSheet();
+      return res.status(200).json({ ok: true, clients: clients.length, dureeMs: Date.now() - t0, premier: clients[0] ? { code: clients[0].code, nom: clients[0].nom } : null });
+    } catch (e: any) { return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
+  }
+
+  // ── Mode diagnostic : état CRM ──
+  if (q.get("test") === "etat") {
+    if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante", SUPABASE_URL: !!supabaseUrl, SUPABASE_SERVICE_ROLE_KEY: !!supaKey });
+    try {
+      const t0 = Date.now();
+      const { etat, nbShards } = await lireEtat(String(supabaseUrl), String(supaKey));
+      return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards, dureeMs: Date.now() - t0, clesEtat: Object.keys(etat || {}).slice(0, 20) });
+    } catch (e: any) { return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
+  }
+
+  // ── Mode info (défaut) ──
+  if (req.method === "GET" && !q.get("run")) {
+    return res.status(200).json({
+      endpoint: "/api/sync-clients-complets",
+      usage: "GET ?run=1 (synchro) · ?test=sheet | ?test=full | ?test=etat (diagnostics)",
+      SUPABASE_URL: !!supabaseUrl, SUPABASE_SERVICE_ROLE_KEY: !!supaKey, SYNC_SECRET_DEFINI: !!secret,
+    });
+  }
+
   if (!supabaseUrl || !supaKey) {
     return res.status(503).json({ erreur: "SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY manquantes" });
   }
 
+  // ── Synchro complète ──
   try {
+    const t0 = Date.now();
     const clientsSheet = await chargerClientsSheet();
-    console.log("SYNC-CLIENTS-COMPLETS: clients sheet =", clientsSheet.length);
+    console.log("SYNC: clients sheet =", clientsSheet.length, "en", Date.now() - t0, "ms");
 
-    const { etat } = await lireEtat(String(supabaseUrl), String(supaKey));
-    if (!etat || !Array.isArray(etat.entreprises)) {
-      return res.status(404).json({ erreur: "crm_etat introuvable" });
-    }
+    const { etat, nbShards } = await lireEtat(String(supabaseUrl), String(supaKey));
+    if (!etat || !Array.isArray(etat.entreprises)) return res.status(404).json({ erreur: "crm_etat introuvable" });
     const ents: any[] = etat.entreprises;
     const nbAvant = ents.length;
+    console.log("SYNC: entreprises CRM =", nbAvant, "shards =", nbShards);
 
     let crees = 0, modifies = 0, inchanges = 0;
     const details: any[] = [];
@@ -251,28 +281,16 @@ export default async function handler(req: any, res: any) {
       } else {
         const id = "e-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
         const nouveau: any = {
-          id,
-          nom: cl.nom,
-          nomCommercial: cl.nom,
-          secteur: "",
-          ville: cl.ville || "",
-          site: "",
-          tel: cl.telFixe || cl.mobile || "",
-          franchiseur: "",
-          modeLivraison: "",
-          activite: "",
+          id, nom: cl.nom, nomCommercial: cl.nom, secteur: "",
+          ville: cl.ville || "", site: "", tel: cl.telFixe || cl.mobile || "",
+          franchiseur: "", modeLivraison: "", activite: "",
           statut: estActifContrat ? STATUT_CLIENT : "Suspect",
           notes: "Code Sheet: " + cl.code + (statutSheet ? "\nStatut Sheet: " + statutSheet : ""),
-          activites: [],
-          siren: "", adresse: cl.adresse || "", cp: cl.cp || "",
+          activites: [], siren: "", adresse: cl.adresse || "", cp: cl.cp || "",
           origine: "Import Sheet Clients Complets",
-          pack: cl.packs || "",
-          dateDebut: cl.dateDebut || "",
-          dateFin: cl.dateFin || "",
-          nbVehicules: cl.nbVehicules || "",
-          contratLocam: cl.contrats || "",
-          immatriculations: cl.immats || "",
-          modeles: cl.modeles || [],
+          pack: cl.packs || "", dateDebut: cl.dateDebut || "", dateFin: cl.dateFin || "",
+          nbVehicules: cl.nbVehicules || "", contratLocam: cl.contrats || "",
+          immatriculations: cl.immats || "", modeles: cl.modeles || [],
           contrats: cl.lignes.map((l: ContratLigne) => ({
             pack: l.pack || "", modele: l.modele || "", num: l.num || "",
             dateDebut: l.dateDebut || "", dateFin: l.dateFin || "",
@@ -286,22 +304,18 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const { nbShards } = await ecrireEtat(String(supabaseUrl), String(supaKey), etat);
+    const { nbShards: nbShardsEcrits } = await ecrireEtat(String(supabaseUrl), String(supaKey), etat);
 
     const rapport = {
-      ok: true,
-      clientsSheet: clientsSheet.length,
-      entreprisesAvant: nbAvant,
-      entreprisesApres: ents.length,
-      crees, modifies, inchanges,
-      nbShards,
-      details,
-      date: new Date().toISOString(),
+      ok: true, clientsSheet: clientsSheet.length,
+      entreprisesAvant: nbAvant, entreprisesApres: ents.length,
+      crees, modifies, inchanges, nbShards: nbShardsEcrits,
+      dureeMs: Date.now() - t0, details, date: new Date().toISOString(),
     };
-    console.log("SYNC-CLIENTS-COMPLETS RAPPORT", JSON.stringify(rapport));
+    console.log("SYNC RAPPORT", JSON.stringify(rapport));
     return res.status(200).json(rapport);
   } catch (e: any) {
-    console.error("SYNC-CLIENTS-COMPLETS ERREUR", String(e));
-    return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 500) });
+    console.error("SYNC ERREUR", String(e), String(e && e.stack || "").slice(0, 800));
+    return res.status(500).json({ erreur: String(e), stack: String(e && e.stack || "").slice(0, 800) });
   }
 }
