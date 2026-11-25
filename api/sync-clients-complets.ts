@@ -1,10 +1,11 @@
-// ── /api/sync-clients-complets v4 (autonome + lecture parallèle) ────────────
-// GET ?run=1        → synchro complète Sheet « Clients Complets » → CRM
-// GET ?test=sheet   → 1 page Sheet (diag)   GET ?test=full → tout le Sheet (diag)
-// GET ?test=etat    → état CRM (diag)
+// ── /api/sync-clients-complets v6 — POST CSV ────────────────────────────────
+// Accepte POST avec le CSV brut de l'onglet « Clients Complets » en body.
+//   Content-Type: text/csv  → body = CSV brut
+//   ou JSON { "csv": "..." }  ou form-data avec champ "csv"
+// GET ?test=etat toujours dispo pour diagnostic.
 // ────────────────────────────────────────────────────────────────────────────
 
-// ── Shards Supabase (copié inline depuis etat-shards.ts) ─────────────────────
+// ── Shards Supabase (inline) ─────────────────────────────────────────────────
 const SHARD_TAILLE = 1_000_000;
 function decouperShards(etat: any) {
   const ents: any[] = Array.isArray(etat?.entreprises) ? etat.entreprises : [];
@@ -44,20 +45,19 @@ async function ecrireEtat(sup: string, cle: string, etat: any) {
   const maj = new Date().toISOString();
   const r = await fetch(base + "/rest/v1/crm_etat?id=eq.main", { method: "PATCH", headers: { ...h, Prefer: "return=minimal" }, body: JSON.stringify({ data: baseData, maj }) });
   if (!r.ok) throw new Error("ecriture main " + r.status);
-  // Écriture parallèle des shards
   await Promise.all(shards.map((s) =>
     fetch(base + "/rest/v1/crm_etat", { method: "POST", headers: { ...h, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: s.id, data: s.data, maj }) })
-      .then((rr) => { if (!rr.ok) throw new Error("shard " + s.id + " " + rr.status); })
+      .then((rr) => { if (!rr.ok) throw new Error("shard " + s.id); })
   ));
   const rl = await fetch(base + "/rest/v1/crm_etat?select=id&id=like.ent-%25", { headers: h });
   const exist: any[] = rl.ok ? await rl.json() : [];
   const gards = new Set(shards.map((s) => s.id));
   const stale = exist.map((x) => x.id).filter((id) => !gards.has(id));
   if (stale.length) await fetch(base + '/rest/v1/crm_etat?id=in.("' + stale.join('","') + '")', { method: "DELETE", headers: h });
-  return { nbShards: shards.length, staleSupprimes: stale.length };
+  return { nbShards: shards.length };
 }
 
-// ── CSV + Sheet ──────────────────────────────────────────────────────────────
+// ── CSV ──────────────────────────────────────────────────────────────────────
 const parserCSV = (txt: string): string[][] => {
   const lignes: string[][] = []; let cur: string[] = []; let f = ""; let q = false;
   const GL = String.fromCharCode(34);
@@ -70,9 +70,6 @@ const parserCSV = (txt: string): string[][] => {
   if (f !== "" || cur.length) { cur.push(f); lignes.push(cur); }
   return lignes;
 };
-const URL_SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*";
-const UA = { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" };
-
 const norme = (s: string) => (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
 const normTel = (t: string) => (t || "").replace(/\D/g, "");
 const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
@@ -96,39 +93,9 @@ interface ClientSheet {
   lignes: ContratLigne[]; telFixe: string; mobile: string; email: string;
 }
 
-// Lecture parallèle du Sheet (10 pages en même temps)
-async function lireToutSheet(): Promise<string[][]> {
-  const vues = new Set<string>(); const toutes: string[][] = []; let avecEntete = false;
-  let off = 0;
-  while (off < 5000) {
-    const offsets: number[] = [];
-    for (let k = 0; k < 10; k++) offsets.push(off + k * 100);
-    const reps = await Promise.all(offsets.map((o) =>
-      fetch(URL_SHEET_CSV + "%20limit%20100%20offset%20" + o, { headers: UA })
-        .then(async (r) => ({ ok: r.ok, status: r.status, text: await r.text() }))
-        .catch((e) => ({ ok: false, status: 0, text: String(e) }))
-    ));
-    let totalNouvelles = 0;
-    for (let k = 0; k < reps.length; k++) {
-      const rep = reps[k];
-      if (!rep.ok) { if (k === 0) throw new Error("HTTP " + rep.status + " offset " + offsets[k]); else break; }
-      const page = parserCSV(rep.text);
-      if (page.length === 0) break;
-      if (!avecEntete) { toutes.push(page[0]); avecEntete = true; }
-      let nouvelles = 0;
-      for (const l of page.slice(1)) { const cle = JSON.stringify(l); if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; } }
-      totalNouvelles += nouvelles;
-      if (page.length - 1 === 0 || nouvelles === 0) break;
-    }
-    if (totalNouvelles === 0) break;
-    off += 1000;
-  }
-  if (!avecEntete) throw new Error("Sheet vide");
-  return toutes;
-}
-
-async function chargerClientsSheet(): Promise<ClientSheet[]> {
-  const lignes = await lireToutSheet();
+function chargerClientsDepuisCSV(csv: string): ClientSheet[] {
+  const lignes = parserCSV(csv);
+  if (!lignes.length) throw new Error("CSV vide");
   const tete = (lignes[0] || []).map(normH);
   const col = (n: string) => tete.findIndex((h) => h.startsWith(normH(n)));
   const colC = (n: string) => tete.findIndex((h) => h.includes(normH(n)));
@@ -138,9 +105,9 @@ async function chargerClientsSheet(): Promise<ClientSheet[]> {
     cPack = col("Libellé contrat"), cPackCode = col("Code produit"), cLib = col("Libellé contrat"), cLocam = col("N° dossier locam"),
     cProd = colC("libellé produit"), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
     cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Risque"),
-    cContact = col("Contact principal"), cFonction = col("Fonction"), cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
+    cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
     cImp = col("Impayes"), cProc = col("Procedure collective");
-  if (cCode < 0 || cNom < 0) throw new Error("Colonnes introuvables. Headers=" + JSON.stringify(tete));
+  if (cCode < 0 || cNom < 0) throw new Error("Colonnes Code client/Nom client introuvables. Headers=" + JSON.stringify(tete.slice(0, 10)));
   const clients: ClientSheet[] = [];
   const idx = new Map<string, ClientSheet>();
   const prem = new Map<string, number>(); const der = new Map<string, number>();
@@ -177,56 +144,49 @@ async function chargerClientsSheet(): Promise<ClientSheet[]> {
   return clients;
 }
 
-// Index pré-calculés pour un matching O(1) (évite le O(n*m) qui faisait planter Vercel)
-interface IndexEnts {
-  bySiren: Map<string, number>;
-  byNom: Map<string, number>;
-  byTel: Map<string, number>;
-  nomsNorm: string[]; // pour le fallback inclusion
-}
+interface IndexEnts { bySiren: Map<string, number>; byNom: Map<string, number>; byTel: Map<string, number>; nomsNorm: string[] }
 function construireIndex(ents: any[]): IndexEnts {
-  const bySiren = new Map<string, number>();
-  const byNom = new Map<string, number>();
-  const byTel = new Map<string, number>();
+  const bySiren = new Map<string, number>(), byNom = new Map<string, number>(), byTel = new Map<string, number>();
   const nomsNorm: string[] = new Array(ents.length);
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
-    const s = normTel(e.siren || "");
-    if (s.length >= 9 && !bySiren.has(s)) bySiren.set(s, i);
-    const nn = norme(e.nom || "");
-    const nc = norme(e.nomCommercial || "");
+    const s = normTel(e.siren || ""); if (s.length >= 9 && !bySiren.has(s)) bySiren.set(s, i);
+    const nn = norme(e.nom || ""), nc = norme(e.nomCommercial || "");
     if (nn && !byNom.has(nn)) byNom.set(nn, i);
     if (nc && !byNom.has(nc)) byNom.set(nc, i);
-    const t = normTel(e.tel || "");
-    if (t.length >= 9 && !byTel.has(t)) byTel.set(t, i);
+    const t = normTel(e.tel || ""); if (t.length >= 9 && !byTel.has(t)) byTel.set(t, i);
     nomsNorm[i] = nn || nc;
   }
   return { bySiren, byNom, byTel, nomsNorm };
 }
-function matchEntreprise(client: ClientSheet, idx: IndexEnts, ents: any[]): number {
+function matchEntreprise(client: ClientSheet, idx: IndexEnts): number {
   const nClient = norme(client.nom);
   if (!nClient) return -1;
-  // 0. SIREN
-  const sirenClient = normTel(client.siren || "");
-  if (sirenClient.length >= 9 && idx.bySiren.has(sirenClient)) return idx.bySiren.get(sirenClient)!;
-  // 1. Nom exact
+  const sc = normTel(client.siren || "");
+  if (sc.length >= 9 && idx.bySiren.has(sc)) return idx.bySiren.get(sc)!;
   if (idx.byNom.has(nClient)) return idx.byNom.get(nClient)!;
-  // 2. Téléphone
-  for (const t of [normTel(client.telFixe), normTel(client.mobile)]) {
-    if (t.length >= 9 && idx.byTel.has(t)) return idx.byTel.get(t)!;
-  }
-  // 3. Inclusion forte (fallback, limité aux noms de >= 5 car)
+  for (const t of [normTel(client.telFixe), normTel(client.mobile)]) if (t.length >= 9 && idx.byTel.has(t)) return idx.byTel.get(t)!;
   if (nClient.length >= 5) {
     const noms = idx.nomsNorm;
-    for (let i = 0; i < noms.length; i++) {
-      const nE = noms[i];
-      if (nE && nE.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i;
-    }
+    for (let i = 0; i < noms.length; i++) { const nE = noms[i]; if (nE && nE.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i; }
   }
   return -1;
 }
 
 const STATUT_CLIENT = "Client";
+
+async function lireBodyCSV(req: any): Promise<string> {
+  // Vercel serverless: body peut être string, Buffer ou stream
+  if (typeof req.body === "string") return req.body;
+  if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
+    if (typeof (req.body as any).csv === "string") return (req.body as any).csv;
+    return JSON.stringify(req.body);
+  }
+  // Lire le stream
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of req) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+  return new TextDecoder().decode(Buffer.concat(chunks as any));
+}
 
 export default async function handler(req: any, res: any) {
   try {
@@ -234,49 +194,37 @@ export default async function handler(req: any, res: any) {
     const q = base.searchParams;
     const secret = process.env.SYNC_SECRET;
     if (secret && q.get("secret") !== secret) return res.status(403).json({ erreur: "secret invalide" });
-
     const supabaseUrl = process.env.SUPABASE_URL || "";
     const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 
-    if (q.get("test") === "sheet") {
-      const rep = await fetch(URL_SHEET_CSV + "%20limit%205%20offset%200", { headers: UA });
-      const txt = await rep.text();
-      const page = parserCSV(txt);
-      return res.status(200).json({ ok: rep.ok, status: rep.status, tailleTexte: txt.length, nbLignes: page.length, headers: page[0] || [] });
-    }
-    if (q.get("test") === "full") {
-      const t0 = Date.now();
-      const clients = await chargerClientsSheet();
-      return res.status(200).json({ ok: true, clients: clients.length, dureeMs: Date.now() - t0 });
-    }
     if (q.get("test") === "etat") {
       if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
-      const t0 = Date.now();
       const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
-      return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards, dureeMs: Date.now() - t0 });
+      return res.status(200).json({ ok: true, entreprises: etat?.entreprises?.length || 0, nbShards });
     }
-    if (req.method === "GET" && !q.get("run")) {
-      return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "?run=1 · ?test=sheet|full|etat", env: !!supabaseUrl && !!supaKey });
+    if (req.method === "GET") {
+      return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
     if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "SUPABASE_URL / KEY manquantes" });
 
     const t0 = Date.now();
-    const clientsSheet = await chargerClientsSheet();
-    console.log("SYNC: sheet =", clientsSheet.length, Date.now() - t0, "ms");
+    const csv = await lireBodyCSV(req);
+    console.log("SYNC: csv reçu", csv.length, "caractères");
+    const clientsSheet = chargerClientsDepuisCSV(csv);
+    console.log("SYNC: clients =", clientsSheet.length, Date.now() - t0, "ms");
+
     const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
     if (!etat || !Array.isArray(etat.entreprises)) return res.status(404).json({ erreur: "crm_etat introuvable" });
     const ents: any[] = etat.entreprises;
     const nbAvant = ents.length;
-    console.log("SYNC: ents =", nbAvant, "shards =", nbShards, Date.now() - t0, "ms");
+    const indexEnts = construireIndex(ents);
+    console.log("SYNC: ents =", nbAvant, "index prêt", Date.now() - t0, "ms");
 
     let crees = 0, modifies = 0, inchanges = 0;
     const details: any[] = [];
     const utilises = new Set<number>();
-    console.log("SYNC: construction index ents...", Date.now() - t0, "ms");
-    const indexEnts = construireIndex(ents);
-    console.log("SYNC: index prêt", Date.now() - t0, "ms");
     for (const cl of clientsSheet) {
-      const i = matchEntreprise(cl, indexEnts, ents);
+      const i = matchEntreprise(cl, indexEnts);
       const statutSheet = cl.statutClient || (cl.lignes.length ? cl.lignes[0].etat : "");
       const estActif = norme(statutSheet).includes("actif");
       if (i >= 0 && utilises.has(i)) { inchanges++; continue; }
@@ -305,7 +253,7 @@ export default async function handler(req: any, res: any) {
         else inchanges++;
       } else {
         const id = "e-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-        const nouveau: any = {
+        ents.push({
           id, nom: cl.nom, nomCommercial: cl.nom, secteur: "", ville: cl.ville || "", site: "",
           tel: cl.telFixe || cl.mobile || "", franchiseur: "", modeLivraison: "", activite: "",
           statut: estActif ? STATUT_CLIENT : "Suspect",
@@ -317,10 +265,9 @@ export default async function handler(req: any, res: any) {
           immatriculations: cl.immats || "", modeles: cl.modeles || [],
           contrats: cl.lignes.map((l) => ({ pack: l.pack || "", modele: l.modele || "", num: l.num || "", dateDebut: l.dateDebut || "", dateFin: l.dateFin || "", immats: l.immats || "", etat: l.etat || "", libelle: l.libelle, locam: l.locam })),
           risque: cl.risque || "",
-        };
-        ents.push(nouveau);
+        });
         crees++;
-        if (details.length < 30) details.push({ action: "créé", nom: cl.nom, code: cl.code, statut: nouveau.statut });
+        if (details.length < 30) details.push({ action: "créé", nom: cl.nom, code: cl.code, statut: estActif ? STATUT_CLIENT : "Suspect" });
       }
     }
     const { nbShards: nbShardsEcrits } = await ecrireEtat(supabaseUrl, supaKey, etat);

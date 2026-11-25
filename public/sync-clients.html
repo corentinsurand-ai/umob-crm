@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Sync Clients Complets → CRM</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 20px; }
+  .box { border: 2px dashed #ccc; border-radius: 8px; padding: 24px; text-align: center; margin: 16px 0; }
+  button { background: #2563eb; color: #fff; border: 0; padding: 12px 24px; border-radius: 6px; font-size: 15px; cursor: pointer; }
+  button:disabled { background: #9ca3af; }
+  pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; max-height: 300px; }
+  .ok { color: #16a34a; } .err { color: #dc2626; }
+</style>
+</head>
+<body>
+<h1>🔄 Synchroniser « Clients Complets » → CRM</h1>
+<p>1. Ouvre le Google Sheet « Infos Service Client » → onglet <b>Clients Complets</b> → <b>Fichier → Télécharger → Valeurs CSV (.csv)</b></p>
+<p>2. Sélectionne le fichier CSV téléchargé ci-dessous :</p>
+<div class="box">
+  <input type="file" id="f" accept=".csv,text/csv">
+</div>
+<button id="b" disabled>Lancer la synchro</button>
+<pre id="out">En attente…</pre>
+<script>
+const f = document.getElementById('f'), b = document.getElementById('b'), out = document.getElementById('out');
+f.onchange = () => { b.disabled = !f.files.length; };
+b.onclick = async () => {
+  b.disabled = true; out.textContent = 'Envoi du CSV…';
+  try {
+    const csv = await f.files[0].text();
+    out.textContent = 'CSV envoyé (' + csv.length + ' caractères), traitement côté serveur…';
+    const r = await fetch('/api/sync-clients-complets', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv });
+    const j = await r.json();
+    out.textContent = JSON.stringify(j, null, 2);
+    out.className = j.ok ? 'ok' : 'err';
+  } catch (e) { out.textContent = 'ERREUR: ' + e; out.className = 'err'; }
+  b.disabled = false;
+};
+</script>
+</body>
+</html>
