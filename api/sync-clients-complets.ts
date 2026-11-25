@@ -177,28 +177,51 @@ async function chargerClientsSheet(): Promise<ClientSheet[]> {
   return clients;
 }
 
-function matchEntreprise(client: ClientSheet, ents: any[]): number {
-  const nClient = norme(client.nom);
-  if (!nClient) return -1;
-  // 0. SIREN (le plus fiable)
-  const sirenClient = normTel(client.siren || "");
-  if (sirenClient.length >= 9) {
-    for (let i = 0; i < ents.length; i++) if (normTel(ents[i].siren || "") === sirenClient) return i;
-  }
-  // 1. Nom exact normalisé
+// Index pré-calculés pour un matching O(1) (évite le O(n*m) qui faisait planter Vercel)
+interface IndexEnts {
+  bySiren: Map<string, number>;
+  byNom: Map<string, number>;
+  byTel: Map<string, number>;
+  nomsNorm: string[]; // pour le fallback inclusion
+}
+function construireIndex(ents: any[]): IndexEnts {
+  const bySiren = new Map<string, number>();
+  const byNom = new Map<string, number>();
+  const byTel = new Map<string, number>();
+  const nomsNorm: string[] = new Array(ents.length);
   for (let i = 0; i < ents.length; i++) {
     const e = ents[i];
-    if (norme(e.nom || "") === nClient || norme(e.nomCommercial || "") === nClient) return i;
+    const s = normTel(e.siren || "");
+    if (s.length >= 9 && !bySiren.has(s)) bySiren.set(s, i);
+    const nn = norme(e.nom || "");
+    const nc = norme(e.nomCommercial || "");
+    if (nn && !byNom.has(nn)) byNom.set(nn, i);
+    if (nc && !byNom.has(nc)) byNom.set(nc, i);
+    const t = normTel(e.tel || "");
+    if (t.length >= 9 && !byTel.has(t)) byTel.set(t, i);
+    nomsNorm[i] = nn || nc;
   }
+  return { bySiren, byNom, byTel, nomsNorm };
+}
+function matchEntreprise(client: ClientSheet, idx: IndexEnts, ents: any[]): number {
+  const nClient = norme(client.nom);
+  if (!nClient) return -1;
+  // 0. SIREN
+  const sirenClient = normTel(client.siren || "");
+  if (sirenClient.length >= 9 && idx.bySiren.has(sirenClient)) return idx.bySiren.get(sirenClient)!;
+  // 1. Nom exact
+  if (idx.byNom.has(nClient)) return idx.byNom.get(nClient)!;
   // 2. Téléphone
-  const telsSheet = [normTel(client.telFixe), normTel(client.mobile)].filter((t) => t.length >= 9);
-  if (telsSheet.length) {
-    for (let i = 0; i < ents.length; i++) if (telsSheet.some((ts) => normTel(ents[i].tel || "") === ts)) return i;
+  for (const t of [normTel(client.telFixe), normTel(client.mobile)]) {
+    if (t.length >= 9 && idx.byTel.has(t)) return idx.byTel.get(t)!;
   }
-  // 3. Inclusion forte
-  for (let i = 0; i < ents.length; i++) {
-    const nE = norme(ents[i].nom || "") || norme(ents[i].nomCommercial || "");
-    if (nE.length >= 5 && nClient.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i;
+  // 3. Inclusion forte (fallback, limité aux noms de >= 5 car)
+  if (nClient.length >= 5) {
+    const noms = idx.nomsNorm;
+    for (let i = 0; i < noms.length; i++) {
+      const nE = noms[i];
+      if (nE && nE.length >= 5 && (nE.includes(nClient) || nClient.includes(nE))) return i;
+    }
   }
   return -1;
 }
@@ -249,8 +272,11 @@ export default async function handler(req: any, res: any) {
     let crees = 0, modifies = 0, inchanges = 0;
     const details: any[] = [];
     const utilises = new Set<number>();
+    console.log("SYNC: construction index ents...", Date.now() - t0, "ms");
+    const indexEnts = construireIndex(ents);
+    console.log("SYNC: index prêt", Date.now() - t0, "ms");
     for (const cl of clientsSheet) {
-      const i = matchEntreprise(cl, ents);
+      const i = matchEntreprise(cl, indexEnts, ents);
       const statutSheet = cl.statutClient || (cl.lignes.length ? cl.lignes[0].etat : "");
       const estActif = norme(statutSheet).includes("actif");
       if (i >= 0 && utilises.has(i)) { inchanges++; continue; }
