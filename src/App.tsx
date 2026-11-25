@@ -5386,9 +5386,36 @@ export default function App() {
   // dans localStorage à chaque changement. On n'écrit PAS pendant le chargement
   // initial : il faut d'abord RESTAURER la dernière page (voir ci-dessous),
   // sinon les valeurs par défaut écraseraient la mémoire avant la restauration.
+  // ── Flèche arrière du navigateur : chaque page visitée est poussée dans
+  //    l'historique (hash #/vue ou #/typeFiche/id) ; popstate restaure la page
+  //    précédente au lieu de quitter l'app vers la page de démarrage. ──
+  const VUES_NAV: string[] = ["dashboard", "entreprises", "contacts", "deals", "pipeline", "agenda", "devis", "console", "arrivees", "import"];
+  const premierHash = useRef(true);
+  useEffect(() => {
+    const auPop = () => {
+      if (location.hash) premierHash.current = false;
+      const seg = decodeURIComponent((location.hash || "").replace(/^#\/?/, "")).split("/");
+      const cle = seg[0] || "";
+      if (seg[1] && (cle === "entreprise" || cle === "contact" || cle === "deal")) setFiche({ type: cle as FicheRef["type"], id: seg[1] });
+      else {
+        setFiche(null);
+        if (VUES_NAV.includes(cle)) setVue(cle as VueCRM);
+      }
+      setCible(null); // une modale ouverte ne survit pas à un retour arrière
+    };
+    auPop(); // applique un hash déjà présent au chargement (refresh sur une fiche)
+    window.addEventListener("popstate", auPop);
+    return () => window.removeEventListener("popstate", auPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (chargement) return;
     try { localStorage.setItem(CLE_NAV, JSON.stringify({ vue, fiche })); } catch { /* stockage indisponible : sans blocage */ }
+    const h = fiche ? "#/" + fiche.type + "/" + encodeURIComponent(fiche.id) : "#/" + vue;
+    if (location.hash !== h) {
+      if (premierHash.current) { premierHash.current = false; history.replaceState(null, "", h); }
+      else history.pushState(null, "", h);
+    }
   }, [vue, fiche, chargement]);
 
   // Chargement initial : l'état complet vient de Supabase. Première ouverture
