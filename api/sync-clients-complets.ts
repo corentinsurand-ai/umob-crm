@@ -373,7 +373,7 @@ export default async function handler(req: any, res: any) {
     // Règle Corentin : une entreprise cliente du Sheet ne garde QUE ses contacts du Sheet.
     // ?test=auditContacts → liste les contacts importés Sellsy v8 (id = c + tag de lot)
     // rattachés à une entreprise matchée au Sheet, avec distinction détacher/supprimer.
-    if (q.get("test") === "auditContacts") {
+    if (q.get("test") === "auditContacts" || q.get("run") === "nettoyerContactsSellsy") {
       if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
       const { etat } = await lireEtat(supabaseUrl, supaKey);
       const ents: any[] = etat.entreprises || [];
@@ -401,10 +401,36 @@ export default async function handler(req: any, res: any) {
         if (autres.length) aDetaire++; else aSupprimer++;
         if (parEnt.length < 300) parEnt.push({ contactId: c.id, nom: (String(c.prenom || "") + " " + String(c.nom || "")).trim(), email: c.email || "", tel: c.tel || "", entreprisesSheet: sur.map((id) => (ents.find((e) => e.id === id) || {}).nom || id), autresEntreprises: autres.length });
       }
-      return res.status(200).json({ ok: true, auditContacts: true, ecrit: false, date: new Date().toISOString(),
+      const rapport: any = { ok: true, auditContacts: true, ecrit: false, date: new Date().toISOString(),
         clientsSheet: clientsSheet.length, entreprisesSheetMatchees: sheetEntIds.size, clientsSheetAbsents: absents.length, absentsApercu: absents,
         contactsSellsyTotal: contacts.filter((c) => RE_SELLSY.test(c.id || "")).length,
-        contactsSellsySurClientsSheet: surSheet, dontDetachementSeulement: aDetaire, dontSuppressionTotale: aSupprimer, detail: parEnt });
+        contactsSellsySurClientsSheet: surSheet, dontDetachementSeulement: aDetaire, dontSuppressionTotale: aSupprimer, detail: parEnt };
+      if (q.get("run") === "nettoyerContactsSellsy") {
+        const supprimes: any[] = [];
+        const gardes: any[] = [];
+        for (const c of contacts) {
+          if (!RE_SELLSY.test(c.id || "")) { gardes.push(c); continue; }
+          const ids: string[] = c.entrepriseIds || [];
+          const reste = ids.filter((id) => !sheetEntIds.has(id));
+          if (reste.length === ids.length) { gardes.push(c); continue; }
+          supprimes.push(c);
+          if (reste.length) { c.entrepriseIds = reste; gardes.push(c); }
+        }
+        etat.contacts = gardes;
+        const baseApi = baseRest(supabaseUrl);
+        const hB = { apikey: supaKey, Authorization: "Bearer " + supaKey, "Content-Type": "application/json" };
+        const backupId = "backup-contacts-sellsy-sheet-2026-11-26";
+        const rb = await fetch(baseApi + "/rest/v1/crm_etat", { method: "POST", headers: { ...hB, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: backupId, data: { date: new Date().toISOString(), raison: "backup avant nettoyage contacts Sellsy sur clients Sheet", contacts: supprimes }, maj: new Date().toISOString() }) });
+        if (!rb.ok) throw new Error("backup " + rb.status + " " + (await rb.text()).slice(0, 200));
+        await ecrireEtat(supabaseUrl, supaKey, etat);
+        rapport.ecrit = true;
+        rapport.contactsAvant = contacts.length;
+        rapport.contactsApres = gardes.length;
+        rapport.supprimes = supprimes.length;
+        rapport.detachesConserves = aDetaire;
+        rapport.backupId = backupId;
+      }
+      return res.status(200).json(rapport);
     }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
