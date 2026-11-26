@@ -344,7 +344,7 @@ export default async function handler(req: any, res: any) {
       }
       let sheet: any = { erreur: "" };
       try {
-        const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*&limit=3000";
+        const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/export?format=csv"; // export = onglet COMPLET même si un filtre de vue est actif
         const txt = await (await fetch(SHEET_CSV)).text();
         const clientsSheet = chargerClientsDepuisCSV(txt);
         const idx = construireIndex(ents);
@@ -379,7 +379,7 @@ export default async function handler(req: any, res: any) {
       const ents: any[] = etat.entreprises || [];
       const contacts: any[] = etat.contacts || [];
       const RE_SELLSY = /^c(entsv8|syv80[1-5]|yv806[ab]|fusion)_|^c\d+_\d+_\d+$/; // lots serveur v8 + import UI quarantaine Sellsy (c<ts>_<i>_<j>)
-      const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*&limit=3000";
+      const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/export?format=csv"; // export = onglet COMPLET même si un filtre de vue est actif
       const txt = await (await fetch(SHEET_CSV)).text();
       const clientsSheet = chargerClientsDepuisCSV(txt);
       const idx = construireIndex(ents);
