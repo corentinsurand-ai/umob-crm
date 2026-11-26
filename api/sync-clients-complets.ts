@@ -263,6 +263,149 @@ export default async function handler(req: any, res: any) {
       else rapport.ecrit = false;
       return res.status(200).json(rapport);
     }
+    // ── AUDIT LECTURE SEULE du CRM : GET ?test=audit[&q=belami][&dump=1] ──────────
+    // ?test=audit        → rapport d'audit (entreprises + contacts + cross-check Sheet)
+    // ?test=audit&q=X    → détail des entreprises dont le nom contient X + leurs contacts
+    // ?test=audit&dump=1 → état COMPLET en JSON, exige ?secret=INBOUND_EMAIL_SECRET (jamais en clair)
+    if (q.get("test") === "audit") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      if (q.get("dump") === "1") {
+        const secretAudit = process.env.INBOUND_EMAIL_SECRET || "";
+        if (!secretAudit || q.get("secret") !== secretAudit) return res.status(401).json({ ok: false, erreur: "secret invalide" });
+        const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
+        return res.status(200).json({ ok: true, dump: true, nbShards, etat });
+      }
+      const { etat, nbShards } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const deals: any[] = etat.deals || [];
+      const entById = new Map<string, any>(ents.map((e) => [e.id, e]));
+      const statuts: Record<string, number> = {}, origines: Record<string, number> = {}, franchiseurs: Record<string, number> = {};
+      let avecSiren = 0, avecTel = 0, avecAdresse = 0, avecContrats = 0, nbActivites = 0, sansId = 0;
+      for (const e of ents) {
+        if (!e.id) sansId++;
+        statuts[e.statut || "(vide)"] = (statuts[e.statut || "(vide)"] || 0) + 1;
+        if (e.origine) origines[e.origine] = (origines[e.origine] || 0) + 1;
+        if (e.franchiseur) franchiseurs[e.franchiseur] = (franchiseurs[e.franchiseur] || 0) + 1;
+        if (normTel(e.siren || "").length >= 9) avecSiren++;
+        if (normTel(e.tel || "").length >= 9) avecTel++;
+        if (e.adresse) avecAdresse++;
+        if (Array.isArray(e.contrats) && e.contrats.length) avecContrats++;
+        if (Array.isArray(e.activites)) nbActivites += e.activites.length;
+      }
+      const gNom = new Map<string, any[]>(), gSiren = new Map<string, any[]>(), gTel = new Map<string, any[]>();
+      for (const e of ents) {
+        const nn = norme(e.nom || "") || norme(e.nomCommercial || ""); if (nn) { if (!gNom.has(nn)) gNom.set(nn, []); gNom.get(nn)!.push(e); }
+        const s = normTel(e.siren || ""); if (s.length >= 9) { if (!gSiren.has(s)) gSiren.set(s, []); gSiren.get(s)!.push(e); }
+        const t = normTel(e.tel || ""); if (t.length >= 9) { if (!gTel.has(t)) gTel.set(t, []); gTel.get(t)!.push(e); }
+      }
+      const fmtG = (g: Map<string, any[]>) => [...g.entries()].filter(([, v]) => v.length > 1)
+        .map(([k, v]) => ({ cle: k, fiches: v.map((e) => ({ id: e.id, nom: e.nom, nomCommercial: e.nomCommercial || "", ville: e.ville || "", statut: e.statut || "", origine: e.origine || "" })) }));
+      const doublons = { nom: fmtG(gNom), siren: fmtG(gSiren), tel: fmtG(gTel) };
+      let sansNom = 0, prefixNum = 0, multi = 0, orphelins = 0, sansTel = 0, sansEmail = 0;
+      const prefixExemples: any[] = [];
+      const byEmail = new Map<string, any[]>(), byTel = new Map<string, any[]>(), byNomC = new Map<string, any[]>();
+      const compteParEnt = new Map<string, number>();
+      for (const c of contacts) {
+        const nomComplet = (String(c.prenom || "") + " " + String(c.nom || "")).trim();
+        const ids: string[] = Array.isArray(c.entrepriseIds) ? c.entrepriseIds : [];
+        for (const id of ids) compteParEnt.set(id, (compteParEnt.get(id) || 0) + 1);
+        if (!nomComplet) { sansNom++; continue; }
+        if (/^\d[\d\s.\-]{2,}/.test(nomComplet)) {
+          prefixNum++;
+          if (prefixExemples.length < 60) prefixExemples.push({ id: c.id, nom: nomComplet, email: c.email || "", tel: c.tel || "", ents: ids.map((id) => entById.get(id)?.nom || id) });
+        }
+        if (ids.length > 1) multi++;
+        if (!ids.length || ids.some((id) => !entById.has(id))) orphelins++;
+        if (normTel(c.tel || "").length < 9) sansTel++;
+        if (!c.email) sansEmail++;
+        const em = String(c.email || "").toLowerCase(); if (em) { if (!byEmail.has(em)) byEmail.set(em, []); byEmail.get(em)!.push(c); }
+        const tl = normTel(c.tel || ""); if (tl.length >= 9) { if (!byTel.has(tl)) byTel.set(tl, []); byTel.get(tl)!.push(c); }
+        const nc = norme(nomComplet); if (nc) { if (!byNomC.has(nc)) byNomC.set(nc, []); byNomC.get(nc)!.push(c); }
+      }
+      const doublonsContacts = {
+        email: [...byEmail.values()].filter((v) => v.length > 1).length,
+        tel: [...byTel.values()].filter((v) => v.length > 1).length,
+        nom: [...byNomC.values()].filter((v) => v.length > 1).length,
+        detailEmail: [...byEmail.entries()].filter(([, v]) => v.length > 1).slice(0, 40)
+          .map(([k, v]) => ({ cle: k, noms: v.map((c) => (String(c.prenom || "") + " " + String(c.nom || "")).trim()), ents: v.map((c) => (c.entrepriseIds || []).map((id) => entById.get(id)?.nom || id)) })),
+      };
+      const topEnts = [...compteParEnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25)
+        .map(([id, n]) => ({ nom: entById.get(id)?.nom || id, id, nbContacts: n }));
+      let qRes: any = null;
+      const qq = q.get("q");
+      if (qq) {
+        const nq = norme(qq);
+        qRes = ents.filter((e) => (norme(e.nom || "") + norme(e.nomCommercial || "")).includes(nq)).slice(0, 10).map((e) => ({
+          id: e.id, nom: e.nom, nomCommercial: e.nomCommercial || "", siren: e.siren || "", tel: e.tel || "", ville: e.ville || "", statut: e.statut || "", origine: e.origine || "",
+          contacts: contacts.filter((c) => (c.entrepriseIds || []).includes(e.id))
+            .map((c) => ({ id: c.id, prenom: c.prenom || "", nom: c.nom || "", role: c.role || "", email: c.email || "", tel: c.tel || "" })),
+        }));
+      }
+      let sheet: any = { erreur: "" };
+      try {
+        const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*&limit=3000";
+        const txt = await (await fetch(SHEET_CSV)).text();
+        const clientsSheet = chargerClientsDepuisCSV(txt);
+        const idx = construireIndex(ents);
+        const matcheIds = new Set<string>();
+        let absents = 0; const absentsListe: any[] = [];
+        for (const cl of clientsSheet) {
+          const i = matchEntreprise(cl, idx);
+          if (i >= 0) matcheIds.add(ents[i].id); else { absents++; if (absentsListe.length < 200) absentsListe.push({ code: cl.code, nom: cl.nom, siren: cl.siren || "", ville: cl.ville || "" }); }
+        }
+        const crmClients = ents.filter((e) => norme(e.statut || "") === "client");
+        const clientCrmSansSheet = crmClients.filter((e) => !matcheIds.has(e.id)).slice(0, 100)
+          .map((e) => ({ id: e.id, nom: e.nom, siren: e.siren || "", ville: e.ville || "", origine: e.origine || "" }));
+        sheet = { clientsSheet: clientsSheet.length, matches: matcheIds.size, absents, absentsListe, crmStatutClient: crmClients.length, clientCrmSansSheet: clientCrmSansSheet.length, clientCrmSansSheetApercu: clientCrmSansSheet };
+      } catch (e: any) { sheet = { erreur: String(e).slice(0, 300) }; }
+      return res.status(200).json({
+        ok: true, audit: true, date: new Date().toISOString(), nbShards,
+        entreprises: { total: ents.length, sansId, statuts, origines, franchiseurs, avecSiren, avecTel, avecAdresse, avecContrats, nbActivites },
+        doublonsEntreprises: { nbNom: doublons.nom.length, nbSiren: doublons.siren.length, nbTel: doublons.tel.length, detailNom: doublons.nom, detailSiren: doublons.siren, detailTel: doublons.tel },
+        contacts: { total: contacts.length, sansNom, prefixNumerique: prefixNum, prefixExemples, multiEntreprises: multi, orphelins, sansTel, sansEmail, doublonsContacts, topEntreprises: topEnts },
+        deals: { total: deals.length },
+        rechercheQ: qRes,
+        sheet,
+      });
+    }
+    // ── AUDIT CONTACTS SELLSY SUR CLIENTS SHEET — TOUJOURS DRY-RUN (aucune écriture) ──
+    // Règle Corentin : une entreprise cliente du Sheet ne garde QUE ses contacts du Sheet.
+    // ?test=auditContacts → liste les contacts importés Sellsy v8 (id = c + tag de lot)
+    // rattachés à une entreprise matchée au Sheet, avec distinction détacher/supprimer.
+    if (q.get("test") === "auditContacts") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const RE_SELLSY = /^c(entsv8|syv80[1-5]|yv806[ab]|fusion)_/;
+      const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/gviz/tq?tqx=out:csv&sheet=Clients%20Complets&tq=select%20*&limit=3000";
+      const txt = await (await fetch(SHEET_CSV)).text();
+      const clientsSheet = chargerClientsDepuisCSV(txt);
+      const idx = construireIndex(ents);
+      const sheetEntIds = new Set<string>();
+      const absents: any[] = [];
+      for (const cl of clientsSheet) {
+        const i = matchEntreprise(cl, idx);
+        if (i >= 0) sheetEntIds.add(ents[i].id); else if (absents.length < 200) absents.push({ code: cl.code, nom: cl.nom });
+      }
+      let surSheet = 0, aDetaire = 0, aSupprimer = 0;
+      const parEnt: any[] = [];
+      for (const c of contacts) {
+        if (!RE_SELLSY.test(c.id || "")) continue;
+        const ids: string[] = c.entrepriseIds || [];
+        const sur = ids.filter((id) => sheetEntIds.has(id));
+        if (!sur.length) continue;
+        surSheet++;
+        const autres = ids.filter((id) => !sheetEntIds.has(id));
+        if (autres.length) aDetaire++; else aSupprimer++;
+        if (parEnt.length < 300) parEnt.push({ contactId: c.id, nom: (String(c.prenom || "") + " " + String(c.nom || "")).trim(), email: c.email || "", tel: c.tel || "", entreprisesSheet: sur.map((id) => (ents.find((e) => e.id === id) || {}).nom || id), autresEntreprises: autres.length });
+      }
+      return res.status(200).json({ ok: true, auditContacts: true, ecrit: false, date: new Date().toISOString(),
+        clientsSheet: clientsSheet.length, entreprisesSheetMatchees: sheetEntIds.size, clientsSheetAbsents: absents.length, absentsApercu: absents,
+        contactsSellsyTotal: contacts.filter((c) => RE_SELLSY.test(c.id || "")).length,
+        contactsSellsySurClientsSheet: surSheet, dontDetachementSeulement: aDetaire, dontSuppressionTotale: aSupprimer, detail: parEnt });
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
