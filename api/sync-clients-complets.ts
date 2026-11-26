@@ -391,6 +391,27 @@ export default async function handler(req: any, res: any) {
         if (i >= 0) { sheetEntIds.add(ents[i].id); sheetClientParEnt.set(ents[i].id, cl); }
         else if (absents.length < 200) absents.push({ code: cl.code, nom: cl.nom });
       }
+      // E-mails déclarés dans le Sheet (toutes colonnes, dont « Autres contacts ») par code client :
+      // un contact dont l'e-mail y figure EST un contact du Sheet → on ne le touche pas.
+      const emailsSheetParCode = new Map<string, Set<string>>();
+      {
+        const lignesCsv = parserCSV(txt);
+        const tete2 = (lignesCsv[0] || []).map(normH);
+        const cCode2 = tete2.findIndex((h) => h.startsWith(normH("Code client")));
+        for (const l of lignesCsv.slice(1)) {
+          const code = (l[cCode2] || "").trim();
+          if (!/^C\d+$/i.test(code)) continue;
+          if (!emailsSheetParCode.has(code)) emailsSheetParCode.set(code, new Set<string>());
+          for (const cell of l) { const ms = cell.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || []; for (const m of ms) emailsSheetParCode.get(code)!.add(m); }
+        }
+      }
+      const estContactSheet = (c: any, entId: string): boolean => {
+        const cl = sheetClientParEnt.get(entId);
+        if (!cl) return false;
+        const ems = emailsSheetParCode.get(cl.code);
+        const em = String(c.email || "").toLowerCase();
+        return !!em && !!ems && ems.has(em);
+      };
       let sheetManquants = 0; const sheetExemples: any[] = [];
       for (const [entId, cl] of sheetClientParEnt) {
         const cp = (cl.contactPrincipal || "").trim(); if (!cp) continue;
@@ -405,6 +426,7 @@ export default async function handler(req: any, res: any) {
         const ids: string[] = c.entrepriseIds || [];
         const sur = ids.filter((id) => sheetEntIds.has(id));
         if (!sur.length) continue;
+        if (sur.every((id) => estContactSheet(c, id))) continue; // e-mail déclaré dans le Sheet pour ce client → contact légitime
         surSheet++;
         const autres = ids.filter((id) => !sheetEntIds.has(id));
         if (autres.length) aDetaire++; else aSupprimer++;
@@ -420,7 +442,7 @@ export default async function handler(req: any, res: any) {
         for (const c of contacts) {
           if (!RE_SELLSY.test(c.id || "")) { gardes.push(c); continue; }
           const ids: string[] = c.entrepriseIds || [];
-          const reste = ids.filter((id) => !sheetEntIds.has(id));
+          const reste = ids.filter((id) => !sheetEntIds.has(id) || estContactSheet(c, id));
           if (reste.length === ids.length) { gardes.push(c); continue; }
           supprimes.push(c);
           if (reste.length) { c.entrepriseIds = reste; gardes.push(c); }
@@ -507,6 +529,49 @@ export default async function handler(req: any, res: any) {
           entreprises: (c.entrepriseIds || []).map((id) => ({ id, nom: entById.get(id)?.nom || id, statut: entById.get(id)?.statut || "", origine: entById.get(id)?.origine || "" })),
         })),
       });
+    }
+    // ── FIX E-MAIL : rattacher un contact (cherché par e-mail) UNIQUEMENT à la fiche Sheet
+    //    dont la ligne contient cet e-mail. ?test=fixEmail&email=… (dry-run) · ?run=fixEmail&email=… (écrit, backup d'abord)
+    if (q.get("test") === "fixEmail" || q.get("run") === "fixEmail") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const email = (q.get("email") || "").trim().toLowerCase();
+      if (!email) return res.status(400).json({ erreur: "param ?email= requis" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/export?format=csv"; // export = onglet COMPLET même si un filtre de vue est actif
+      const txt = await (await fetch(SHEET_CSV)).text();
+      const lignesCsv = parserCSV(txt);
+      const tete = (lignesCsv[0] || []).map(normH);
+      const cCode = tete.findIndex((h) => h.startsWith(normH("Code client")));
+      const codesCibles = new Set<string>();
+      for (const l of lignesCsv.slice(1)) if (l.some((cell) => cell.toLowerCase().includes(email))) { const code = (l[cCode] || "").trim(); if (/^C\d+$/i.test(code)) codesCibles.add(code); }
+      const clientsSheet = chargerClientsDepuisCSV(txt);
+      const idx = construireIndex(ents);
+      const entsCibles: any[] = [];
+      for (const cl of clientsSheet) {
+        if (!codesCibles.has(cl.code)) continue;
+        const i = matchEntreprise(cl, idx);
+        if (i >= 0) entsCibles.push({ code: cl.code, nomSheet: cl.nom, entId: ents[i].id, entNom: ents[i].nom || ents[i].nomCommercial, siren: ents[i].siren || "" });
+      }
+      const cibles = contacts.filter((c) => String(c.email || "").toLowerCase().includes(email));
+      const rapport: any = { ok: true, fixEmail: true, ecrit: false, date: new Date().toISOString(), email, codesSheet: [...codesCibles], entsCibles,
+        contactsTrouves: cibles.map((c) => ({ id: c.id, nom: (String(c.prenom || "") + " " + String(c.nom || "")).trim(), email: c.email, entrepriseIds: c.entrepriseIds || [] })) };
+      if (q.get("run") === "fixEmail") {
+        if (!entsCibles.length) return res.status(200).json({ ...rapport, erreur: "aucune entreprise CRM matchée pour les codes Sheet " + [...codesCibles].join(",") });
+        if (!cibles.length) return res.status(200).json({ ...rapport, erreur: "aucun contact avec cet e-mail" });
+        const baseApi = baseRest(supabaseUrl);
+        const hB = { apikey: supaKey, Authorization: "Bearer " + supaKey, "Content-Type": "application/json" };
+        const backupId = "backup-fixemail-2026-11-26";
+        const rb = await fetch(baseApi + "/rest/v1/crm_etat", { method: "POST", headers: { ...hB, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: backupId, data: { date: new Date().toISOString(), raison: "backup avant fixEmail " + email, contactsAvant: JSON.parse(JSON.stringify(cibles)) }, maj: new Date().toISOString() }) });
+        if (!rb.ok) throw new Error("backup " + rb.status);
+        const entIdsCibles = entsCibles.map((t) => t.entId);
+        let modifies = 0;
+        for (const c of cibles) { const av = JSON.stringify(c.entrepriseIds || []); c.entrepriseIds = [...entIdsCibles]; if (JSON.stringify(c.entrepriseIds) !== av) modifies++; }
+        await ecrireEtat(supabaseUrl, supaKey, etat);
+        rapport.ecrit = true; rapport.modifies = modifies; rapport.entrepriseIdsCibles = entIdsCibles; rapport.backupId = backupId;
+      }
+      return res.status(200).json(rapport);
     }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
