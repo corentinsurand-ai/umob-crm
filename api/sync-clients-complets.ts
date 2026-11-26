@@ -432,6 +432,44 @@ export default async function handler(req: any, res: any) {
       }
       return res.status(200).json(rapport);
     }
+    // ── RÉPARATION MOJIBAKE (UTF-8 lu en latin-1 : « FranÃ§ois » → « François »)) ──
+    // ?test=mojibake = dry-run (rapport + échantillons) · ?run=reparerMojibake = applique (backup d'abord)
+    if (q.get("test") === "mojibake" || q.get("run") === "reparerMojibake") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const fixMojibake = (s: string): string => {
+        if (!s || !/[ÃÂ][\u0080-\u00BF€]/.test(s)) return s;
+        try { const f = Buffer.from(s, "latin1").toString("utf8"); return f.includes("\uFFFD") ? s : f; } catch { return s; }
+      };
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const modifs: any[] = [];
+      let nbEnts = 0, nbContacts = 0;
+      for (const e of ents) {
+        const champs: [string, string][] = [["nom", e.nom || ""], ["nomCommercial", e.nomCommercial || ""], ["ville", e.ville || ""]];
+        let touche = false;
+        for (const [k, v] of champs) { const f = fixMojibake(v); if (f !== v) { if (modifs.length < 40) modifs.push({ type: "entreprise", id: e.id, champ: k, avant: v, apres: f }); e[k] = f; touche = true; } }
+        if (touche) nbEnts++;
+      }
+      for (const c of contacts) {
+        const champs: [string, string][] = [["prenom", c.prenom || ""], ["nom", c.nom || ""], ["role", c.role || ""]];
+        let touche = false;
+        for (const [k, v] of champs) { const f = fixMojibake(v); if (f !== v) { if (modifs.length < 40) modifs.push({ type: "contact", id: c.id, champ: k, avant: v, apres: f }); c[k] = f; touche = true; } }
+        if (touche) nbContacts++;
+      }
+      const rapport: any = { ok: true, mojibake: true, ecrit: false, date: new Date().toISOString(), entreprisesTouchees: nbEnts, contactsTouches: nbContacts, echantillons: modifs };
+      if (q.get("run") === "reparerMojibake") {
+        const baseApi = baseRest(supabaseUrl);
+        const hB = { apikey: supaKey, Authorization: "Bearer " + supaKey, "Content-Type": "application/json" };
+        const backupId = "backup-mojibake-2026-11-26";
+        const copie = JSON.parse(JSON.stringify({ entreprises: ents.filter((e) => nbEnts && modifs.some((x) => x.type === "entreprise" && x.id === e.id)), contacts: contacts.filter((c) => modifs.some((x) => x.type === "contact" && x.id === c.id)) }));
+        const rb = await fetch(baseApi + "/rest/v1/crm_etat", { method: "POST", headers: { ...hB, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: backupId, data: { date: new Date().toISOString(), raison: "backup avant réparation mojibake", snapshot: copie }, maj: new Date().toISOString() }) });
+        if (!rb.ok) throw new Error("backup " + rb.status);
+        await ecrireEtat(supabaseUrl, supaKey, etat);
+        rapport.ecrit = true; rapport.backupId = backupId;
+      }
+      return res.status(200).json(rapport);
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
