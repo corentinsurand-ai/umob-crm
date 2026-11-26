@@ -93,7 +93,7 @@ interface ClientSheet {
   code: string; nom: string; ville: string; adresse?: string; cp?: string; siren?: string; statutClient?: string;
   packs: string; dateDebut: string; dateFin: string; nbVehicules: string;
   contrats: string; immats: string; risque: string; modeles: string[];
-  lignes: ContratLigne[]; telFixe: string; mobile: string; email: string;
+  lignes: ContratLigne[]; telFixe: string; mobile: string; email: string; contactPrincipal: string; fonction: string;
 }
 
 function chargerClientsDepuisCSV(csv: string): ClientSheet[] {
@@ -108,7 +108,7 @@ function chargerClientsDepuisCSV(csv: string): ClientSheet[] {
     cPack = col("Libellé contrat"), cPackCode = col("Code produit"), cLib = col("Libellé contrat"), cLocam = col("N° dossier locam"),
     cProd = colC("libellé produit"), cEtat = col("Etat contrat"), cDd = col("Date début contrat"), cDf = col("Date fin contrat"),
     cNum = col("N° contrat"), cImm = col("Immatriculation"), cRq = col("Risque"),
-    cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"),
+    cTelFixe = col("Téléphone"), cMobile = col("Mobile"), cMail = col("E-mail"), cContact = col("Contact principal"), cFonction = col("Fonction"),
     cImp = col("Impayes"), cProc = col("Procedure collective");
   if (cCode < 0 || cNom < 0) throw new Error("Colonnes Code client/Nom client introuvables. Headers=" + JSON.stringify(tete.slice(0, 10)));
   const clients: ClientSheet[] = [];
@@ -129,7 +129,7 @@ function chargerClientsDepuisCSV(csv: string): ClientSheet[] {
         adresse: mAdr ? mAdr[1].trim().replace(/,\s*$/, "") : adr, cp: mAdr ? mAdr[2] : "",
         siren: g(cSiren), statutClient: g(cStatutClient),
         packs: "", dateDebut: "", dateFin: "", nbVehicules: "", contrats: "", immats: "",
-        risque: "", modeles: [], lignes: [], telFixe: g(cTelFixe), mobile: g(cMobile), email: g(cMail),
+        risque: "", modeles: [], lignes: [], telFixe: g(cTelFixe), mobile: g(cMobile), email: g(cMail), contactPrincipal: g(cContact), fonction: g(cFonction),
       };
       idx.set(code, c); clients.push(c);
     }
@@ -385,9 +385,18 @@ export default async function handler(req: any, res: any) {
       const idx = construireIndex(ents);
       const sheetEntIds = new Set<string>();
       const absents: any[] = [];
+      const sheetClientParEnt = new Map<string, any>();
       for (const cl of clientsSheet) {
         const i = matchEntreprise(cl, idx);
-        if (i >= 0) sheetEntIds.add(ents[i].id); else if (absents.length < 200) absents.push({ code: cl.code, nom: cl.nom });
+        if (i >= 0) { sheetEntIds.add(ents[i].id); sheetClientParEnt.set(ents[i].id, cl); }
+        else if (absents.length < 200) absents.push({ code: cl.code, nom: cl.nom });
+      }
+      let sheetManquants = 0; const sheetExemples: any[] = [];
+      for (const [entId, cl] of sheetClientParEnt) {
+        const cp = (cl.contactPrincipal || "").trim(); if (!cp) continue;
+        const telS = normTel(cl.mobile || cl.telFixe || ""); const emS = (cl.email || "").toLowerCase();
+        const deja = contacts.some((c) => (c.entrepriseIds || []).includes(entId) && ((norme((c.prenom || "") + " " + (c.nom || "")) === norme(cp)) || (emS && (c.email || "").toLowerCase() === emS) || (telS.length >= 9 && normTel(c.tel || "") === telS)));
+        if (!deja) { sheetManquants++; if (sheetExemples.length < 30) sheetExemples.push({ ent: (ents.find((e) => e.id === entId) || {}).nom || entId, contactPrincipal: cp, fonction: cl.fonction || "", tel: cl.mobile || cl.telFixe || "", email: cl.email || "" }); }
       }
       let surSheet = 0, aDetaire = 0, aSupprimer = 0;
       const parEnt: any[] = [];
@@ -404,7 +413,7 @@ export default async function handler(req: any, res: any) {
       const rapport: any = { ok: true, auditContacts: true, ecrit: false, date: new Date().toISOString(),
         clientsSheet: clientsSheet.length, entreprisesSheetMatchees: sheetEntIds.size, clientsSheetAbsents: absents.length, absentsApercu: absents,
         contactsSellsyTotal: contacts.filter((c) => RE_SELLSY.test(c.id || "")).length,
-        contactsSellsySurClientsSheet: surSheet, dontDetachementSeulement: aDetaire, dontSuppressionTotale: aSupprimer, detail: parEnt };
+        contactsSellsySurClientsSheet: surSheet, dontDetachementSeulement: aDetaire, dontSuppressionTotale: aSupprimer, detail: parEnt, contactsSheetManquants: sheetManquants, sheetExemples };
       if (q.get("run") === "nettoyerContactsSellsy") {
         const supprimes: any[] = [];
         const gardes: any[] = [];
@@ -416,11 +425,21 @@ export default async function handler(req: any, res: any) {
           supprimes.push(c);
           if (reste.length) { c.entrepriseIds = reste; gardes.push(c); }
         }
+        const creesSheet: any[] = [];
+        for (const [entId, cl] of sheetClientParEnt) {
+          const cp = (cl.contactPrincipal || "").trim(); if (!cp) continue;
+          const telS = normTel(cl.mobile || cl.telFixe || ""); const emS = (cl.email || "").toLowerCase();
+          const deja = gardes.some((c) => (c.entrepriseIds || []).includes(entId) && ((norme((c.prenom || "") + " " + (c.nom || "")) === norme(cp)) || (emS && (c.email || "").toLowerCase() === emS) || (telS.length >= 9 && normTel(c.tel || "") === telS)));
+          if (deja) continue;
+          const tk = cp.split(/\s+/); const prenom = tk.length > 1 ? tk[0] : ""; const nom = tk.length > 1 ? tk.slice(1).join(" ") : cp;
+          const nc: any = { id: "csheet" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8), prenom, nom, role: cl.fonction || "", email: cl.email || "", tel: cl.mobile || cl.telFixe || "", entrepriseIds: [entId] };
+          gardes.push(nc); creesSheet.push(nc);
+        }
         etat.contacts = gardes;
         const baseApi = baseRest(supabaseUrl);
         const hB = { apikey: supaKey, Authorization: "Bearer " + supaKey, "Content-Type": "application/json" };
         const backupId = "backup-contacts-sellsy-sheet-2026-11-26";
-        const rb = await fetch(baseApi + "/rest/v1/crm_etat", { method: "POST", headers: { ...hB, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: backupId, data: { date: new Date().toISOString(), raison: "backup avant nettoyage contacts Sellsy sur clients Sheet", contacts: supprimes }, maj: new Date().toISOString() }) });
+        const rb = await fetch(baseApi + "/rest/v1/crm_etat", { method: "POST", headers: { ...hB, Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: backupId, data: { date: new Date().toISOString(), raison: "backup avant nettoyage contacts Sellsy sur clients Sheet + création contacts du Sheet", contactsSupprimes: supprimes, contactsSheetCrees: creesSheet }, maj: new Date().toISOString() }) });
         if (!rb.ok) throw new Error("backup " + rb.status + " " + (await rb.text()).slice(0, 200));
         await ecrireEtat(supabaseUrl, supaKey, etat);
         rapport.ecrit = true;
@@ -428,6 +447,7 @@ export default async function handler(req: any, res: any) {
         rapport.contactsApres = gardes.length;
         rapport.supprimes = supprimes.length;
         rapport.detachesConserves = aDetaire;
+        rapport.contactsSheetCrees = creesSheet.length;
         rapport.backupId = backupId;
       }
       return res.status(200).json(rapport);
