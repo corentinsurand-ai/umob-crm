@@ -613,13 +613,14 @@ export default async function handler(req: any, res: any) {
         if (nt.length >= 9) { if (!contactParTel.has(nt)) contactParTel.set(nt, []); contactParTel.get(nt)!.push(c); }
       }
       let fichesOk = 0, sansFiche = 0;
+      let manqTotal = 0, deplTotal = 0;
       const manquants: any[] = [], deplaces: any[] = [];
       let nbDecl = 0;
       for (const cl of clientsSheet) {
         const d = declParCode.get(cl.code);
         if (!d) continue;
         const i = matchEntreprise(cl, idx);
-        if (i < 0) { sansFiche++; if (sansFiche <= 50) manquants.push({ type: "clientSansFiche", code: cl.code, nom: cl.nom }); continue; }
+        if (i < 0) { sansFiche++; manqTotal++; if (sansFiche <= 50) manquants.push({ type: "clientSansFiche", code: cl.code, nom: cl.nom }); continue; }
         const ent = ents[i];
         fichesOk++;
         const entId = ent.id;
@@ -628,19 +629,19 @@ export default async function handler(req: any, res: any) {
           const lst = contactParEmail.get(em) || [];
           const surFiche = lst.some((c) => (c.entrepriseIds || []).includes(entId));
           if (surFiche) continue;
-          if (lst.length === 0) { if (manquants.length < 800) manquants.push({ type: "emailAbsent", code: cl.code, ent: ent.nom, entId, email: em }); }
-          else { if (deplaces.length < 800) deplaces.push({ type: "emailAilleurs", code: cl.code, ent: ent.nom, entId, email: em, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
+          if (lst.length === 0) { manqTotal++; if (manquants.length < 800) manquants.push({ type: "emailAbsent", code: cl.code, ent: ent.nom, entId, email: em }); }
+          else { deplTotal++; if (deplaces.length < 800) deplaces.push({ type: "emailAilleurs", code: cl.code, ent: ent.nom, entId, email: em, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
         }
         for (const nt of d.tels) {
           nbDecl++;
           const lst = contactParTel.get(nt) || [];
           const surFiche = lst.some((c) => (c.entrepriseIds || []).includes(entId));
           if (surFiche) continue;
-          if (lst.length === 0) { if (manquants.length < 800) manquants.push({ type: "telAbsent", code: cl.code, ent: ent.nom, entId, tel: nt }); }
-          else { if (deplaces.length < 800) deplaces.push({ type: "telAilleurs", code: cl.code, ent: ent.nom, entId, tel: nt, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
+          if (lst.length === 0) { manqTotal++; if (manquants.length < 800) manquants.push({ type: "telAbsent", code: cl.code, ent: ent.nom, entId, tel: nt }); }
+          else { deplTotal++; if (deplaces.length < 800) deplaces.push({ type: "telAilleurs", code: cl.code, ent: ent.nom, entId, tel: nt, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
         }
       }
-      return res.status(200).json({ ok: true, test: "verifySheetContacts", date: new Date().toISOString(), clientsSheet: clientsSheet.length, fichesOk, sansFiche, nbDeclares: nbDecl, nbManquants: manquants.length, nbDeplaces: deplaces.length, manquants, deplaces });
+      return res.status(200).json({ ok: true, test: "verifySheetContacts", date: new Date().toISOString(), clientsSheet: clientsSheet.length, fichesOk, sansFiche, nbDeclares: nbDecl, nbManquants: manqTotal, nbDeplaces: deplTotal, nbManquantsEchantillon: manquants.length, nbDeplacesEchantillon: deplaces.length, manquants, deplaces });
     }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
