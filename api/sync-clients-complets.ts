@@ -490,6 +490,24 @@ export default async function handler(req: any, res: any) {
       }
       return res.status(200).json(rapport);
     }
+    // ── RECHERCHE CONTACT PAR E-MAIL / TEXTE — LECTURE SEULE ──
+    // ?test=email&v=achats@lapousseraie.fr → contacts dont l'e-mail contient v + leurs entreprises
+    if (q.get("test") === "email") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const entById = new Map<string, any>(ents.map((e) => [e.id, e]));
+      const v = (q.get("v") || "").toLowerCase();
+      const trouve = contacts.filter((c) => (String(c.email || "").toLowerCase().includes(v)));
+      return res.status(200).json({
+        ok: true, test: "email", v, nb: trouve.length,
+        contacts: trouve.map((c) => ({
+          id: c.id, prenom: c.prenom || "", nom: c.nom || "", role: c.role || "", email: c.email || "", tel: c.tel || "",
+          entreprises: (c.entrepriseIds || []).map((id) => ({ id, nom: entById.get(id)?.nom || id, statut: entById.get(id)?.statut || "", origine: entById.get(id)?.origine || "" })),
+        })),
+      });
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
