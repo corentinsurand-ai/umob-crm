@@ -587,6 +587,15 @@ export default async function handler(req: any, res: any) {
       const tete = (lignesCsv[0] || []).map(normH);
       const cCode = tete.findIndex((h) => h.startsWith(normH("Code client")));
       const cNom = tete.findIndex((h) => h.startsWith(normH("Nom client")));
+      // seules les colonnes « contact » sont scannées (jamais SIREN/adresse/contrat lus comme des numéros)
+      const cContact = tete.findIndex((h) => h.startsWith(normH("Contact principal")));
+      const cFonction = tete.findIndex((h) => h.startsWith(normH("Fonction")));
+      const cTelF = tete.findIndex((h) => h.startsWith(normH("Téléphone")));
+      const cMob = tete.findIndex((h) => h.startsWith(normH("Mobile")));
+      const cMail = tete.findIndex((h) => h.startsWith(normH("E-mail")));
+      const cAutres = tete.findIndex((h) => h.includes(normH("Autres contacts")));
+      const cAnciens = tete.findIndex((h) => h.includes(normH("Anciens contacts")));
+      const colsContact = [cContact, cFonction, cTelF, cMob, cMail, cAutres, cAnciens].filter((i) => i >= 0);
       const normTelX = (t: string) => String(t || "").replace(/\D/g, "");
       // e-mails et téléphones déclarés par code client (toutes les colonnes, dont « Autres contacts »)
       const declParCode = new Map<string, { emails: Set<string>; tels: Set<string>; nom: string }>();
@@ -595,7 +604,7 @@ export default async function handler(req: any, res: any) {
         if (!/^C\d+$/i.test(code)) continue;
         if (!declParCode.has(code)) declParCode.set(code, { emails: new Set<string>(), tels: new Set<string>(), nom: (l[cNom] || "").trim() });
         const d = declParCode.get(code)!;
-        for (const cell of l) {
+        for (const ci of colsContact) { const cell = l[ci] || "";
           const ems = cell.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || [];
           for (const m of ems) d.emails.add(m);
           const tels = cell.match(/\+?\d[\d .\-]{7,}\d/g) || [];
