@@ -573,6 +573,75 @@ export default async function handler(req: any, res: any) {
       }
       return res.status(200).json(rapport);
     }
+    // ── VÉRIFICATION GLOBALE (lecture seule) : chaque e-mail / téléphone déclaré dans le Sheet
+    //    doit être porté par un contact rattaché à la bonne fiche CRM.
+    //    ?test=verifySheetContacts → { ok, manquants (déclaré Sheet, absent de la fiche), deplaces (présent ailleurs), sansFiche }
+    if (q.get("test") === "verifySheetContacts") {
+      if (!supabaseUrl || !supaKey) return res.status(503).json({ erreur: "env manquante" });
+      const { etat } = await lireEtat(supabaseUrl, supaKey);
+      const ents: any[] = etat.entreprises || [];
+      const contacts: any[] = etat.contacts || [];
+      const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1nikK5_dBeFSYuOLz8Inr7UsTXvdJZUbjhUoiof7FZCk/export?format=csv"; // export = onglet COMPLET même si filtre de vue actif
+      const txt = await (await fetch(SHEET_CSV)).text();
+      const lignesCsv = parserCSV(txt);
+      const tete = (lignesCsv[0] || []).map(normH);
+      const cCode = tete.findIndex((h) => h.startsWith(normH("Code client")));
+      const cNom = tete.findIndex((h) => h.startsWith(normH("Nom client")));
+      const normTelX = (t: string) => String(t || "").replace(/\D/g, "");
+      // e-mails et téléphones déclarés par code client (toutes les colonnes, dont « Autres contacts »)
+      const declParCode = new Map<string, { emails: Set<string>; tels: Set<string>; nom: string }>();
+      for (const l of lignesCsv.slice(1)) {
+        const code = (l[cCode] || "").trim();
+        if (!/^C\d+$/i.test(code)) continue;
+        if (!declParCode.has(code)) declParCode.set(code, { emails: new Set<string>(), tels: new Set<string>(), nom: (l[cNom] || "").trim() });
+        const d = declParCode.get(code)!;
+        for (const cell of l) {
+          const ems = cell.toLowerCase().match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/g) || [];
+          for (const m of ems) d.emails.add(m);
+          const tels = cell.match(/\+?\d[\d .\-]{7,}\d/g) || [];
+          for (const t of tels) { const n = normTelX(t); if (n.length >= 9 && n.length <= 11) d.tels.add(n); }
+        }
+      }
+      const clientsSheet = chargerClientsDepuisCSV(txt);
+      const idx = construireIndex(ents);
+      const contactParEmail = new Map<string, any[]>();
+      const contactParTel = new Map<string, any[]>();
+      for (const c of contacts) {
+        const em = String(c.email || "").toLowerCase();
+        if (em) { if (!contactParEmail.has(em)) contactParEmail.set(em, []); contactParEmail.get(em)!.push(c); }
+        const nt = normTelX(c.tel || "");
+        if (nt.length >= 9) { if (!contactParTel.has(nt)) contactParTel.set(nt, []); contactParTel.get(nt)!.push(c); }
+      }
+      let fichesOk = 0, sansFiche = 0;
+      const manquants: any[] = [], deplaces: any[] = [];
+      let nbDecl = 0;
+      for (const cl of clientsSheet) {
+        const d = declParCode.get(cl.code);
+        if (!d) continue;
+        const i = matchEntreprise(cl, idx);
+        if (i < 0) { sansFiche++; if (sansFiche <= 50) manquants.push({ type: "clientSansFiche", code: cl.code, nom: cl.nom }); continue; }
+        const ent = ents[i];
+        fichesOk++;
+        const entId = ent.id;
+        for (const em of d.emails) {
+          nbDecl++;
+          const lst = contactParEmail.get(em) || [];
+          const surFiche = lst.some((c) => (c.entrepriseIds || []).includes(entId));
+          if (surFiche) continue;
+          if (lst.length === 0) { if (manquants.length < 800) manquants.push({ type: "emailAbsent", code: cl.code, ent: ent.nom, entId, email: em }); }
+          else { if (deplaces.length < 800) deplaces.push({ type: "emailAilleurs", code: cl.code, ent: ent.nom, entId, email: em, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
+        }
+        for (const nt of d.tels) {
+          nbDecl++;
+          const lst = contactParTel.get(nt) || [];
+          const surFiche = lst.some((c) => (c.entrepriseIds || []).includes(entId));
+          if (surFiche) continue;
+          if (lst.length === 0) { if (manquants.length < 800) manquants.push({ type: "telAbsent", code: cl.code, ent: ent.nom, entId, tel: nt }); }
+          else { if (deplaces.length < 800) deplaces.push({ type: "telAilleurs", code: cl.code, ent: ent.nom, entId, tel: nt, contacts: lst.map((c) => ({ id: c.id, nom: (String(c.prenom||"")+" "+String(c.nom||"")).trim(), ents: c.entrepriseIds })) }); }
+        }
+      }
+      return res.status(200).json({ ok: true, test: "verifySheetContacts", date: new Date().toISOString(), clientsSheet: clientsSheet.length, fichesOk, sansFiche, nbDeclares: nbDecl, nbManquants: manquants.length, nbDeplaces: deplaces.length, manquants, deplaces });
+    }
     if (req.method === "GET") {
       return res.status(200).json({ endpoint: "/api/sync-clients-complets", usage: "POST le CSV de l'onglet Clients Complets en body (text/csv) · GET ?test=etat", env: !!supabaseUrl && !!supaKey });
     }
