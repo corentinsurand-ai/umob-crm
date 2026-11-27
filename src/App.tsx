@@ -2768,14 +2768,30 @@ const URL_SHEET_CONTRATS_CSV = "https://docs.google.com/spreadsheets/d/1BqPp8wPd
 let cacheContratsBase: { at: number; lignes: string[][] } | null = null;
 
 // Lecture paginée du CSV gviz (même mécanique que lireToutSheet, cache 60 s).
+// Fetch du CSV gviz AVEC retry : le CSV public de Google est refusé par
+// intermittence (limite de débit, surtout quand on enchaîne les fiches) —
+// sans retry, le détail renouvellement ne s'affichait « pas toujours ».
+const fetchContratsCsv = async (url: string, essais = 3): Promise<string> => {
+  let derniereErr = "";
+  for (let i = 0; i < essais; i++) {
+    try {
+      const rep = await fetch(url);
+      if (rep.ok) return await rep.text();
+      derniereErr = "HTTP " + rep.status;
+    } catch (e) { derniereErr = String(e); }
+    if (i < essais - 1) await new Promise((d) => setTimeout(d, 1200 * (i + 1)));
+  }
+  throw new Error("Sheet Base contrats inaccessible (" + derniereErr + ")");
+};
+
 const lireContratsBase = async (): Promise<string[][]> => {
-  if (cacheContratsBase && Date.now() - cacheContratsBase.at < 60000) return cacheContratsBase.lignes;
+  // Cache 5 min : le Sheet change rarement, et chaque ouverture de fiche
+  // déclenche une lecture — marteler Google déclenche sa limite de débit.
+  if (cacheContratsBase && Date.now() - cacheContratsBase.at < 300000) return cacheContratsBase.lignes;
   const vues = new Set<string>();
   const toutes: string[][] = [];
   for (let off = 0; off < 5000;) {
-    const rep = await fetch(URL_SHEET_CONTRATS_CSV + "%20offset%20" + off);
-    if (!rep.ok) throw new Error("HTTP " + rep.status);
-    const page = parserCSV(await rep.text());
+    const page = parserCSV(await fetchContratsCsv(URL_SHEET_CONTRATS_CSV + "%20offset%20" + off));
     if (page.length === 0) break;
     // Le gviz de cet onglet ne renvoie PAS de ligne d'en-têtes : TOUTES les
     // lignes sont des données (la ligne 1 du Sheet, une note, sera écartée
