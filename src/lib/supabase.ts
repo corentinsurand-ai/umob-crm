@@ -55,13 +55,20 @@ function decouperShards(etat: any): { base: any; shards: { id: string; data: any
 
 /** Charge l'état complet du CRM (main + shards fusionnés). Retourne null si la base est encore vide. */
 export async function chargerEtat(): Promise<unknown | null> {
-  const { data, error } = await supabase
+  // ⚠️ L'ancienne lecture unique `.or("id.eq.main,id.like.ent-%")` ramenait la
+  // ligne main + TOUS les shards dans UN SEUL flux de plusieurs Mo : à mesure
+  // que la base grossissait, Supabase a commencé à répondre 500 par
+  // intermittence (« Impossible de charger le CRM » au rechargement).
+  // Nouvelle lecture : la ligne `main` seule (petite), puis la liste des IDs
+  // de shards (requête légère sans colonne data), puis chaque shard
+  // SÉPARÉMENT (~1 Mo max par requête, 5 en parallèle). Jamais de flux géant.
+  const { data: dMain, error: eMain } = await supabase
     .from("crm_etat")
     .select("id,data")
-    .or("id.eq.main,id.like.ent-%");
-  if (error) throw new Error(error.message);
-  const rows = (data || []) as LigneEtat[];
-  const main = rows.find((r) => r.id === "main");
+    .eq("id", "main")
+    .limit(1);
+  if (eMain) throw new Error(eMain.message);
+  const main = ((dMain || [])[0] as LigneEtat | undefined);
   if (!main) return null;
   const etat: any = (main.data || {}) as any;
   const vus = new Set<string>();
@@ -72,10 +79,32 @@ export async function chargerEtat(): Promise<unknown | null> {
     }
   };
   ajouter(Array.isArray(etat.entreprises) ? etat.entreprises : []);
-  const shards = rows
-    .filter((r) => r.id.startsWith("ent-"))
-    .sort((a, b) => a.id.localeCompare(b.id));
-  for (const s of shards) ajouter(((s.data as any) || {}).entreprises);
+  // IDs des shards, triés lexicographiquement (ent-0000 … ent-9999).
+  const { data: dIds, error: eIds } = await supabase
+    .from("crm_etat")
+    .select("id")
+    .like("id", "ent-%")
+    .order("id");
+  if (eIds) throw new Error(eIds.message);
+  const ids = ((dIds || []) as { id: string }[]).map((x) => x.id);
+  // Les shards un par un, par petits lots parallèles : si l'un échoue, on
+  // retente UNE fois (limite de débit passagère) avant d'abandonner.
+  for (let lot = 0; lot < ids.length; lot += 5) {
+    const morceau = ids.slice(lot, lot + 5);
+    const resultats = await Promise.all(morceau.map(async (id) => {
+      for (let essai = 0; essai < 2; essai++) {
+        const { data: dS, error: eS } = await supabase
+          .from("crm_etat")
+          .select("data")
+          .eq("id", id)
+          .limit(1);
+        if (!eS) return ((dS || [])[0] as any)?.data;
+        if (essai === 1) throw new Error("shard " + id + " : " + eS.message);
+        await new Promise((r) => setTimeout(r, 800));
+      }
+    }));
+    for (const d of resultats) ajouter(((d as any) || {}).entreprises);
+  }
   etat.entreprises = ents;
   return etat;
 }
