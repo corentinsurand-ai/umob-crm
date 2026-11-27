@@ -2833,7 +2833,7 @@ const numSheetContrats = (s: string): number | undefined => {
 // Parse l'onglet Renouvellements : une entrée par n° de dossier (Locam ou
 // RTS). Le gviz ne renvoie PAS la ligne d'en-têtes : index FIXES vérifiés,
 // avec détection des en-têtes en secours si le format gviz change un jour.
-interface LigneRenouv { code: string; siren: string; dossier: string; renouv: RenouvData }
+interface LigneRenouv { code: string; siren: string; dossier: string; tel: string; contact: string; email: string; renouv: RenouvData }
 // Positions des colonnes de l'onglet Renouvellements, dans l'ordre du Sheet.
 // Le gviz de cet onglet NE RENVOIE PAS la ligne d'en-têtes (la ligne 1 du
 // Sheet est une note fusionnée) : on utilise ces index FIXES, vérifiés sur le
@@ -2846,6 +2846,7 @@ const FIXES_RENOUV: Record<string, number> = {
   "VR / scooter HT": 20, "A empiler du dossier HT": 21, "Statut du retour": 23, "Date de signature": 25,
   "SIREN": 38, "Fiabilite de la VR": 42, "Loyer mensuel TTC": 45, "Scooters": 46,
   "Loyer financier HT (W)": 50, "Capital finance net (P)": 55, "Batt. supp.": 58,
+  "Telephone": 10, "Contact": 11, "E-mail": 37,
 };
 const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
   const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
@@ -2863,7 +2864,7 @@ const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
     cEmp = col("A empiler du dossier HT"), cFiab = col("Fiabilite de la VR"), cRetour = col("Statut du retour"),
     cSign = col("Date de signature"), cDer = col("Dernier loyer paye le"), cEch = col("Echeance payee souhaitee (a saisir)"),
     cCap = col("Capital finance net (P)"), cW = col("Loyer financier HT (W)"), cBatt = col("Batt. supp."),
-    cDebut = col("Debut du contrat (1er loyer)");
+    cDebut = col("Debut du contrat (1er loyer)"), cTelR = col("Telephone"), cContactR = col("Contact"), cMailR = col("E-mail");
   if (cDossier < 0 || cCode < 0) return [];
   const out: LigneRenouv[] = [];
   for (const l of lignes.slice(debutData)) {
@@ -2884,6 +2885,7 @@ const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
     const prioBrute = g(l, cPrio); // « 1 - Fenêtre idéale (37-40) » → « 1 »
     out.push({
       code: g(l, cCode), siren: g(l, cSiren), dossier,
+      tel: g(l, cTelR), contact: g(l, cContactR), email: g(l, cMailR),
       renouv: {
         bien: g(l, cBien) || undefined,
         scooters: numSheetContrats(g(l, cScoot)),
@@ -3048,7 +3050,7 @@ function DetailRenouv({ r }: { r: RenouvData }) {
    EXACTEMENT à cette entreprise sont considérées ; sans n° de dossier Locam
    connu, la ligne est ignorée. Aucun match par nom. Rien n'est créé : sans
    correspondance, la fiche reste intacte. ── */
-function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (patch: Partial<Entreprise>) => void }) {
+function SyncContratsBase({ ent, contacts, onModifie, onAjoutContact }: { ent: Entreprise; contacts?: Contact[]; onModifie: (patch: Partial<Entreprise>) => void; onAjoutContact?: (c: Contact) => void }) {
   // Chargement À LA DEMANDE (demande de Corentin 27/11) : la lecture du Sheet
   // ne se déclenche PLUS automatiquement à chaque ouverture de fiche (limite
   // de débit Google, fiche plus longue à s'afficher). Hybride : si le Sheet
@@ -3097,7 +3099,24 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
         if (!k) continue; /* n° de dossier inconnu ou ambigu sur cette fiche → on ne devine PAS */
         if (JSON.stringify(k.renouv || null) !== JSON.stringify(r.renouv)) { k.renouv = r.renouv; change = true; }
       }
-      if (change) onModifie({ contrats: cs, ...fusionnerContrats(cs) });
+      // ── RATTRAPAGE COORDONNÉES (demande 27/11 — cas COSAIX : la ligne
+      // « Base contrats » porte téléphone / contact / e-mail alors que la
+      // fiche ne sait rien). Anti-écrasement : on ne remplit que ce qui est
+      // VIDE sur la fiche ; anti-doublon : le contact n'est créé que si
+      // personne (même nom, e-mail ou téléphone) n'existe déjà. ──
+      const ligTel = (miens.map((r) => r.tel).find((t) => (t || "").replace(/\D/g, "").length >= 9) || "").trim();
+      const ligContact = (miens.map((r) => r.contact).find(Boolean) || "").trim();
+      const ligMail = (miens.map((r) => r.email).find((t) => (t || "").includes("@")) || "").trim();
+      const patch: Partial<Entreprise> = {};
+      if (change) Object.assign(patch, { contrats: cs, ...fusionnerContrats(cs) });
+      if (!ent.tel && ligTel) patch.tel = ligTel;
+      if (Object.keys(patch).length) onModifie(patch);
+      if (ligContact && onAjoutContact) {
+        const tk = ligContact.split(/\s+/).filter(Boolean);
+        const prenom = tk.length > 1 ? tk[0] : "", nom = tk.length > 1 ? tk.slice(1).join(" ") : ligContact;
+        const existe = (contacts || []).some((c) => c.entrepriseIds.includes(ent.id) && memePersonne(c, { prenom, nom, email: ligMail, tel: ligTel }));
+        if (!existe) onAjoutContact({ id: "c" + Date.now(), prenom, nom, role: "Contact (Base contrats)", email: ligMail, tel: ligTel, entrepriseIds: [ent.id] });
+      }
       setSt("ok");
     } catch { setSt("ko"); }
   };
@@ -3172,7 +3191,7 @@ function VoletRecherche({ q, etat, onOuvre }: { q: string; etat: Etat; onOuvre: 
   );
 }
 
-function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite, onMajActivite, onOuvrirDevis }: {
+function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite, onModifie, onMajContacts, onRouvrirDevis, onMarquerDevisEnvoye, onMarquerDevisAccepte, onAnnulerDevisAccepte, onSupprimerDevis, onSupprimerActivite, onMajActivite, onOuvrirDevis, onAjoutContact }: {
   etat: Etat; id: string;
   onRetour: () => void;
   onOuvre: (c: Cible) => void;              // ouvre la modale (édition, deals…)
@@ -3187,6 +3206,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
   onSupprimerDevis: (devisId: string) => void; // supprime le devis archivé de la fiche
   onSupprimerActivite: (ev: Activite) => void; // supprime une activité de la timeline (erreur de saisie)
   onMajActivite?: (ev: Activite, patch: Partial<Activite>) => void; // clôture / réouverture d'une tâche depuis la timeline
+  onAjoutContact?: (c: Contact) => void; // rattrapage « Base contrats » : crée le contact du Sheet s'il manque
   onOuvrirDevis?: () => void; // ouvre le module Devis avec ce compte pré-rempli
 }) {
   // ── Choix de la DATE DE RELANCE avant l'envoi d'un devis par mail : la
@@ -3720,7 +3740,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 que le panneau À propos). Source des données auto : Sheet
                 « Infos Service Client » (packs, dates, véhicules). */}
             {(e.pack || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
-              <CarteFiche titre="🛵 Contrat & flotte" action={<><SyncSheetOuverture ent={e} contacts={contacts} onModifie={onModifie} onMajContacts={onMajContacts} /><SyncContratsBase ent={e} onModifie={onModifie} /></>}>
+              <CarteFiche titre="🛵 Contrat & flotte" action={<><SyncSheetOuverture ent={e} contacts={contacts} onModifie={onModifie} onMajContacts={onMajContacts} /><SyncContratsBase ent={e} contacts={contacts} onModifie={onModifie} onAjoutContact={onAjoutContact} /></>}>
                 <div className="space-y-2">
                   {e.risque && (
                     <div className="w-full overflow-hidden rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
@@ -6618,6 +6638,7 @@ export default function App() {
             onSupprimerDevis={(devisId) => supprimerDevisArchived(fiche.id, devisId)}
             onSupprimerActivite={(ev) => supprimerActivite(fiche.id, ev)}
             onMajActivite={(ev, patch) => majActivite(fiche.id, ev, patch)}
+            onAjoutContact={(c) => setEtat((s) => ({ ...s, contacts: [...s.contacts, c] }))}
             onOuvrirDevis={() => ouvrirDevisPour(fiche.id)} />
         ) : fiche?.type === "contact" ? (
           <FicheContact etat={etat} id={fiche.id} onRetour={() => setFiche(null)}
