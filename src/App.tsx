@@ -3042,11 +3042,12 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
       const rows = parserContratsBase(lignes);
       if (!rows.length) { if (!annule) setSt(""); return; }
       const dig = (s: string) => (s || "").replace(/\D/g, "");
-      const codeEnt = ((ent.notes || "").match(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/i) || [])[1];
+      // TOUS les codes consignés en notes de la fiche (pas seulement le 1er).
+      const codesEnt = [...((ent.notes || "").matchAll(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/gi) || [])].map((m) => m[1].toUpperCase());
       const snEnt = dig(ent.siren || "");
       // MATCH STRICT : code client EBP identique, ou SIREN identique. Jamais le nom.
       const miens = rows.filter((r) =>
-        (r.code && codeEnt && r.code.toUpperCase() === codeEnt.toUpperCase()) ||
+        (r.code && codesEnt.includes(r.code.toUpperCase())) ||
         (snEnt.length >= 9 && dig(r.siren).length >= 9 && dig(r.siren) === snEnt));
       if (!miens.length) { if (!annule) setSt(""); return; }
       const cs = (ent.contrats || []).map((k) => ({ ...k }));
@@ -5587,6 +5588,16 @@ const syncDepuisSheet = async (etatInitial: Etat): Promise<{ crees: number; modi
     let crees = 0, modifies = 0, inchanges = 0;
     const nouveaux = [...ents];
     const utilises = new Set<number>();
+    // Codes clients DÉJÀ consignés dans les notes d'une fiche (tous formats :
+    // « Code Sheet: C… » et « Code client C… »). Sert à ne JAMAIS perdre un
+    // compte : si le matching flou (nom/tél) pointe sur une fiche déjà
+    // utilisée par un autre code, on crée une fiche DÉDIÉE plutôt que
+    // d'ignorer le client.
+    const codesEnNotes = new Set<string>();
+    for (const e of nouveaux) {
+      const ns = String((e as any).notes || "");
+      for (const m of ns.matchAll(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/gi)) codesEnNotes.add(m[1].toUpperCase());
+    }
     const match = (cl: ClientSheet): number => {
       const nClient = norme(cl.nom); if (!nClient) return -1;
       const sc = normTel((cl as any).siren || ""); if (sc.length >= 9 && bySiren.has(sc)) return bySiren.get(sc)!;
@@ -5600,8 +5611,12 @@ const syncDepuisSheet = async (etatInitial: Etat): Promise<{ crees: number; modi
       const i = match(cl);
       const statutSheet = (cl as any).statutClient || (cl.lignes.length ? cl.lignes[0].etat : "");
       const estActif = norme(statutSheet).includes("actif");
-      if (i >= 0 && utilises.has(i)) { inchanges++; continue; }
-      if (i >= 0) {
+      if (i >= 0 && utilises.has(i) && codesEnNotes.has(cl.code.toUpperCase())) { inchanges++; continue; }
+      // NB : si le match flou (nom/téléphone) pointe sur une fiche déjà
+      // utilisée par un AUTRE code, on tombe dans le « else » ci-dessous et on
+      // CRÉE une fiche dédiée : jamais de fusion hasardeuse de deux clients,
+      // jamais de compte perdu par un simple « déjà vu ».
+      if (i >= 0 && !utilises.has(i)) {
         utilises.add(i);
         const e = nouveaux[i] as any;
         const avant = JSON.stringify({ s: e.statut, p: e.pack, im: e.immatriculations, r: e.risque });
@@ -6748,8 +6763,12 @@ function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: 
   const fichesParCode = useMemo(() => {
     const m = new Map<string, Entreprise[]>();
     for (const e of etat.entreprises) {
-      const c = (((e.notes || "").match(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/i) || [])[1] || "").toUpperCase();
-      if (c) { const t = m.get(c) || []; t.push(e); m.set(c, t); }
+      // TOUS les codes consignés en notes (une fiche peut en porter plusieurs,
+      // ex. « Code Sheet: C2119 » + « Code client C2242 » selon les imports).
+      for (const mm of ((e.notes || "").matchAll(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/gi) || [])) {
+        const c = mm[1].toUpperCase();
+        const t = m.get(c) || []; t.push(e); m.set(c, t);
+      }
     }
     return m;
   }, [etat.entreprises]);
