@@ -5800,7 +5800,7 @@ export default function App() {
           const etatCharge = normaliser(d as Etat);
           setEtat(etatCharge);
           setEtatGlobal = setEtat;
-          syncDepuisSheet(etatCharge).then((r) => { if (r.crees || r.modifies) console.log("SYNC SHEET AUTO résultat:", r); });
+          syncDepuisSheet(etatCharge).then((r) => console.log("SYNC SHEET AUTO résultat:", r));
           // ── Restauration de la dernière page visitée : APRÈS le chargement de
           // la base, quand les ids existent vraiment. Une fiche supprimée depuis
           // → retour accueil, jamais un écran vide. localStorage corrompu ou
@@ -6598,7 +6598,7 @@ export default function App() {
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} onMajActivite={majActivite} />}
             {vue === "arrivees" && <VueArrivees arrivees={arrivees} etat={etat} onValider={validerArrivee} onIgnorer={ignorerArrivee} onActualiser={actualiserArrivees} majLe={majArrivees} />}
-            {vue === "renouvellements" && <VueRenouvellements etat={etat} onOuvreFiche={ouvrirFiche} />}
+            {vue === "renouvellements" && <VueRenouvellements etat={etat} onOuvreFiche={ouvrirFiche} onResync={() => syncDepuisSheet(etat)} majEtat={() => etat.entreprises.length} />}
             {vue === "import" && <VueImportQuarantaine etat={etat} onImporter={importerQuarantaine} />}
             {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel, entId: x.id }))}
@@ -6739,7 +6739,7 @@ function VueArrivees({ arrivees, etat, onValider, onIgnorer, onActualiser, majLe
    aucune création de fiche. Le lien vers une fiche client n'apparaît que si
    le CODE CLIENT EBP du dossier correspond au « Code Sheet: … » des notes
    d'UNE fiche existante — jamais de rattachement par nom. */
-function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: (f: FicheRef) => void }) {
+function VueRenouvellements({ etat, onOuvreFiche, onResync, majEtat }: { etat: Etat; onOuvreFiche: (f: FicheRef) => void; onResync: () => Promise<{ crees: number; modifies: number; inchanges: number }>; majEtat: () => number }) {
   const [rows, setRows] = useState<LigneRenouv[] | null>(null);
   const [erreur, setErreur] = useState("");
   const [prioF, setPrioF] = useState("all");
@@ -6780,6 +6780,21 @@ function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: 
     }
     return m;
   }, [etat.entreprises]);
+  // 🏥 Diagnostic : combien de fiches portent un code client EBP en notes.
+  const fichesAvecCode = useMemo(() =>
+    etat.entreprises.filter((e) => /Code\s+(?:Sheet|client)\s*:?\s*C\d{3,6}/i.test(e.notes || "")).length,
+  [etat.entreprises]);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncOccupe, setSyncOccupe] = useState(false);
+  const resynchroniser = async () => {
+    setSyncOccupe(true); setSyncMsg("⏳ Resynchro Clients Complets en cours…");
+    try {
+      const r = await onResync();
+      setSyncMsg(`✅ Resynchro : ${r.crees} fiche(s) créée(s), ${r.modifies} mise(s) à jour, ${r.inchanges} inchangée(s)` + (r.crees || r.modifies ? " — enregistrement automatique en cours (~5 s)…" : ""));
+    } catch (err) {
+      setSyncMsg("❌ Resynchro échouée : " + String(err));
+    } finally { setSyncOccupe(false); }
+  };
   const eur = (n?: number) => (n === undefined || n === null || Number.isNaN(n) ? "—" : Math.round(n).toLocaleString("fr-FR") + " €");
   if (erreur) return (
     <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center">
@@ -6810,6 +6825,18 @@ function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: 
         </div>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Client, code EBP, dossier, bien…"
           className="w-64 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+      </div>
+      {/* 🏥 Diagnostic + resynchro manuelle : le rattachement des dossiers
+          dépend des fiches qui portent un code client EBP en notes. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-2.5">
+        <span className="text-[11.5px] font-bold text-slate-500">🏥 Diagnostic :</span>
+        <span className="text-[11.5px] text-slate-600">{majEtat()} fiche(s) en base · <b>{fichesAvecCode}</b> avec code EBP en notes</span>
+        <button disabled={syncOccupe} onClick={resynchroniser}
+          className="ml-auto rounded-xl px-3 py-1.5 text-[11.5px] font-black text-white disabled:opacity-50"
+          style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
+          🔄 Resynchroniser Clients Complets
+        </button>
+        {syncMsg && <span className="text-[11px] font-bold text-slate-600">{syncMsg}</span>}
       </div>
       {/* KPIs par priorité (filtres cliquables) */}
       <div className="flex flex-wrap gap-1.5">
