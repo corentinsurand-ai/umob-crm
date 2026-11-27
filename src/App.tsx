@@ -3042,7 +3042,7 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
       const rows = parserContratsBase(lignes);
       if (!rows.length) { if (!annule) setSt(""); return; }
       const dig = (s: string) => (s || "").replace(/\D/g, "");
-      const codeEnt = ((ent.notes || "").match(/Code Sheet\s*:?\s*(C\d{3,6})/i) || [])[1];
+      const codeEnt = ((ent.notes || "").match(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/i) || [])[1];
       const snEnt = dig(ent.siren || "");
       // MATCH STRICT : code client EBP identique, ou SIREN identique. Jamais le nom.
       const miens = rows.filter((r) =>
@@ -6742,13 +6742,22 @@ function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: 
     })();
     return () => { annule = true; };
   }, []);
-  // Rattachement STRICT par code client EBP : une fiche est liée à un dossier
-  // UNIQUEMENT si son code Sheet (notes) est identique. Jamais par nom.
+  // Rattachement STRICT par code client EBP (notes « Code Sheet: … » ou
+  // « Code client … », selon la source d'import), avec secours SIREN à 9
+  // chiffres — la même règle que la synchro des fiches. Jamais par nom.
   const fichesParCode = useMemo(() => {
     const m = new Map<string, Entreprise[]>();
     for (const e of etat.entreprises) {
-      const c = (((e.notes || "").match(/Code Sheet\s*:?\s*(C\d{3,6})/i) || [])[1] || "").toUpperCase();
+      const c = (((e.notes || "").match(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/i) || [])[1] || "").toUpperCase();
       if (c) { const t = m.get(c) || []; t.push(e); m.set(c, t); }
+    }
+    return m;
+  }, [etat.entreprises]);
+  const fichesParSiren = useMemo(() => {
+    const m = new Map<string, Entreprise[]>();
+    for (const e of etat.entreprises) {
+      const s = (e.siren || "").replace(/\D/g, "");
+      if (s.length >= 9) { const t = m.get(s) || []; t.push(e); m.set(s, t); }
     }
     return m;
   }, [etat.entreprises]);
@@ -6810,7 +6819,8 @@ function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: 
             </thead>
             <tbody>
               {liste.slice(0, 400).map((r) => {
-                const fiches = fichesParCode.get((r.code || "").toUpperCase()) || [];
+                const sn = (r.siren || "").replace(/\D/g, "");
+                const fiches = fichesParCode.get((r.code || "").toUpperCase()) || (sn.length >= 9 ? (fichesParSiren.get(sn) || []) : []);
                 const fiche = fiches.length === 1 ? fiches[0] : null;
                 return (
                   <tr key={r.dossier + r.code} className="border-t border-slate-100 hover:bg-slate-50/60">
