@@ -2772,28 +2772,28 @@ const lireContratsBase = async (): Promise<string[][]> => {
   if (cacheContratsBase && Date.now() - cacheContratsBase.at < 60000) return cacheContratsBase.lignes;
   const vues = new Set<string>();
   const toutes: string[][] = [];
-  let avecEntete = false;
   for (let off = 0; off < 5000;) {
     const rep = await fetch(URL_SHEET_CONTRATS_CSV + "%20offset%20" + off);
     if (!rep.ok) throw new Error("HTTP " + rep.status);
     const page = parserCSV(await rep.text());
     if (page.length === 0) break;
-    if (!avecEntete) { toutes.push(page[0]); avecEntete = true; }
+    // Le gviz de cet onglet ne renvoie PAS de ligne d'en-têtes : TOUTES les
+    // lignes sont des données (la ligne 1 du Sheet, une note, sera écartée
+    // par le filtre « n° dossier » du parseur). Déduplication par contenu.
     let nouvelles = 0;
-    for (const l of page.slice(1)) {
+    for (const l of page) {
       const cle = JSON.stringify(l);
       if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; }
     }
-    const nb = page.length - 1;
-    if (nb === 0 || nouvelles === 0) break;
-    off += nb;
+    if (nouvelles === 0) break; /* fin du classeur atteinte */
+    off += page.length;
   }
-  if (!avecEntete) throw new Error("Sheet Base contrats vide");
+  if (!toutes.length) throw new Error("Sheet Base contrats vide");
   cacheContratsBase = { at: Date.now(), lignes: toutes };
   return toutes;
 };
 
-// Extrait {y,m} d'une date gviz (« 2026-11-30 00:00:00 », « 30/11/2026 »…).
+// Extrait {y,m} d'une date (« 30/11/2026 », « 2026-11-30 00:00:00 »…).
 const lireDateSheetContrats = (s: string): { y: number; m: number } | null => {
   const t = (s || "").trim();
   let m = t.match(/(\d{4})-(\d{2})-(\d{2})/);
@@ -2802,21 +2802,44 @@ const lireDateSheetContrats = (s: string): { y: number; m: number } | null => {
   if (m) return { y: +m[3], m: +m[2] };
   return null;
 };
+// Date ISO « 2023-07-30 » pour le simulateur (anniversaire du 1er loyer).
+const isoDepuisDate = (s: string): string | undefined => {
+  const d = lireDateSheetContrats(s);
+  return d ? d.y + "-" + String(d.m).padStart(2, "0") + "-01" : undefined;
+};
+// Nombre du Sheet gviz : « 1 652 », « 8 337,95 », « 10,26% » (espaces fines,
+// virgule décimale). Sans nettoyage, parseFloat lirait « 1 » et « 8 » !
 const numSheetContrats = (s: string): number | undefined => {
-  const v = parseFloat((s || "").replace(",", "."));
+  const v = parseFloat((s || "").replace(/[\s\u00a0\u202f]/g, "").replace("%", "").replace(",", "."));
   return Number.isFinite(v) ? v : undefined;
 };
 
-// Parse l'onglet Renouvellements : détection robuste de la ligne d'en-têtes
-// (la ligne 1 du Sheet est une note), puis une entrée par dossier Locam.
+// Parse l'onglet Renouvellements : une entrée par n° de dossier (Locam ou
+// RTS). Le gviz ne renvoie PAS la ligne d'en-têtes : index FIXES vérifiés,
+// avec détection des en-têtes en secours si le format gviz change un jour.
 interface LigneRenouv { code: string; siren: string; dossier: string; renouv: RenouvData }
+// Positions des colonnes de l'onglet Renouvellements, dans l'ordre du Sheet.
+// Le gviz de cet onglet NE RENVOIE PAS la ligne d'en-têtes (la ligne 1 du
+// Sheet est une note fusionnée) : on utilise ces index FIXES, vérifiés sur le
+// CSV réel. Si un jour le gviz renvoie les en-têtes, la détection ci-dessous
+// prend le dessus.
+const FIXES_RENOUV: Record<string, number> = {
+  "Priorite": 0, "Etat du dossier": 1, "Code client EBP": 3, "N° dossier (financeur)": 4,
+  "Debut du contrat (1er loyer)": 5, "Loyers payes": 7, "Duree du contrat": 8, "Bien finance": 12,
+  "Dernier loyer paye le": 17, "Echeance payee souhaitee (a saisir)": 18, "VR dossier HT": 19,
+  "VR / scooter HT": 20, "A empiler du dossier HT": 21, "Statut du retour": 23, "Date de signature": 25,
+  "SIREN": 38, "Fiabilite de la VR": 42, "Loyer mensuel TTC": 45, "Scooters": 46,
+  "Loyer financier HT (W)": 50, "Capital finance net (P)": 55, "Batt. supp.": 58,
+};
 const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
   const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
-  const iEntetes = lignes.slice(0, 15).findIndex((l) => normH(l[0]) === "priorite");
-  if (iEntetes < 0) return [];
-  const tete = lignes[iEntetes].map(normH);
-  const col = (n: string) => tete.findIndex((h) => h === normH(n));
   const g = (l: string[], i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
+  // Détection de la ligne d'en-têtes (si le gviz la renvoie un jour) ;
+  // sinon index FIXES vérifiés sur le CSV réel.
+  const iEntetes = lignes.slice(0, 15).findIndex((l) => normH(l[0]) === "priorite");
+  const tete = iEntetes >= 0 ? lignes[iEntetes].map(normH) : null;
+  const col = (n: string) => tete ? tete.findIndex((h) => h === normH(n)) : (FIXES_RENOUV[n] ?? -1);
+  const debutData = iEntetes >= 0 ? iEntetes + 1 : 0;
   const cPrio = col("Priorite"), cEtatD = col("Etat du dossier"), cCode = col("Code client EBP"),
     cDossier = col("N° dossier (financeur)"), cSiren = col("SIREN"), cBien = col("Bien finance"),
     cScoot = col("Scooters"), cPayes = col("Loyers payes"), cDuree = col("Duree du contrat"),
@@ -2827,8 +2850,13 @@ const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
     cDebut = col("Debut du contrat (1er loyer)");
   if (cDossier < 0 || cCode < 0) return [];
   const out: LigneRenouv[] = [];
-  for (const l of lignes.slice(iEntetes + 1)) {
-    const dossier = g(l, cDossier); if (!dossier) continue;
+  for (const l of lignes.slice(debutData)) {
+    if (l.length < 46) continue; /* ligne trop courte : jamais d'attribution au pivot hasardeux */
+    const dossier = g(l, cDossier);
+    // N° dossier « Locam 1757943 » ou « RTS 103 » (les deux financeurs du
+    // Sheet). Écarte la ligne-note et les lignes vides ; on n'accepte QUE
+    // ce format, jamais un contenu libre.
+    if (!/^[A-Za-z]{2,5}\s*[:\-]?\s*\d{2,8}$/.test(dossier)) continue;
     const vr = numSheetContrats(g(l, cVR)); const emp = numSheetContrats(g(l, cEmp));
     const payes = numSheetContrats(g(l, cPayes));
     const dDer = lireDateSheetContrats(g(l, cDer)); const dEch = lireDateSheetContrats(g(l, cEch));
@@ -2854,7 +2882,7 @@ const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
         dernierLoyer: dDer ? g(l, cDer).replace(/(\d{4})-(\d{2})-(\d{2}).*/, "$3/$2/$1") : undefined,
         echeancePayes: echPayes, capitalNet: numSheetContrats(g(l, cCap)),
         loyerFin: numSheetContrats(g(l, cW)), battSupp: numSheetContrats(g(l, cBatt)),
-        debutIso: (g(l, cDebut).match(/(\d{4})-(\d{2})-(\d{2})/) || [])[0],
+        debutIso: isoDepuisDate(g(l, cDebut)),
         majLe: dateParis(),
       },
     });
@@ -3025,9 +3053,15 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
       let change = false;
       for (const r of miens) {
         const doss = dig(r.dossier);
-        if (doss.length < 6) continue;
-        const k = cs.find((x) => dig(x.locam || "") === doss);
-        if (!k) continue; /* n° de dossier inconnu sur cette fiche → on ne devine PAS */
+        if (doss.length < 2) continue;
+        const pref = (s: string) => (s || "").replace(/[^A-Za-z]/g, "").toUpperCase();
+        // Un même n° de dossier ne doit correspondre qu'à UN seul bloc contrat
+        // de la fiche ; en cas d'ambiguïté on ne touche à RIEN.
+        const cands = cs.filter((x) => dig(x.locam || "") === doss);
+        const k = cands.length === 1 ? cands[0]
+          : cands.length > 1 ? cands.find((x) => pref(x.locam) === pref(r.dossier))
+          : undefined;
+        if (!k) continue; /* n° de dossier inconnu ou ambigu sur cette fiche → on ne devine PAS */
         if (JSON.stringify(k.renouv || null) !== JSON.stringify(r.renouv)) { k.renouv = r.renouv; change = true; }
       }
       if (change && !annule) onModifie({ contrats: cs, ...fusionnerContrats(cs) });
