@@ -36,7 +36,25 @@ type Etape = "À qualifier" | "Proposition envoyée" | "Négociation" | "Gagné"
 // contrats (ex. LM PIZZA PUCE) obtient 2 blocs avec leurs DATES PROPRE,
 // au lieu de la période fusionnée min/max qui ne correspondait à aucun
 // contrat réel. ──
-interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string; libelle?: string; locam?: string }
+interface ContratLigne { pack: string; modele: string; num: string; dateDebut: string; dateFin: string; immats: string; etat: string; libelle?: string; locam?: string;
+  // ── Données de RENOUVELLEMENT (source : Sheet « Base contrats U'MOB »,
+  // onglet Renouvellements — export Locam). Rattachées au contrat par N° DE
+  // DOSSIER LOCAM et au compte entreprise par CODE CLIENT EBP ou SIREN :
+  // JAMAIS par nom de client (règle Corentin : aucun risque de mauvaise
+  // attribution). Lecture seule reflétée depuis le Sheet, recalculée à
+  // chaque ouverture de fiche. ──
+  renouv?: RenouvData;
+}
+// Un bloc de renouvellement par dossier Locam, tel que lu du Sheet
+// « Base contrats U'MOB » (colonnes Renouvellements + Données de calcul).
+interface RenouvData {
+  bien?: string; scooters?: number; loyersPayes?: number; duree?: number;
+  loyerTTC?: number; vr?: number; vrScooter?: number; empiler?: number;
+  reprise?: number; fiabilite?: string; etatDossier?: string; prio?: string;
+  retour?: string; signature?: string; dernierLoyer?: string;
+  echeancePayes?: number; capitalNet?: number; loyerFin?: number;
+  battSupp?: number; debutIso?: string; majLe?: string;
+}
 interface Entreprise { id: string; nom: string; nomCommercial: string; secteur: string; ville: string; site: string; tel: string; franchiseur: string; modeLivraison: string; activite: string; statut: Statut; notes: string; activites: Activite[];
   // ── SIREN + adresse postale du siège : champs PERMANENTS (fiche À propos,
   //  modale). Remplis automatiquement par la recherche SIREN / API gouv à la
@@ -2736,6 +2754,293 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   );
 }
 
+/* ═══════════════ Sheet « Base contrats U'MOB » (onglet Renouvellements) ═══════════════
+   Source des données de RENOUVELLEMENT : priorité, VR (valeur de rachat), à
+   empiler, état du dossier, statut du retour commercial + paramètres de calcul.
+   ATTRIBUTION STRICTE (règle Corentin 27/11) : une ligne du Sheet n'est JAMAIS
+   rattachée par nom de client. Le rattachement se fait UNIQUEMENT par :
+   1. CODE CLIENT EBP (ex. C2119, consigné dans les notes « Code Sheet: … » de
+      l'entreprise lors de l'import Clients Complets) ;
+   2. à défaut, SIREN identique ;
+   et à l'intérieur du compte, le bloc contrat n'est enrichi QUE si son N° DE
+   DOSSIER LOCAM correspond exactement. Sinon : on ne touche à RIEN. ── */
+const URL_SHEET_CONTRATS_CSV = "https://docs.google.com/spreadsheets/d/1BqPp8wPdf_RieDr2vTLofJ1_TrbfMz0lHgkJ_xgwapU/gviz/tq?tqx=out:csv&sheet=Renouvellements&tq=select%20*";
+let cacheContratsBase: { at: number; lignes: string[][] } | null = null;
+
+// Lecture paginée du CSV gviz (même mécanique que lireToutSheet, cache 60 s).
+const lireContratsBase = async (): Promise<string[][]> => {
+  if (cacheContratsBase && Date.now() - cacheContratsBase.at < 60000) return cacheContratsBase.lignes;
+  const vues = new Set<string>();
+  const toutes: string[][] = [];
+  let avecEntete = false;
+  for (let off = 0; off < 5000;) {
+    const rep = await fetch(URL_SHEET_CONTRATS_CSV + "%20offset%20" + off);
+    if (!rep.ok) throw new Error("HTTP " + rep.status);
+    const page = parserCSV(await rep.text());
+    if (page.length === 0) break;
+    if (!avecEntete) { toutes.push(page[0]); avecEntete = true; }
+    let nouvelles = 0;
+    for (const l of page.slice(1)) {
+      const cle = JSON.stringify(l);
+      if (!vues.has(cle)) { vues.add(cle); toutes.push(l); nouvelles++; }
+    }
+    const nb = page.length - 1;
+    if (nb === 0 || nouvelles === 0) break;
+    off += nb;
+  }
+  if (!avecEntete) throw new Error("Sheet Base contrats vide");
+  cacheContratsBase = { at: Date.now(), lignes: toutes };
+  return toutes;
+};
+
+// Extrait {y,m} d'une date gviz (« 2026-11-30 00:00:00 », « 30/11/2026 »…).
+const lireDateSheetContrats = (s: string): { y: number; m: number } | null => {
+  const t = (s || "").trim();
+  let m = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return { y: +m[1], m: +m[2] };
+  m = t.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return { y: +m[3], m: +m[2] };
+  return null;
+};
+const numSheetContrats = (s: string): number | undefined => {
+  const v = parseFloat((s || "").replace(",", "."));
+  return Number.isFinite(v) ? v : undefined;
+};
+
+// Parse l'onglet Renouvellements : détection robuste de la ligne d'en-têtes
+// (la ligne 1 du Sheet est une note), puis une entrée par dossier Locam.
+interface LigneRenouv { code: string; siren: string; dossier: string; renouv: RenouvData }
+const parserContratsBase = (lignes: string[][]): LigneRenouv[] => {
+  const normH = (s: string) => (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+  const iEntetes = lignes.slice(0, 15).findIndex((l) => normH(l[0]) === "priorite");
+  if (iEntetes < 0) return [];
+  const tete = lignes[iEntetes].map(normH);
+  const col = (n: string) => tete.findIndex((h) => h === normH(n));
+  const g = (l: string[], i: number) => (i >= 0 && i < l.length ? l[i].trim() : "");
+  const cPrio = col("Priorite"), cEtatD = col("Etat du dossier"), cCode = col("Code client EBP"),
+    cDossier = col("N° dossier (financeur)"), cSiren = col("SIREN"), cBien = col("Bien finance"),
+    cScoot = col("Scooters"), cPayes = col("Loyers payes"), cDuree = col("Duree du contrat"),
+    cTTC = col("Loyer mensuel TTC"), cVR = col("VR dossier HT"), cVRS = col("VR / scooter HT"),
+    cEmp = col("A empiler du dossier HT"), cFiab = col("Fiabilite de la VR"), cRetour = col("Statut du retour"),
+    cSign = col("Date de signature"), cDer = col("Dernier loyer paye le"), cEch = col("Echeance payee souhaitee (a saisir)"),
+    cCap = col("Capital finance net (P)"), cW = col("Loyer financier HT (W)"), cBatt = col("Batt. supp."),
+    cDebut = col("Debut du contrat (1er loyer)");
+  if (cDossier < 0 || cCode < 0) return [];
+  const out: LigneRenouv[] = [];
+  for (const l of lignes.slice(iEntetes + 1)) {
+    const dossier = g(l, cDossier); if (!dossier) continue;
+    const vr = numSheetContrats(g(l, cVR)); const emp = numSheetContrats(g(l, cEmp));
+    const payes = numSheetContrats(g(l, cPayes));
+    const dDer = lireDateSheetContrats(g(l, cDer)); const dEch = lireDateSheetContrats(g(l, cEch));
+    // Loyers payés à l'échéance souhaitée = loyers payés + mois entre le
+    // dernier loyer payé et l'échéance (la « date jaune » du Sheet).
+    const echPayes = (payes !== undefined && dDer && dEch)
+      ? payes + Math.max(0, (dEch.y * 12 + dEch.m) - (dDer.y * 12 + dDer.m))
+      : payes;
+    const prioBrute = g(l, cPrio); // « 1 - Fenêtre idéale (37-40) » → « 1 »
+    out.push({
+      code: g(l, cCode), siren: g(l, cSiren), dossier,
+      renouv: {
+        bien: g(l, cBien) || undefined,
+        scooters: numSheetContrats(g(l, cScoot)),
+        loyersPayes: payes, duree: numSheetContrats(g(l, cDuree)),
+        loyerTTC: numSheetContrats(g(l, cTTC)),
+        vr, vrScooter: numSheetContrats(g(l, cVRS)), empiler: emp,
+        reprise: (vr !== undefined && emp !== undefined) ? vr - emp : undefined,
+        fiabilite: g(l, cFiab) || undefined, etatDossier: g(l, cEtatD) || undefined,
+        prio: (prioBrute.match(/^\d/) || [])[0] || undefined,
+        retour: g(l, cRetour) || undefined,
+        signature: (lireDateSheetContrats(g(l, cSign)) ? g(l, cSign).replace(/(\d{4})-(\d{2})-(\d{2}).*/, "$3/$2/$1") : undefined),
+        dernierLoyer: dDer ? g(l, cDer).replace(/(\d{4})-(\d{2})-(\d{2}).*/, "$3/$2/$1") : undefined,
+        echeancePayes: echPayes, capitalNet: numSheetContrats(g(l, cCap)),
+        loyerFin: numSheetContrats(g(l, cW)), battSupp: numSheetContrats(g(l, cBatt)),
+        debutIso: (g(l, cDebut).match(/(\d{4})-(\d{2})-(\d{2})/) || [])[0],
+        majLe: dateParis(),
+      },
+    });
+  }
+  return out;
+};
+
+/* ── SIMULATEUR VR — même formule que le Sheet « Base contrats U'MOB » :
+   VR = capital financé net × (1+i)^D − loyer financier × (1+i) × ((1+i)^D − 1)/i,
+   avec D = loyers payés à l'échéance − 1 (1er loyer majoré, payé à la
+   signature). Le taux mensuel i est CALIBRÉ sur la VR de référence du Sheet
+   (reproduction exacte au point de départ, même courbe ensuite). À empiler =
+   VR − reprise ; payés >= durée → contrat soldé. ── */
+const vrSimulee = (P: number, W: number, i: number, payes: number): number => {
+  const D = Math.max(0, payes - 1);
+  const a = Math.pow(1 + i, D);
+  return P * a - W * (1 + i) * (a - 1) / i;
+};
+const calibrerTauxVR = (P: number, W: number, payesRef: number, vrRef: number): number => {
+  let lo = 1e-6, hi = 0.05;
+  for (let k = 0; k < 200; k++) {
+    const mid = (lo + hi) / 2;
+    if (vrSimulee(P, W, mid, payesRef) > vrRef) hi = mid; else lo = mid;
+  }
+  return (lo + hi) / 2;
+};
+const LIBELLE_PRIO_RENOUV: Record<string, string> = {
+  "1": "1 · Fenêtre idéale (37-40)", "2": "2 · Fin de contrat approche", "3": "3 · Terme dépassé / imminent",
+  "4": "4 · À préparer (34-36)", "5": "5 · Trop tôt", "7": "7 · Non démarré", "8": "8 · Signé : suivi ADV",
+};
+const COULEUR_PRIO_RENOUV: Record<string, string> = {
+  "1": "bg-emerald-100 text-emerald-700 ring-emerald-200/60",
+  "2": "bg-amber-100 text-amber-700 ring-amber-200/60",
+  "3": "bg-rose-100 text-rose-700 ring-rose-200/60",
+  "4": "bg-sky-100 text-sky-700 ring-sky-200/60",
+  "5": "bg-slate-100 text-slate-500 ring-slate-200/60",
+  "7": "bg-slate-100 text-slate-500 ring-slate-200/60",
+  "8": "bg-cyan-100 text-cyan-700 ring-cyan-200/60",
+};
+
+// Badge de priorité de renouvellement (colonne « Priorité » du Sheet).
+function PrioBadgeRenouv({ r }: { r: RenouvData }) {
+  if (!r.prio) return null;
+  return (
+    <span className={`rounded-md px-1.5 py-0.5 text-[9.5px] font-black ring-1 ring-inset ${COULEUR_PRIO_RENOUV[r.prio] || COULEUR_PRIO_RENOUV["5"]}`}
+      title="Priorité de renouvellement (Sheet Base contrats)">
+      🔄 {LIBELLE_PRIO_RENOUV[r.prio] || r.prio}
+    </span>
+  );
+}
+
+/* ── Détail renouvellement + SIMULATEUR VR, dépliable sous chaque contrat.
+   Lecture seule : reflète le Sheet ; le simulateur est une simulation locale
+   (comme la date jaune du Sheet), rien n'est écrit. ── */
+function DetailRenouv({ r }: { r: RenouvData }) {
+  const [ouvert, setOuvert] = useState(false);
+  const [payes, setPayes] = useState(r.echeancePayes || r.loyersPayes || 1);
+  const eur = (n?: number) => (n === undefined || n === null || Number.isNaN(n) ? "—" : Math.round(n).toLocaleString("fr-FR") + " € HT");
+  const duree = r.duree || 49;
+  const soldé = payes >= duree;
+  const taux = (r.capitalNet !== undefined && r.vr !== undefined)
+    ? calibrerTauxVR(r.capitalNet, r.loyerFin || 0, r.echeancePayes || r.loyersPayes || 1, r.vr) : 0;
+  const vrSim = soldé ? 0 : vrSimulee(r.capitalNet || 0, r.loyerFin || 0, taux, payes);
+  const vrScootSim = (r.scooters || 1) > 0 ? vrSim / (r.scooters || 1) : vrSim;
+  const empilerSim = vrSim - (r.reprise || 0);
+  const dateEch = () => {
+    if (!r.debutIso) return "";
+    const d = new Date(r.debutIso + "T12:00:00Z");
+    const n = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + (payes - 1), d.getUTCDate()));
+    return n.toLocaleDateString("fr-FR", { timeZone: "UTC", day: "2-digit", month: "2-digit", year: "numeric" });
+  };
+  const reference = r.echeancePayes || r.loyersPayes || 1;
+  const Ligne = ({ l, v, c }: { l: string; v: React.ReactNode; c?: string }) => (
+    <div className="border-b border-slate-50 py-1 last:border-0">
+      <div className="text-[9px] font-bold uppercase tracking-[0.08em] text-slate-400">{l}</div>
+      <div className={"text-[11.5px] font-semibold " + (c || "text-slate-700")}>{v}</div>
+    </div>
+  );
+  return (
+    <div>
+      <button onClick={() => setOuvert(!ouvert)} className="mt-1.5 w-full text-left text-[10px] font-bold text-cyan-600 hover:underline">
+        {ouvert ? "▾ Masquer le détail renouvellement (Base contrats)" : "▸ Détail renouvellement (Base contrats)"}
+      </button>
+      {ouvert && (
+        <div className="mt-1.5 rounded-xl bg-slate-50/80 p-2.5">
+          <div className="grid grid-cols-2 gap-x-3">
+            <Ligne l="Bien financé" v={r.bien || "—"} />
+            <Ligne l="Loyers payés" v={(r.loyersPayes ?? "—") + " / " + (r.duree || "—")} />
+            <Ligne l="Loyer mensuel TTC" v={r.loyerTTC ? r.loyerTTC.toLocaleString("fr-FR") + " €" : "—"} />
+            <Ligne l="État du dossier" v={r.etatDossier || "—"} c={r.etatDossier === "Sain" ? "text-emerald-600 font-bold" : r.etatDossier ? "text-amber-600 font-bold" : ""} />
+            <Ligne l="Statut du retour" v={r.retour || "—"} />
+            <Ligne l="Date de signature" v={r.signature || "—"} />
+            <Ligne l="VR dossier (Sheet)" v={eur(r.vr)} />
+            <Ligne l="Fiabilité de la VR" v={r.fiabilite || "—"} />
+          </div>
+          {/* Simulateur VR : échéance modulable, recalcul en direct */}
+          {r.capitalNet !== undefined && r.loyerFin !== undefined && (
+            <div className="mt-2 rounded-xl border border-cyan-200 bg-cyan-50/60 p-2.5">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <span className="text-[9.5px] font-black uppercase tracking-wider text-cyan-700">🧮 Simulateur VR (comme le Sheet)</span>
+                {payes !== reference && (
+                  <button onClick={() => setPayes(reference)} className="rounded-lg bg-white px-2 py-0.5 text-[9px] font-bold text-cyan-700 ring-1 ring-cyan-200 hover:bg-cyan-100">↺ Réinitialiser</button>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[9.5px] font-bold uppercase tracking-wider text-slate-400">Échéance payée le</span>
+                <button onClick={() => setPayes(Math.max(1, payes - 1))} className="h-6 w-6 rounded-lg bg-white text-[13px] font-black text-cyan-700 ring-1 ring-cyan-200 hover:bg-cyan-100">−</button>
+                <span className="min-w-[86px] rounded-lg bg-white px-2 py-1 text-center text-[10.5px] font-black text-slate-700 ring-1 ring-cyan-200">{dateEch()}</span>
+                <button onClick={() => setPayes(Math.min(duree, payes + 1))} className="h-6 w-6 rounded-lg bg-white text-[13px] font-black text-cyan-700 ring-1 ring-cyan-200 hover:bg-cyan-100">+</button>
+                <span className="text-[10px] font-bold text-slate-500">{payes} loyers payés · {duree - payes} restants</span>
+              </div>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <div className="rounded-lg bg-white px-2 py-1.5 ring-1 ring-slate-200">
+                  <div className="text-[8.5px] font-bold uppercase tracking-wider text-slate-400">VR dossier HT</div>
+                  <div className={"text-[11.5px] font-black " + (payes !== reference ? "text-cyan-700" : "text-slate-800")}>{soldé ? "Contrat soldé" : eur(vrSim)}</div>
+                </div>
+                <div className="rounded-lg bg-white px-2 py-1.5 ring-1 ring-slate-200">
+                  <div className="text-[8.5px] font-bold uppercase tracking-wider text-slate-400">VR / scooter</div>
+                  <div className="text-[11.5px] font-black text-slate-800">{soldé ? "—" : eur(vrScootSim)}</div>
+                </div>
+                <div className="rounded-lg bg-white px-2 py-1.5 ring-1 ring-slate-200">
+                  <div className="text-[8.5px] font-bold uppercase tracking-wider text-slate-400">À empiler HT</div>
+                  <div className={"text-[11.5px] font-black " + (soldé ? "text-slate-400" : empilerSim <= 0 ? "text-emerald-600" : "text-amber-600")}>
+                    {soldé ? "—" : empilerSim <= 0 ? "Reprise couvre la VR ✅" : eur(empilerSim)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] font-bold text-slate-400">
+                <span>Capital net : {(r.capitalNet || 0).toLocaleString("fr-FR")} €</span>
+                <span>Loyer financier : {(r.loyerFin || 0)} €/mois</span>
+                {r.reprise !== undefined && <span>Reprise : {Math.round(r.reprise).toLocaleString("fr-FR")} €</span>}
+              </div>
+              {payes !== reference && <div className="mt-1 text-[8.5px] font-bold text-amber-600">🧪 Simulation — rien n'est écrit dans le Sheet.</div>}
+            </div>
+          )}
+          <div className="mt-1 text-right text-[8.5px] font-medium text-slate-400">source : Sheet Base contrats · mis à jour le {r.majLe || "—"}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Synchro Base contrats à l'OUVERTURE de la fiche entreprise : lit l'onglet
+   Renouvellements et enrichit les contrats EXISTANTS (match n° dossier Locam)
+   des champs de renouvellement. Anti-mauvaise-attribution : seules les lignes
+   dont le CODE CLIENT EBP (notes « Code Sheet: … ») ou le SIREN correspond
+   EXACTEMENT à cette entreprise sont considérées ; sans n° de dossier Locam
+   connu, la ligne est ignorée. Aucun match par nom. Rien n'est créé : sans
+   correspondance, la fiche reste intacte. ── */
+function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (patch: Partial<Entreprise>) => void }) {
+  const [st, setSt] = useState<"" | "ok" | "ko">("");
+  useEffect(() => {
+    let annule = false;
+    if (!((ent.contrats || []).length > 0 || ent.statut === "Client")) return;
+    (async () => {
+      const lignes = await lireContratsBase();
+      const rows = parserContratsBase(lignes);
+      if (!rows.length) { if (!annule) setSt(""); return; }
+      const dig = (s: string) => (s || "").replace(/\D/g, "");
+      const codeEnt = ((ent.notes || "").match(/Code Sheet\s*:?\s*(C\d{3,6})/i) || [])[1];
+      const snEnt = dig(ent.siren || "");
+      // MATCH STRICT : code client EBP identique, ou SIREN identique. Jamais le nom.
+      const miens = rows.filter((r) =>
+        (r.code && codeEnt && r.code.toUpperCase() === codeEnt.toUpperCase()) ||
+        (snEnt.length >= 9 && dig(r.siren).length >= 9 && dig(r.siren) === snEnt));
+      if (!miens.length) { if (!annule) setSt(""); return; }
+      const cs = (ent.contrats || []).map((k) => ({ ...k }));
+      let change = false;
+      for (const r of miens) {
+        const doss = dig(r.dossier);
+        if (doss.length < 6) continue;
+        const k = cs.find((x) => dig(x.locam || "") === doss);
+        if (!k) continue; /* n° de dossier inconnu sur cette fiche → on ne devine PAS */
+        if (JSON.stringify(k.renouv || null) !== JSON.stringify(r.renouv)) { k.renouv = r.renouv; change = true; }
+      }
+      if (change && !annule) onModifie({ contrats: cs, ...fusionnerContrats(cs) });
+      if (!annule) setSt("ok");
+    })().catch(() => { if (!annule) setSt("ko"); });
+    return () => { annule = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ent.id]);
+  if (st === "ok") return <span className="text-[10px] font-bold text-slate-400" title="Renouvellements resynchronisés sur le Sheet Base contrats à chaque ouverture.">· 🔄 contrats à jour</span>;
+  if (st === "ko") return <span className="text-[10px] font-bold text-slate-400" title="Sheet Base contrats inaccessible (partage « lien : lecteur » requis).">· ⚠ Base contrats inaccessible</span>;
+  return null;
+}
+
 // ── VOLET DE RECHERCHE GLOBALE : s'affiche sous la barre « Rechercher… »
 //    du header dès les premiers caractères tapés. Résultats groupés par type
 //    (entreprises, contacts, devis, deals, activités), chaque ligne mène à la
@@ -3343,7 +3648,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                 que le panneau À propos). Source des données auto : Sheet
                 « Infos Service Client » (packs, dates, véhicules). */}
             {(e.pack || e.nbVehicules || e.immatriculations || e.risque || (e.modeles && e.modeles.length > 0) || ((e.contrats || []).length > 0)) && (
-              <CarteFiche titre="🛵 Contrat & flotte" action={<SyncSheetOuverture ent={e} contacts={contacts} onModifie={onModifie} onMajContacts={onMajContacts} />}>
+              <CarteFiche titre="🛵 Contrat & flotte" action={<><SyncSheetOuverture ent={e} contacts={contacts} onModifie={onModifie} onMajContacts={onMajContacts} /><SyncContratsBase ent={e} onModifie={onModifie} /></>}>
                 <div className="space-y-2">
                   {e.risque && (
                     <div className="w-full overflow-hidden rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5">
@@ -3366,7 +3671,10 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                     <div key={i} className="rounded-xl border border-slate-200/70 border-l-4 border-l-cyan-400 bg-white p-3 shadow-sm transition hover:-translate-y-px hover:shadow-md">
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <span className="text-[11px] font-black text-slate-500">{k.num ? k.num + (k.libelle ? " - " + k.libelle : "") : "Contrat " + (i + 1)}{k.etat ? " · " + k.etat : ""}</span>
-                        {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700 ring-1 ring-inset ring-cyan-200/60" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {k.renouv && <PrioBadgeRenouv r={k.renouv} />}
+                          {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700 ring-1 ring-inset ring-cyan-200/60" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
+                        </span>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <PropTexte label="Pack" valeur={affPack(k.pack)} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, pack: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
@@ -3374,6 +3682,8 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                         <PropTexte label="Fin" valeur={k.dateFin} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, dateFin: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} />
                         <div className="col-span-2"><PropTexte label="Immatriculations" valeur={k.immats} onChange={(v) => { const cs = (e.contrats || []).map((k2, j) => j === i ? { ...k2, immats: v } : k2); onModifie({ contrats: cs, ...fusionnerContrats(cs) }); }} /></div>
                       </div>
+                      {/* Détail renouvellement + simulateur VR (Sheet Base contrats) */}
+                      {k.renouv && <DetailRenouv r={k.renouv} />}
                     </div>
                   ))}
                   <div><Prop label="Véhicules" valeur={e.nbVehicules} /></div>
@@ -6475,6 +6785,7 @@ function VueImportQuarantaine({ etat, onImporter }: { etat: Etat; onImporter: (f
     </div>
   );
 }
+
 
 
 
