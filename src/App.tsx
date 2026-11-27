@@ -5522,7 +5522,7 @@ function VuePipeline({ etat, recherche, onOuvre, onMove }: {
 
 /* ============================== APP ============================== */
 
-type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis" | "console" | "arrivees" | "import";
+type VueCRM = "dashboard" | "entreprises" | "contacts" | "deals" | "pipeline" | "agenda" | "devis" | "console" | "arrivees" | "renouvellements" | "import";
 
 // ── Demandes entrantes (quarantaine) : e-mails de prospects poussés vers
 // /api/inbound-email par l'automatisation (Make surveille la boîte OVH).
@@ -5742,7 +5742,7 @@ export default function App() {
   // ── Flèche arrière du navigateur : chaque page visitée est poussée dans
   //    l'historique (hash #/vue ou #/typeFiche/id) ; popstate restaure la page
   //    précédente au lieu de quitter l'app vers la page de démarrage. ──
-  const VUES_NAV: string[] = ["dashboard", "entreprises", "contacts", "deals", "pipeline", "agenda", "devis", "console", "arrivees", "import"];
+  const VUES_NAV: string[] = ["dashboard", "entreprises", "contacts", "deals", "pipeline", "agenda", "devis", "console", "arrivees", "renouvellements", "import"];
   const premierHash = useRef(true);
   useEffect(() => {
     const auPop = () => {
@@ -6276,7 +6276,7 @@ export default function App() {
   };
 
   // Icônes de la navigation (barre latérale + version mobile).
-  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾", console: "🎧", arrivees: "📥" };
+  const ICONES_NAV: Record<string, string> = { dashboard: "📊", entreprises: "🏢", contacts: "👥", deals: "🎯", pipeline: "📈", agenda: "📅", devis: "🧾", console: "🎧", arrivees: "📥", renouvellements: "🔄" };
 
   // Les vues principales, dans l'ordre de la barre latérale.
   const onglets = [
@@ -6287,6 +6287,7 @@ export default function App() {
     ["pipeline", "Pipeline"],
     ["agenda", "Agenda"],
     ["arrivees", "Entrantes"],
+    ["renouvellements", "Renouvellements"],
     ["import", "📥 Import"],
     ["devis", "Devis"],
     ...(estManager ? [["console", "Console"],] : []),
@@ -6527,7 +6528,7 @@ export default function App() {
                 <VoletRecherche q={recherche} etat={etat} onOuvre={(c) => { ouvrir(c); setRecherche(""); }} />
               )}
             </div>
-            {vue !== "devis" && vue !== "console" && vue !== "arrivees" && (
+            {vue !== "devis" && vue !== "console" && vue !== "arrivees" && vue !== "renouvellements" && (
             <button onClick={() => setCible(boutonAjout[vue])}
               className="rounded-xl px-3 py-1.5 text-[12px] font-black text-white"
               style={{ background: "linear-gradient(135deg,#57c26b,#4f9ee8)" }}>
@@ -6582,6 +6583,7 @@ export default function App() {
             {vue === "pipeline" && <VuePipeline etat={etat} recherche={recherche} onOuvre={ouvrir} onMove={deplacer} />}
             {vue === "agenda" && <VueAgenda etat={etat} onOuvre={ouvrir} onAjouter={ajouterActivite} onMajActivite={majActivite} />}
             {vue === "arrivees" && <VueArrivees arrivees={arrivees} etat={etat} onValider={validerArrivee} onIgnorer={ignorerArrivee} onActualiser={actualiserArrivees} majLe={majArrivees} />}
+            {vue === "renouvellements" && <VueRenouvellements etat={etat} onOuvreFiche={ouvrirFiche} />}
             {vue === "import" && <VueImportQuarantaine etat={etat} onImporter={importerQuarantaine} />}
             {vue === "devis" && <DevisModule key={devisKey} brouillon={etat.devis ?? null} onBrouillon={(d) => setEtat((e) => ({ ...e, devis: d }))} entreprisesNom={etat.entreprises.map((x) => x.nomCommercial || x.nom)}
               comptesCRM={etat.entreprises.map((x) => ({ affiche: x.nomCommercial || x.nom, nom: x.nom, tel: x.tel, entId: x.id }))}
@@ -6711,6 +6713,133 @@ function VueArrivees({ arrivees, etat, onValider, onIgnorer, onActualiser, majLe
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+/* ===================== 🔄 Renouvellements (Sheet « Base contrats ») =====================
+   Vue GLOBALE de tous les dossiers de l'onglet Renouvellements (Locam + RTS),
+   lus en direct du Sheet gviz (lecture seule, cache 60 s). Aucune écriture,
+   aucune création de fiche. Le lien vers une fiche client n'apparaît que si
+   le CODE CLIENT EBP du dossier correspond au « Code Sheet: … » des notes
+   d'UNE fiche existante — jamais de rattachement par nom. */
+function VueRenouvellements({ etat, onOuvreFiche }: { etat: Etat; onOuvreFiche: (f: FicheRef) => void }) {
+  const [rows, setRows] = useState<LigneRenouv[] | null>(null);
+  const [erreur, setErreur] = useState("");
+  const [prioF, setPrioF] = useState("all");
+  const [q, setQ] = useState("");
+  const [maj, setMaj] = useState("");
+  useEffect(() => {
+    let annule = false;
+    (async () => {
+      try {
+        const l = await lireContratsBase();
+        if (annule) return;
+        setRows(parserContratsBase(l));
+        setMaj(new Date().toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }));
+      } catch { if (!annule) setErreur("Sheet « Base contrats » inaccessible — vérifie le partage « Toute personne disposant du lien : Lecteur »."); }
+    })();
+    return () => { annule = true; };
+  }, []);
+  // Rattachement STRICT par code client EBP : une fiche est liée à un dossier
+  // UNIQUEMENT si son code Sheet (notes) est identique. Jamais par nom.
+  const fichesParCode = useMemo(() => {
+    const m = new Map<string, Entreprise[]>();
+    for (const e of etat.entreprises) {
+      const c = (((e.notes || "").match(/Code Sheet\s*:?\s*(C\d{3,6})/i) || [])[1] || "").toUpperCase();
+      if (c) { const t = m.get(c) || []; t.push(e); m.set(c, t); }
+    }
+    return m;
+  }, [etat.entreprises]);
+  const eur = (n?: number) => (n === undefined || n === null || Number.isNaN(n) ? "—" : Math.round(n).toLocaleString("fr-FR") + " €");
+  if (erreur) return (
+    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center">
+      <div className="text-4xl">⚠️</div>
+      <div className="mt-3 text-[14px] font-black text-amber-800">{erreur}</div>
+    </div>
+  );
+  if (!rows) return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-[13px] font-bold text-slate-400">
+      ⏳ Chargement du Sheet « Base contrats »…
+    </div>
+  );
+  const parPrio: Record<string, number> = {};
+  for (const r of rows) { const p = r.renouv.prio || "?"; parPrio[p] = (parPrio[p] || 0) + 1; }
+  const recherche = q.trim().toLowerCase();
+  const liste = rows
+    .filter((r) => prioF === "all" || (r.renouv.prio || "?") === prioF)
+    .filter((r) => !recherche || [r.code, r.dossier, r.siren, r.renouv.bien || "", r.renouv.etatDossier || ""].join(" ").toLowerCase().includes(recherche))
+    .sort((a, b) => ((a.renouv.prio || "9") > (b.renouv.prio || "9") ? 1 : (a.renouv.prio || "9") < (b.renouv.prio || "9") ? -1 : (a.renouv.echeancePayes || 0) - (b.renouv.echeancePayes || 0)));
+  const chips: [string, string, number][] = [["all", "Tous", rows.length], ...Object.keys(LIBELLE_PRIO_RENOUV).map((p): [string, string, number] => [p, LIBELLE_PRIO_RENOUV[p], parPrio[p] || 0])];
+  const sommets = liste.filter((r) => r.renouv.vr !== undefined).reduce((s, r) => s + (r.renouv.vr || 0), 0);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-[16px] font-black text-slate-800">🔄 Renouvellements</div>
+          <div className="text-[11.5px] text-slate-400">{rows.length} dossiers en cours (Sheet « Base contrats », Locam + RTS) — lecture seule, rafraîchie à chaque ouverture{maj && " · ⏱ " + maj}.</div>
+        </div>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 Client, code EBP, dossier, bien…"
+          className="w-64 rounded-xl border border-slate-200 px-3 py-1.5 text-[12px] outline-none focus:border-cyan-500" />
+      </div>
+      {/* KPIs par priorité (filtres cliquables) */}
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map(([p, label, n]) => (
+          <button key={p} onClick={() => setPrioF(p)}
+            className={`rounded-full px-3 py-1.5 text-[11px] font-black ring-1 ring-inset transition ${prioF === p ? "bg-slate-800 text-white ring-slate-800" : (p !== "all" ? (COULEUR_PRIO_RENOUV[p] || "bg-slate-100 text-slate-500 ring-slate-200/60") : "bg-slate-100 text-slate-500 ring-slate-200/60")}`}>
+            {p === "all" ? "📋 " : "🔄 "}{label} · {n}
+          </button>
+        ))}
+      </div>
+      {sommets > 0 && (
+        <div className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-[12px] font-bold text-slate-500">
+          💶 VR cumulée des {liste.filter((r) => r.renouv.vr !== undefined).length} dossiers affichés : <span className="text-slate-800">{Math.round(sommets).toLocaleString("fr-FR")} € HT</span>
+        </div>
+      )}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="max-h-[calc(100vh-320px)] overflow-y-auto">
+          <table className="w-full text-left text-[11.5px]">
+            <thead className="sticky top-0 bg-slate-50 text-[9.5px] font-black uppercase tracking-wider text-slate-400">
+              <tr>
+                <th className="px-3 py-2">Prio</th><th className="px-3 py-2">Client (code EBP)</th><th className="px-3 py-2">Dossier</th>
+                <th className="px-3 py-2">Bien financé</th><th className="px-3 py-2 whitespace-nowrap">Loyers</th>
+                <th className="px-3 py-2 text-right">Loyer TTC</th><th className="px-3 py-2 text-right">VR dossier</th>
+                <th className="px-3 py-2 text-right">À empiler</th><th className="px-3 py-2">État</th><th className="px-3 py-2">Retour</th>
+              </tr>
+            </thead>
+            <tbody>
+              {liste.slice(0, 400).map((r) => {
+                const fiches = fichesParCode.get((r.code || "").toUpperCase()) || [];
+                const fiche = fiches.length === 1 ? fiches[0] : null;
+                return (
+                  <tr key={r.dossier + r.code} className="border-t border-slate-100 hover:bg-slate-50/60">
+                    <td className="px-3 py-1.5"><PrioBadgeRenouv r={r.renouv} /></td>
+                    <td className="px-3 py-1.5 font-bold text-slate-700">
+                      {fiche
+                        ? <button className="text-left text-cyan-700 hover:underline" title="Ouvrir la fiche (rattachement par code client EBP)" onClick={() => onOuvreFiche({ type: "entreprise", id: fiche.id })}>{fiche.nomCommercial || fiche.nom} <span className="font-mono text-[9.5px] text-slate-400">↗</span></button>
+                        : <span title={fiches.length > 1 ? fiches.length + " fiches partagent ce code EBP — ouvre-les via la recherche" : "Aucune fiche avec ce code client EBP en notes — aucun rattachement par nom"}>
+                            <span className="text-slate-500">client non rattaché</span>{" "}<span className="font-mono text-[10px] text-slate-400">{r.code}</span>{fiches.length > 1 ? <span className="ml-1 rounded-full bg-amber-100 px-1.5 text-[9px] font-black text-amber-700">{fiches.length} fiches</span> : null}
+                          </span>}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-[10.5px] text-cyan-700">{r.dossier}</td>
+                    <td className="max-w-[220px] truncate px-3 py-1.5 text-slate-500" title={r.renouv.bien}>{r.renouv.bien || "—"}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-slate-500">{r.renouv.loyersPayes ?? "?"}/{r.renouv.duree ?? "?"}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right text-slate-600">{eur(r.renouv.loyerTTC)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right font-black text-slate-700">{eur(r.renouv.vr)}</td>
+                    <td className={`whitespace-nowrap px-3 py-1.5 text-right font-bold ${(r.renouv.empiler ?? 0) < 0 ? "text-emerald-600" : "text-slate-600"}`}>{eur(r.renouv.empiler)}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5"><span className={`rounded-full px-2 py-0.5 text-[9.5px] font-bold ${(r.renouv.etatDossier || "").toLowerCase().includes("sain") ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{r.renouv.etatDossier || "—"}</span></td>
+                    <td className="max-w-[140px] truncate px-3 py-1.5 text-slate-500" title={(r.renouv.retour || "") + (r.renouv.signature ? " · signé le " + r.renouv.signature : "")}>
+                      {r.renouv.signature ? "✍️ " + r.renouv.signature : (r.renouv.retour || "—")}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {liste.length > 400 && <div className="border-t border-slate-100 px-4 py-2 text-center text-[11px] font-bold text-slate-400">+ {liste.length - 400} autres dossiers — affine la recherche ou les filtres.</div>}
+        </div>
+      </div>
     </div>
   );
 }
