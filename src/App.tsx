@@ -1850,7 +1850,7 @@ function CarteFiche({ titre, icone, action, children }: { titre: string; icone?:
         <span className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.08em] text-slate-500">
           {icone && <span className="text-[13px]">{icone}</span>}{titre}
         </span>
-        {action}
+        {action && <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">{action}</div>}
       </div>
       {children}
     </div>
@@ -2747,7 +2747,7 @@ function SyncSheetOuverture({ ent, contacts, onModifie, onMajContacts }: { ent: 
   const lib = LIBELLES[sync];
   if (!lib) return null;
   return (
-    <span className="text-[10px] font-bold text-slate-400"
+    <span className="whitespace-nowrap text-[10px] font-bold text-slate-400"
       title="Contrats et statut resynchronises sur le Sheet a chaque ouverture.">
       {lib}
     </span>
@@ -3101,13 +3101,13 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
       setSt("ok");
     } catch { setSt("ko"); }
   };
-  if (st === "ok") return <span className="text-[10px] font-bold text-slate-400" title="Renouvellements synchronisés sur le Sheet Base contrats (bouton ou cache < 5 min).">· 🔄 contrats à jour</span>;
-  if (st === "ko") return <span className="text-[10px] font-bold text-slate-400" title="Sheet Base contrats inaccessible (partage « lien : lecteur » requis, ou limite de débit Google — réessaie).">· ⚠ Base contrats inaccessible</span>;
-  if (st === "aucun") return <span className="text-[10px] font-bold text-slate-400" title="Aucun dossier du Sheet Base contrats ne correspond aux codes/SIREN de cette fiche (jamais de rattachement par nom).">· 🔄 aucun dossier renouvellement</span>;
-  if (st === "enCours") return <span className="text-[10px] font-bold text-slate-400">· ⏳ chargement…</span>;
+  if (st === "ok") return <span className="whitespace-nowrap text-[10px] font-bold text-slate-400" title="Renouvellements synchronisés sur le Sheet Base contrats (bouton ou cache < 5 min).">· 🔄 contrats à jour</span>;
+  if (st === "ko") return <span className="whitespace-nowrap text-[10px] font-bold text-slate-400" title="Sheet Base contrats inaccessible (partage « lien : lecteur » requis, ou limite de débit Google — réessaie).">· ⚠ Base contrats inaccessible</span>;
+  if (st === "aucun") return <span className="whitespace-nowrap text-[10px] font-bold text-slate-400" title="Aucun dossier du Sheet Base contrats ne correspond aux codes/SIREN de cette fiche (jamais de rattachement par nom).">· 🔄 aucun dossier renouvellement</span>;
+  if (st === "enCours") return <span className="whitespace-nowrap text-[10px] font-bold text-slate-400">· ⏳ chargement…</span>;
   return (
     <button onClick={() => synchroniser()} title="Charger les données de renouvellement du Sheet « Base contrats » pour cette fiche (priorités, VR, simulateur)."
-      className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-black text-slate-500 hover:bg-slate-50">
+      className="shrink-0 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-black text-slate-500 hover:bg-slate-50">
       🔄 Charger renouvellements
     </button>
   );
@@ -3745,7 +3745,7 @@ function FicheEntreprise({ etat, id, onRetour, onOuvre, onOuvreFiche, onActivite
                         <span className="text-[11px] font-black text-slate-500">{k.num ? k.num + (k.libelle ? " - " + k.libelle : "") : "Contrat " + (i + 1)}{k.etat ? " · " + k.etat : ""}</span>
                         <span className="flex shrink-0 items-center gap-1.5">
                           {k.renouv && <PrioBadgeRenouv r={k.renouv} />}
-                          {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black text-cyan-700 ring-1 ring-inset ring-cyan-200/60" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
+                          {k.locam && <span className="rounded-md bg-cyan-100 px-2 py-0.5 font-mono text-[10px] font-black whitespace-nowrap text-cyan-700 ring-1 ring-inset ring-cyan-200/60" title="N° dossier LOCAM / RTS (Sheet « Clients Complets »)">LOCAM/RTS {k.locam}</span>}
                         </span>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
