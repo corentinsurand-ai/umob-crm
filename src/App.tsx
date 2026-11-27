@@ -3049,14 +3049,30 @@ function DetailRenouv({ r }: { r: RenouvData }) {
    connu, la ligne est ignorée. Aucun match par nom. Rien n'est créé : sans
    correspondance, la fiche reste intacte. ── */
 function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (patch: Partial<Entreprise>) => void }) {
-  const [st, setSt] = useState<"" | "ok" | "ko">("");
+  // Chargement À LA DEMANDE (demande de Corentin 27/11) : la lecture du Sheet
+  // ne se déclenche PLUS automatiquement à chaque ouverture de fiche (limite
+  // de débit Google, fiche plus longue à s'afficher). Hybride : si le Sheet
+  // est DÉJÀ en cache (< 5 min, ex. depuis la vue 🔄 Renouvellements), on
+  // resynchronise gratuitement ; sinon un bouton propose de le charger.
+  const cacheChaud = () => !!cacheContratsBase && Date.now() - cacheContratsBase.at < 300000;
+  const [st, setSt] = useState<"" | "ok" | "ko" | "bouton" | "enCours" | "aucun">(cacheChaud() ? "" : "bouton");
   useEffect(() => {
+    // Si le cache est chaud dès l'ouverture (vue Renouvellements récente),
+    // synchronisation immédiate, sans toucher à Google.
+    if (!cacheChaud()) return;
     let annule = false;
-    if (!((ent.contrats || []).length > 0 || ent.statut === "Client")) return;
-    (async () => {
-      const lignes = await lireContratsBase();
+    (async () => { const lignes = lireContratsBase(); if (annule) return; await synchroniser(lignes); })()
+      .catch(() => { if (!annule) setSt("ko"); });
+    return () => { annule = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ent.id]);
+  const synchroniser = async (lignesPromis?: Promise<string[][]>) => {
+    if (!((ent.contrats || []).length > 0 || ent.statut === "Client")) { setSt(""); return; }
+    setSt("enCours");
+    try {
+      const lignes = await (lignesPromis || lireContratsBase());
       const rows = parserContratsBase(lignes);
-      if (!rows.length) { if (!annule) setSt(""); return; }
+      if (!rows.length) { setSt(""); return; }
       const dig = (s: string) => (s || "").replace(/\D/g, "");
       // TOUS les codes consignés en notes de la fiche (pas seulement le 1er).
       const codesEnt = [...((ent.notes || "").matchAll(/Code\s+(?:Sheet|client)\s*:?\s*(C\d{3,6})/gi) || [])].map((m) => m[1].toUpperCase());
@@ -3065,7 +3081,7 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
       const miens = rows.filter((r) =>
         (r.code && codesEnt.includes(r.code.toUpperCase())) ||
         (snEnt.length >= 9 && dig(r.siren).length >= 9 && dig(r.siren) === snEnt));
-      if (!miens.length) { if (!annule) setSt(""); return; }
+      if (!miens.length) { setSt("aucun"); return; }
       const cs = (ent.contrats || []).map((k) => ({ ...k }));
       let change = false;
       for (const r of miens) {
@@ -3081,15 +3097,20 @@ function SyncContratsBase({ ent, onModifie }: { ent: Entreprise; onModifie: (pat
         if (!k) continue; /* n° de dossier inconnu ou ambigu sur cette fiche → on ne devine PAS */
         if (JSON.stringify(k.renouv || null) !== JSON.stringify(r.renouv)) { k.renouv = r.renouv; change = true; }
       }
-      if (change && !annule) onModifie({ contrats: cs, ...fusionnerContrats(cs) });
-      if (!annule) setSt("ok");
-    })().catch(() => { if (!annule) setSt("ko"); });
-    return () => { annule = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ent.id]);
-  if (st === "ok") return <span className="text-[10px] font-bold text-slate-400" title="Renouvellements resynchronisés sur le Sheet Base contrats à chaque ouverture.">· 🔄 contrats à jour</span>;
-  if (st === "ko") return <span className="text-[10px] font-bold text-slate-400" title="Sheet Base contrats inaccessible (partage « lien : lecteur » requis).">· ⚠ Base contrats inaccessible</span>;
-  return null;
+      if (change) onModifie({ contrats: cs, ...fusionnerContrats(cs) });
+      setSt("ok");
+    } catch { setSt("ko"); }
+  };
+  if (st === "ok") return <span className="text-[10px] font-bold text-slate-400" title="Renouvellements synchronisés sur le Sheet Base contrats (bouton ou cache < 5 min).">· 🔄 contrats à jour</span>;
+  if (st === "ko") return <span className="text-[10px] font-bold text-slate-400" title="Sheet Base contrats inaccessible (partage « lien : lecteur » requis, ou limite de débit Google — réessaie).">· ⚠ Base contrats inaccessible</span>;
+  if (st === "aucun") return <span className="text-[10px] font-bold text-slate-400" title="Aucun dossier du Sheet Base contrats ne correspond aux codes/SIREN de cette fiche (jamais de rattachement par nom).">· 🔄 aucun dossier renouvellement</span>;
+  if (st === "enCours") return <span className="text-[10px] font-bold text-slate-400">· ⏳ chargement…</span>;
+  return (
+    <button onClick={() => synchroniser()} title="Charger les données de renouvellement du Sheet « Base contrats » pour cette fiche (priorités, VR, simulateur)."
+      className="rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-black text-slate-500 hover:bg-slate-50">
+      🔄 Charger renouvellements
+    </button>
+  );
 }
 
 // ── VOLET DE RECHERCHE GLOBALE : s'affiche sous la barre « Rechercher… »
